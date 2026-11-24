@@ -94,6 +94,15 @@ checked and stored upper-case; the timezone must be a real IANA zone and is stor
 | Stopping sign-ups early | set `registration_closes_at`; the event stays `PUBLISHED` (and in the catalog if `PUBLIC`). Extending or clearing it reopens sign-ups before the event ends; the window is rechecked |
 | `display_status` | `LIVE` for a published event while `starts_at <= now < ends_at`; otherwise the stored status (a cancelled event stays `CANCELLED`) |
 
+### Product rules decided for 3b (accepted 25 November 2026)
+
+| Rule | Decision |
+|---|---|
+| Event name with no Latin letters (e.g. Amharic only) | The slug becomes `event`, `event-2`, …; staff can change it while `DRAFT` |
+| Requested slug already taken | `409`, no automatic suffix (suffixes apply only to generated slugs) |
+| Editing `CLOSED` or `CANCELLED` events | Not allowed at all (`409 invalid_event_state`), including ticket types |
+| Asking for the current status again | Returns the event unchanged (no error, nothing written) |
+
 ### Ticket types
 
 Under `/v1/organizations/{organizationId}/events/{eventId}/ticket-types` (`EVENTS.view` to list, `EVENTS.update` to
