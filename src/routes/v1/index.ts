@@ -4,7 +4,9 @@ import { authRouter } from "./auth.js";
 import { branchesRouter } from "./branches.js";
 import { customerAccountsRouter } from "./customer-accounts.js";
 import { docsRouter } from "./docs.js";
+import { eventsRouter } from "./events.js";
 import { organizationsRouter } from "./organizations.js";
+import { ticketTypesRouter } from "./ticket-types.js";
 import { venuesRouter } from "./venues.js";
 
 /** The v1 mount table. One literal registration per resource router; each router mounted exactly once. */
@@ -15,6 +17,8 @@ router.use("/organizations", organizationsRouter);
 router.use("/organizations/:organizationId/branches", branchesRouter);
 router.use("/organizations/:organizationId/customer-accounts", customerAccountsRouter);
 router.use("/organizations/:organizationId/venues", venuesRouter);
+router.use("/organizations/:organizationId/events", eventsRouter);
+router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticketTypesRouter);
 
 if (env.API_DOCS_ENABLED) {
   router.use(docsRouter); // GET /v1/openapi.json, /v1/docs

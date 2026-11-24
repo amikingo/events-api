@@ -7,7 +7,7 @@ import { organizationRepository } from "../src/repositories/organization.reposit
 import { transactionManager } from "../src/services/helpers.js";
 import { organizationService } from "../src/services/organization.service.js";
 import { organizationCreateSchema } from "../src/validators/organization.js";
-import { branchRow, organizationRow } from "./helpers/fixtures.js";
+import { branchRow, IDS, organizationRow } from "./helpers/fixtures.js";
 
 const FAKE_TX = { id: "fake-transaction" } as unknown as Transaction;
 
@@ -39,6 +39,30 @@ test("has_branches is stored when the organizer has branches", async () => {
   );
 
   assert.equal(create.mock.calls[0]?.arguments[0]?.has_branches, true);
+});
+
+test("organization defaults: omitted ones are left to the database (ET, Africa/Addis_Ababa, ETB); given ones are stored", async () => {
+  const create = mock.method(organizationRepository, "create", async () => organizationRow());
+
+  await organizationService.createOrganization({ organization: { name: "Selam Events", description: undefined } }, null);
+  await organizationService.createOrganization(
+    { organization: { name: "Nairobi Events", description: undefined, country: "KE", timezone: "Africa/Nairobi", default_currency: "KES" } },
+    null,
+  );
+
+  const [first] = create.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(["country", "timezone", "default_currency"].filter((key) => first !== undefined && key in first), []);
+  const [second] = create.mock.calls[1]?.arguments ?? [];
+  assert.deepEqual([second?.country, second?.timezone, second?.default_currency], ["KE", "Africa/Nairobi", "KES"]);
+});
+
+test("editing the organization's defaults writes only the given fields, inside the transaction", async () => {
+  mock.method(organizationRepository, "findById", async () => organizationRow());
+  const update = mock.method(organizationRepository, "updateSettings", async () => organizationRow({ timezone: "Europe/London" }));
+
+  await organizationService.updateOrganizationSettings(IDS.orgA, { timezone: "Europe/London" }, IDS.user);
+
+  assert.deepEqual(update.mock.calls[0]?.arguments, [IDS.orgA, { timezone: "Europe/London", updated_by: IDS.user }, { transaction: FAKE_TX }]);
 });
 
 /** Creates an organization and returns the slug the service saved. */

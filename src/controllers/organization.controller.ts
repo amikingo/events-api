@@ -1,7 +1,12 @@
 import type { Request, Response } from "express";
 import { organizationService } from "../services/organization.service.js";
 import { sendList, sendSuccess } from "../utils/http.js";
-import { createOrganizationRequest, getOrganizationRequest, listOrganizationsRequest } from "../validators/organization.js";
+import {
+  createOrganizationRequest,
+  getOrganizationRequest,
+  listOrganizationsRequest,
+  updateOrganizationSettingsRequest,
+} from "../validators/organization.js";
 import { getValidated } from "../middleware/validate.js";
 import { getActorId } from "./helpers.js";
 
@@ -23,4 +28,10 @@ async function getOrganization(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, organization, "Organization retrieved");
 }
 
-export const organizationController = { createOrganization, listOrganizations, getOrganization };
+async function updateOrganizationSettings(req: Request, res: Response): Promise<void> {
+  const { params, body } = getValidated(req, updateOrganizationSettingsRequest);
+  const organization = await organizationService.updateOrganizationSettings(params.organizationId, body, getActorId(req));
+  sendSuccess(res, 200, organization, "Organization settings updated");
+}
+
+export const organizationController = { createOrganization, listOrganizations, getOrganization, updateOrganizationSettings };

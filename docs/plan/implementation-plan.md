@@ -378,7 +378,20 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 - One name and description per event; map links, translated fields and a category table come later.
 - An organization-wide event uses `branch_id = NULL`, even when a default `MAIN` branch exists. Organizations without branches therefore never involve the hidden branch.
 
-**3a status: built; checks run by the agent; awaiting the owner's `db:migrate` and `TEST_DATABASE=1 npm test`.**
+**3a status: done.** The 4 migrations were applied to `events_dev`; `TEST_DATABASE=1 npm test` passed 116 of 116, none skipped; committed separately.
+
+**3b decisions (25 November 2026), detailed in `docs/events.md`:**
+- the organization gets editable defaults `ET` / `Africa/Addis_Ababa` / `ETB`, and an event copies the timezone once;
+- the slug is generated with `-2`, `-3` on a clash and frozen after the first publication;
+- publishing needs a name, slug, timezone, `starts_at < ends_at` and an active ticket type, while capacity, venue and cover stay optional;
+- `DRAFT → PUBLISHED | CANCELLED` and `PUBLISHED → CLOSED | CANCELLED`, with CLOSED and CANCELLED terminal;
+- stopping sign-ups means setting `registration_closes_at` while the event stays PUBLISHED;
+- a ticket limit fits within the event limit;
+- General Admission is created in the same transaction, with no own limit;
+- events start as DRAFT and UNLISTED, and category is free text;
+- `branch_id = NULL` means organization-wide, any active branch of the organization may be chosen, and branch-only staff get 403.
+
+**3b status: built; checks pending your yes; then the owner's `db:migrate` and `TEST_DATABASE=1 npm test`.**
 
 - **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
 - **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.

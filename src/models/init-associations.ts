@@ -1,9 +1,12 @@
 import type { AppModule } from "./module.js";
 import type { Branch } from "./branch.js";
 import type { CustomerAccount } from "./customer-account.js";
+import type { AppEvent } from "./event.js";
 import type { Organization } from "./organization.js";
 import type { Role } from "./role.js";
 import type { RoleModuleAccess } from "./role-module-access.js";
+import type { StoredFile } from "./stored-file.js";
+import type { TicketType } from "./ticket-type.js";
 import type { UserModuleAccess } from "./user-module-access.js";
 import type { UserRole } from "./user-role.js";
 import type { Venue } from "./venue.js";
@@ -18,11 +21,27 @@ type Models = {
   UserModuleAccess: typeof UserModuleAccess;
   CustomerAccount: typeof CustomerAccount;
   Venue: typeof Venue;
+  StoredFile: typeof StoredFile;
+  AppEvent: typeof AppEvent;
+  TicketType: typeof TicketType;
 };
 
 /** Every association is declared here, once, with an explicit `as` alias and foreign key. */
 export function initAssociations(models: Models): void {
-  const { Organization, Branch, AppModule, Role, RoleModuleAccess, UserRole, UserModuleAccess, CustomerAccount, Venue } = models;
+  const {
+    Organization,
+    Branch,
+    AppModule,
+    Role,
+    RoleModuleAccess,
+    UserRole,
+    UserModuleAccess,
+    CustomerAccount,
+    Venue,
+    StoredFile,
+    AppEvent,
+    TicketType,
+  } = models;
 
   Organization.hasMany(Branch, { foreignKey: "organization_id", as: "branches" });
   Branch.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
@@ -44,4 +63,13 @@ export function initAssociations(models: Models): void {
 
   CustomerAccount.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
   Venue.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+  StoredFile.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+
+  AppEvent.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+  AppEvent.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
+  AppEvent.belongsTo(CustomerAccount, { foreignKey: "customer_account_id", as: "customerAccount" });
+  AppEvent.belongsTo(Venue, { foreignKey: "venue_id", as: "venue" });
+  AppEvent.belongsTo(StoredFile, { foreignKey: "cover_file_id", as: "coverFile" });
+  AppEvent.hasMany(TicketType, { foreignKey: "event_id", as: "ticketTypes" });
+  TicketType.belongsTo(AppEvent, { foreignKey: "event_id", as: "event" });
 }

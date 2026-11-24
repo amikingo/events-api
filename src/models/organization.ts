@@ -14,6 +14,10 @@ export class Organization extends Model<InferAttributes<Organization>, InferCrea
   declare description: string | null;
   /** false: a hidden MAIN branch exists, and staff never see branches. */
   declare has_branches: CreationOptional<boolean>;
+  /** Defaults for new records: ISO country code, IANA time zone, ISO currency code. */
+  declare country: CreationOptional<string>;
+  declare timezone: CreationOptional<string>;
+  declare default_currency: CreationOptional<string>;
   declare is_active: CreationOptional<boolean>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
@@ -30,6 +34,9 @@ Organization.init(
     slug: { type: DataTypes.STRING(120), allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: true },
     has_branches: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    country: { type: DataTypes.STRING(2), allowNull: false, defaultValue: "ET" },
+    timezone: { type: DataTypes.STRING(64), allowNull: false, defaultValue: "Africa/Addis_Ababa" },
+    default_currency: { type: DataTypes.STRING(3), allowNull: false, defaultValue: "ETB" },
     is_active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,

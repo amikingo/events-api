@@ -1,0 +1,67 @@
+import { DataTypes, Model, type CreationOptional, type InferAttributes, type InferCreationAttributes } from "sequelize";
+import { sequelize } from "../db.js";
+
+export const EVENT_STATUSES = ["DRAFT", "PUBLISHED", "CLOSED", "CANCELLED"] as const;
+export type EventStatus = (typeof EVENT_STATUSES)[number];
+export const EVENT_VISIBILITIES = ["PUBLIC", "UNLISTED"] as const;
+export type EventVisibility = (typeof EVENT_VISIBILITIES)[number];
+
+/**
+ * One event hosted by the organizer (spec §5; table `event`). Named `AppEvent` because a bare `Event` would shadow
+ * the runtime's global Event class. `branch_id = NULL` means organization-wide, even when a default branch exists.
+ * `timezone` is copied from the organization when the event is created and never follows later changes there.
+ */
+export class AppEvent extends Model<InferAttributes<AppEvent>, InferCreationAttributes<AppEvent>> {
+  declare id: CreationOptional<string>;
+  declare organization_id: string;
+  declare branch_id: string | null;
+  declare customer_account_id: string | null;
+  declare venue_id: string | null;
+  declare cover_file_id: string | null;
+  declare name: string;
+  declare slug: string;
+  declare description: string | null;
+  declare starts_at: Date | null;
+  declare ends_at: Date | null;
+  declare timezone: string;
+  declare status: CreationOptional<EventStatus>;
+  declare capacity: number | null;
+  declare registration_opens_at: Date | null;
+  declare registration_closes_at: Date | null;
+  declare visibility: CreationOptional<EventVisibility>;
+  declare category: string | null;
+  declare created_at: CreationOptional<Date>;
+  declare updated_at: CreationOptional<Date>;
+  declare created_by: string | null;
+  declare updated_by: string | null;
+}
+
+export type EventRow = InferAttributes<AppEvent>;
+
+AppEvent.init(
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true, allowNull: false },
+    organization_id: { type: DataTypes.UUID, allowNull: false },
+    branch_id: { type: DataTypes.UUID, allowNull: true },
+    customer_account_id: { type: DataTypes.UUID, allowNull: true },
+    venue_id: { type: DataTypes.UUID, allowNull: true },
+    cover_file_id: { type: DataTypes.UUID, allowNull: true },
+    name: { type: DataTypes.STRING(255), allowNull: false },
+    slug: { type: DataTypes.STRING(120), allowNull: false },
+    description: { type: DataTypes.TEXT, allowNull: true },
+    starts_at: { type: DataTypes.DATE, allowNull: true },
+    ends_at: { type: DataTypes.DATE, allowNull: true },
+    timezone: { type: DataTypes.STRING(64), allowNull: false },
+    status: { type: DataTypes.STRING(20), allowNull: false, defaultValue: "DRAFT" },
+    capacity: { type: DataTypes.INTEGER, allowNull: true },
+    registration_opens_at: { type: DataTypes.DATE, allowNull: true },
+    registration_closes_at: { type: DataTypes.DATE, allowNull: true },
+    visibility: { type: DataTypes.STRING(20), allowNull: false, defaultValue: "UNLISTED" },
+    category: { type: DataTypes.STRING(80), allowNull: true },
+    created_at: DataTypes.DATE,
+    updated_at: DataTypes.DATE,
+    created_by: { type: DataTypes.UUID, allowNull: true },
+    updated_by: { type: DataTypes.UUID, allowNull: true },
+  },
+  { sequelize, modelName: "AppEvent", tableName: "event" },
+);

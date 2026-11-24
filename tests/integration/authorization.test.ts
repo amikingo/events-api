@@ -4,7 +4,7 @@ import { createApp } from "../../src/app.js";
 import { sequelize } from "../../src/db.js";
 import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { migrator } from "../../src/migrator.js";
-import { Branch, CustomerAccount, UserModuleAccess } from "../../src/models/index.js";
+import { AppEvent, Branch, CustomerAccount, UserModuleAccess } from "../../src/models/index.js";
 import { moduleRepository } from "../../src/repositories/module.repository.js";
 import { userRoleRepository } from "../../src/repositories/user-role.repository.js";
 import { authTokenService } from "../../src/services/auth-token.service.js";
@@ -35,7 +35,7 @@ type Person = keyof typeof PEOPLE;
 const app = createApp();
 const NO_PROFILE = { mobile: null, firstname: null, middlename: null, lastname: null };
 const tokens = new Map<Person, string>();
-const fixture = { selamId: "", selamMainBranchId: "", selamAddisBranchId: "", hornId: "" };
+const fixture = { selamId: "", selamMainBranchId: "", selamAddisBranchId: "", hornId: "", forumId: "", twinId: "" };
 
 /** A real staff token for the person's one active assignment, as login would issue it. */
 async function tokenFor(userId: string): Promise<string> {
@@ -279,4 +279,131 @@ test("rows 22–25: clients and venues are tenant-scoped, read-only for viewers,
   const me = await as("SELAM_VIEWER", "GET", "/v1/auth/staff/me");
   const navigation: Array<{ code: string; children: Array<{ code: string }> }> = me.body.data.navigation;
   assert.deepEqual(navigation.find((node) => node.code === "EVENT_MANAGEMENT")?.children.map((child) => child.code), ["EVENTS", "CUSTOMERS"]);
+});
+
+// --- Phase 3b: events and ticket types -----------------------------------------------------------
+
+test("rows 26–28: a new event is a DRAFT with General Admission; publishing freezes the slug; closing registration keeps it published and public", { skip }, async () => {
+  const events = `/v1/organizations/${fixture.selamId}/events`;
+
+  // Row 26: DRAFT, UNLISTED, organization-wide (even though MAIN exists), the organization's timezone, GA, a slug.
+  const created = await as("SELAM_OWNER", "POST", events, { name: "Banking Forum" });
+  assert.equal(created.status, 201);
+  const forum = created.body.data;
+  assert.deepEqual(
+    [forum.status, forum.visibility, forum.branch_id, forum.timezone, forum.slug, forum.display_status],
+    ["DRAFT", "UNLISTED", null, "Africa/Addis_Ababa", "banking-forum", "DRAFT"],
+  );
+  const tickets = await as("SELAM_OWNER", "GET", `${events}/${forum.id}/ticket-types`);
+  assert.deepEqual(
+    tickets.body.data.map((ticket: { code: string; name: string; capacity: number | null }) => [ticket.code, ticket.name, ticket.capacity]),
+    [["GA", "General Admission", null]],
+  );
+  const twin = await as("SELAM_OWNER", "POST", events, { name: "Banking Forum" });
+  assert.equal(twin.body.data.slug, "banking-forum-2");
+  fixture.forumId = forum.id;
+  fixture.twinId = twin.body.data.id;
+
+  // Row 27: publishing needs dates; once published the slug is frozen but the name can change.
+  const notReady = await as("SELAM_OWNER", "PATCH", `${events}/${forum.id}/status`, { status: "PUBLISHED" });
+  assert.equal(notReady.status, 409);
+  assert.equal(notReady.body.error.code, "event_not_publishable");
+  const clients = await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/customer-accounts`);
+  const abcBank = clients.body.data.find((client: { name: string }) => client.name === "ABC Bank");
+  assert.ok(abcBank, "ABC Bank was recorded in row 22");
+  const ready = await as("SELAM_OWNER", "PATCH", `${events}/${forum.id}`, {
+    starts_at: "2027-03-12T09:00:00+03:00",
+    ends_at: "2027-03-12T17:00:00+03:00",
+    visibility: "PUBLIC",
+    capacity: 500,
+    customer_account_id: abcBank.id,
+    category: "Conference",
+  });
+  assert.equal(ready.status, 200);
+  const published = await as("SELAM_OWNER", "PATCH", `${events}/${forum.id}/status`, { status: "PUBLISHED" });
+  assert.equal(published.status, 200);
+  assert.equal(published.body.data.status, "PUBLISHED");
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${events}/${forum.id}`, { slug: "abc-forum" })).status, 409);
+  const renamed = await as("SELAM_OWNER", "PATCH", `${events}/${forum.id}`, { name: "ABC Bank Banking Forum" });
+  assert.equal(renamed.body.data.slug, "banking-forum", "the slug survives a rename");
+
+  // Row 28: stopping sign-ups early leaves the event PUBLISHED and PUBLIC, so it stays visible (3c checks the catalog).
+  const closedSignUps = await as("SELAM_OWNER", "PATCH", `${events}/${forum.id}`, { registration_closes_at: "2026-11-01T00:00:00+03:00" });
+  assert.equal(closedSignUps.status, 200);
+  assert.deepEqual([closedSignUps.body.data.status, closedSignUps.body.data.visibility], ["PUBLISHED", "PUBLIC"]);
+});
+
+test("rows 29–30: ticket limits fit within the event capacity; status changes follow the agreed transitions", { skip }, async () => {
+  const forumPath = `/v1/organizations/${fixture.selamId}/events/${fixture.forumId}`;
+
+  // Row 29: a ticket limit above the event capacity is refused; one within fits; the event can't then drop below it.
+  assert.equal((await as("SELAM_OWNER", "POST", `${forumPath}/ticket-types`, { code: "vip", name: "VIP", capacity: 600 })).status, 400);
+  const vip = await as("SELAM_OWNER", "POST", `${forumPath}/ticket-types`, { code: "vip", name: "VIP", capacity: 50 });
+  assert.equal(vip.status, 201);
+  assert.equal(vip.body.data.code, "VIP");
+  assert.equal((await as("SELAM_OWNER", "PATCH", forumPath, { capacity: 40 })).status, 409);
+  const tickets = (await as("SELAM_OWNER", "GET", `${forumPath}/ticket-types`)).body.data as Array<{ id: string; code: string }>;
+  const generalAdmission = tickets.find((ticket) => ticket.code === "GA");
+  assert.ok(generalAdmission);
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${forumPath}/ticket-types/${generalAdmission.id}/status`, { is_active: false })).status, 200);
+  assert.equal(
+    (await as("SELAM_OWNER", "PATCH", `${forumPath}/ticket-types/${vip.body.data.id}/status`, { is_active: false })).status,
+    409,
+    "a published event keeps at least one active ticket type",
+  );
+
+  // Row 30: DRAFT → CLOSED refused; DRAFT → CANCELLED, then no edits; PUBLISHED → CLOSED, then terminal.
+  const twinPath = `/v1/organizations/${fixture.selamId}/events/${fixture.twinId}`;
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${twinPath}/status`, { status: "CLOSED" })).status, 409);
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${twinPath}/status`, { status: "CANCELLED" })).status, 200);
+  assert.equal((await as("SELAM_OWNER", "PATCH", twinPath, { name: "Renamed" })).status, 409);
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${forumPath}/status`, { status: "CLOSED" })).status, 200);
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${forumPath}/status`, { status: "PUBLISHED" })).status, 409);
+});
+
+test("row 31: tenant safety, viewer read-only, explicit branch choice, and the organization's timezone", { skip }, async () => {
+  const selamEvents = `/v1/organizations/${fixture.selamId}/events`;
+
+  assert.equal((await as("SELAM_VIEWER", "GET", selamEvents)).status, 200);
+  assert.equal((await as("SELAM_VIEWER", "POST", selamEvents, { name: "Rogue Event" })).status, 403);
+  assert.equal((await as("HORN_OWNER", "GET", selamEvents)).status, 403);
+  assert.equal((await as("HORN_OWNER", "GET", `/v1/organizations/${fixture.hornId}/events/${fixture.forumId}`)).status, 404);
+
+  // Another organization's venue: refused by the API, and by PostgreSQL itself (composite foreign key).
+  const hornVenue = await as("HORN_OWNER", "POST", `/v1/organizations/${fixture.hornId}/venues`, { name: "Harar Hall" });
+  assert.equal(hornVenue.status, 201);
+  assert.equal((await as("SELAM_OWNER", "POST", selamEvents, { name: "Workshop", venue_id: hornVenue.body.data.id })).status, 400);
+  await assert.rejects(
+    AppEvent.create({
+      organization_id: fixture.selamId,
+      venue_id: hornVenue.body.data.id,
+      branch_id: null,
+      customer_account_id: null,
+      cover_file_id: null,
+      name: "Rogue",
+      slug: "rogue",
+      description: null,
+      starts_at: null,
+      ends_at: null,
+      timezone: "Africa/Addis_Ababa",
+      capacity: null,
+      registration_opens_at: null,
+      registration_closes_at: null,
+      category: null,
+      created_by: null,
+      updated_by: null,
+    }),
+  );
+
+  // An active branch of the organization may be chosen explicitly; another organization's branch is refused.
+  const workshop = await as("SELAM_OWNER", "POST", selamEvents, { name: "Workshop", branch_id: fixture.selamAddisBranchId });
+  assert.equal(workshop.status, 201);
+  assert.equal(workshop.body.data.branch_id, fixture.selamAddisBranchId);
+  const hornBranches = await as("HORN_OWNER", "GET", `/v1/organizations/${fixture.hornId}/branches`);
+  assert.equal((await as("SELAM_OWNER", "POST", selamEvents, { name: "Workshop", branch_id: hornBranches.body.data[0].id })).status, 400);
+
+  // A new timezone for the organization leaves existing events alone; new events copy it.
+  assert.equal((await as("SELAM_OWNER", "PATCH", `/v1/organizations/${fixture.selamId}`, { timezone: "Europe/London" })).status, 200);
+  assert.equal((await as("SELAM_OWNER", "GET", `${selamEvents}/${workshop.body.data.id}`)).body.data.timezone, "Africa/Addis_Ababa");
+  assert.equal((await as("SELAM_OWNER", "POST", selamEvents, { name: "London Roadshow" })).body.data.timezone, "Europe/London");
 });

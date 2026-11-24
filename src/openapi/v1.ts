@@ -4,7 +4,9 @@ import type { RequestContract } from "../middleware/validate.js";
 import * as auth from "../validators/auth.js";
 import * as branch from "../validators/branch.js";
 import * as customerAccount from "../validators/customer-account.js";
+import * as event from "../validators/event.js";
 import * as organization from "../validators/organization.js";
+import * as ticketType from "../validators/ticket-type.js";
 import * as venue from "../validators/venue.js";
 
 export type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
@@ -36,6 +38,7 @@ export const v1Operations: readonly ApiOperation[] = [
   // --- Organizations --------------------------------------------------------------------------
   { method: "post", path: "/v1/organizations", contract: organization.createOrganizationRequest, bodyComponent: "OrganizationCreateRequest", summary: "Create a tenant (platform scope). A hidden MAIN branch is always created; has_branches (default false) decides whether its staff see branches", tags: ["Organizations"], auth: "staff", successStatus: 201 },
   { method: "get", path: "/v1/organizations", contract: organization.listOrganizationsRequest, summary: "List tenants (platform scope)", tags: ["Organizations"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}", contract: organization.updateOrganizationSettingsRequest, bodyComponent: "OrganizationSettingsUpdateRequest", summary: "Edit the organization's defaults (country, timezone, default_currency). Existing events keep their own timezone", tags: ["Organizations"], auth: "staff", successStatus: 200 },
   { method: "get", path: "/v1/organizations/{organizationId}", contract: organization.getOrganizationRequest, summary: "Read one tenant", tags: ["Organizations"], auth: "staff", successStatus: 200 },
 
   // --- Branches -------------------------------------------------------------------------------
@@ -58,6 +61,19 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "get", path: "/v1/organizations/{organizationId}/venues/{venueId}", contract: venue.getVenueRequest, summary: "Read a venue", tags: ["Venues"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/venues/{venueId}", contract: venue.updateVenueRequest, bodyComponent: "VenueUpdateRequest", summary: "Update a venue (PATCH semantics)", tags: ["Venues"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/venues/{venueId}/status", contract: venue.changeVenueStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a venue", tags: ["Venues"], auth: "staff", successStatus: 200 },
+
+  // --- Events -----------------------------------------------------------------------------------
+  { method: "post", path: "/v1/organizations/{organizationId}/events", contract: event.createEventRequest, bodyComponent: "EventCreateRequest", summary: "Create an event (DRAFT, UNLISTED unless PUBLIC is chosen; General Admission is added; timezone defaults to the organization's)", tags: ["Events"], auth: "staff", successStatus: 201 },
+  { method: "get", path: "/v1/organizations/{organizationId}/events", contract: event.listEventsRequest, summary: "List events (display_status shows LIVE during a published event)", tags: ["Events"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}", contract: event.getEventRequest, summary: "Read an event", tags: ["Events"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}", contract: event.updateEventRequest, bodyComponent: "EventUpdateRequest", summary: "Update an event (PATCH semantics; the slug is frozen after the first publication; set registration_closes_at to stop sign-ups early)", tags: ["Events"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/status", contract: event.changeEventStatusRequest, bodyComponent: "EventStatusChangeRequest", summary: "Publish, close or cancel an event (DRAFT→PUBLISHED|CANCELLED, PUBLISHED→CLOSED|CANCELLED)", tags: ["Events"], auth: "staff", successStatus: 200 },
+
+  // --- Ticket types -----------------------------------------------------------------------------
+  { method: "post", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types", contract: ticketType.createTicketTypeRequest, bodyComponent: "TicketTypeCreateRequest", summary: "Add a free ticket type (its limit must fit within the event's capacity)", tags: ["Ticket types"], auth: "staff", successStatus: 201 },
+  { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types", contract: ticketType.listTicketTypesRequest, summary: "List an event's ticket types", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}", contract: ticketType.updateTicketTypeRequest, bodyComponent: "TicketTypeUpdateRequest", summary: "Update a ticket type (PATCH semantics)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}/status", contract: ticketType.changeTicketTypeStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a ticket type (a published event keeps at least one active)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
 ];
 
 // ---------------------------------------------------------------------------------------------

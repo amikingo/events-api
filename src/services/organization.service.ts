@@ -5,24 +5,12 @@ import type { OrganizationRow } from "../models/organization.js";
 import { branchRepository } from "../repositories/branch.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { buildPagination } from "../utils/pagination.js";
-import type { OrganizationCreateInput, OrganizationListQuery } from "../validators/organization.js";
+import { pickDefined } from "../utils/patch.js";
+import { slugify } from "../utils/slug.js";
+import type { OrganizationCreateInput, OrganizationListQuery, OrganizationSettingsUpdateInput } from "../validators/organization.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 
 const MAIN_BRANCH = { code: "MAIN", name: "Main Branch" } as const;
-const SLUG_MAX_LENGTH = 120;
-
-/**
- * Keeps Latin letters and digits only, joined by single hyphens. Cuts to the maximum length
- * before trimming hyphens, so the result never ends in "-" (the same rule the slug validator applies).
- */
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, SLUG_MAX_LENGTH)
-    .replace(/^-+|-+$/g, "");
-}
 
 /**
  * A name written in another script (e.g. Amharic) leaves nothing usable after slugify,
@@ -56,6 +44,10 @@ export type OrganizationDraft = {
   description: string | null;
   /** false: the default branch stays hidden and staff never see branches. */
   hasBranches: boolean;
+  /** Omitted: the database defaults (ET, Africa/Addis_Ababa, ETB). */
+  country?: string | undefined;
+  timezone?: string | undefined;
+  defaultCurrency?: string | undefined;
   defaultBranch?: { code: string; name: string } | undefined;
 };
 
@@ -80,6 +72,9 @@ async function createOrganizationInTransaction(
       slug: draft.slug,
       description: draft.description,
       has_branches: draft.hasBranches,
+      ...(draft.country === undefined ? {} : { country: draft.country }),
+      ...(draft.timezone === undefined ? {} : { timezone: draft.timezone }),
+      ...(draft.defaultCurrency === undefined ? {} : { default_currency: draft.defaultCurrency }),
       created_by: actorId,
       updated_by: actorId,
     },
@@ -113,9 +108,31 @@ async function createOrganization(
     slug: resolveSlug(input.organization.name, input.organization.slug),
     description: input.organization.description ?? null,
     hasBranches: input.organization.has_branches ?? false,
+    country: input.organization.country,
+    timezone: input.organization.timezone,
+    defaultCurrency: input.organization.default_currency,
     defaultBranch: input.default_branch,
   };
   return runTransaction((transaction) => createOrganizationInTransaction(draft, actorId, transaction));
+}
+
+/**
+ * Edits the organization's defaults. Existing events keep their own timezone: they copied it when created.
+ */
+async function updateOrganizationSettings(
+  organizationId: string,
+  input: OrganizationSettingsUpdateInput,
+  actorId: string | null,
+): Promise<OrganizationRow> {
+  return runTransaction(async (transaction) => {
+    ensureFound(await organizationRepository.findById(organizationId, { transaction, lock: true }), "Organization not found");
+    const updated = await organizationRepository.updateSettings(
+      organizationId,
+      { ...pickDefined(input, ["country", "timezone", "default_currency"] as const), updated_by: actorId },
+      { transaction },
+    );
+    return ensureFound(updated, "Organization not found");
+  });
 }
 
 /** Used by operational scripts that name an organization by slug. */
@@ -139,4 +156,5 @@ export const organizationService = {
   listOrganizations,
   getOrganization,
   getOrganizationBySlug,
+  updateOrganizationSettings,
 };

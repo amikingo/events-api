@@ -4,7 +4,12 @@ import { requireStaffAuthentication } from "../../middleware/authentication.js";
 import { organizationScopeFromParams, requirePermission } from "../../middleware/permission.js";
 import { validate } from "../../middleware/validate.js";
 import { MODULE_CODES } from "../../utils/module-codes.js";
-import { createOrganizationRequest, getOrganizationRequest, listOrganizationsRequest } from "../../validators/organization.js";
+import {
+  createOrganizationRequest,
+  getOrganizationRequest,
+  listOrganizationsRequest,
+  updateOrganizationSettingsRequest,
+} from "../../validators/organization.js";
 
 /** Mounted at /v1/organizations. */
 export const organizationsRouter = Router();
@@ -33,4 +38,13 @@ organizationsRouter.get(
   validate(getOrganizationRequest),
   requirePermission({ moduleCode: MODULE_CODES.ORGANIZATIONS, action: "view", scope: organizationScopeFromParams }),
   organizationController.getOrganization,
+);
+
+// The organization's own defaults (country, timezone, currency): its owner may edit them.
+organizationsRouter.patch(
+  "/:organizationId",
+  requireStaffAuthentication,
+  validate(updateOrganizationSettingsRequest),
+  requirePermission({ moduleCode: MODULE_CODES.ORGANIZATIONS, action: "update", scope: organizationScopeFromParams }),
+  organizationController.updateOrganizationSettings,
 );

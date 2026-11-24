@@ -10,6 +10,9 @@ const attributes = [
   "slug",
   "description",
   "has_branches",
+  "country",
+  "timezone",
+  "default_currency",
   "is_active",
   "created_at",
   "updated_at",
@@ -59,4 +62,12 @@ async function enableBranches(id: string, actorId: string | null, options: Write
   await Organization.update({ has_branches: true, updated_by: actorId }, { where: { id, has_branches: false }, ...txOptions(options) });
 }
 
-export const organizationRepository = { create, findById, findBySlug, list, enableBranches };
+export type OrganizationSettingsValues = Partial<Pick<OrganizationRow, "country" | "timezone" | "default_currency" | "updated_by">>;
+
+/** Updates the organization's defaults and reads it back inside the same transaction. */
+async function updateSettings(id: string, values: OrganizationSettingsValues, options: WriteOptions = {}): Promise<OrganizationRow | null> {
+  await Organization.update(values, { where: { id }, ...txOptions(options) });
+  return findById(id, options);
+}
+
+export const organizationRepository = { create, findById, findBySlug, list, enableBranches, updateSettings };

@@ -2,6 +2,8 @@ import jwt from "jsonwebtoken";
 import { authConfig } from "../../src/config/auth.js";
 import type { BranchRow } from "../../src/models/branch.js";
 import type { CustomerAccountRow } from "../../src/models/customer-account.js";
+import type { EventRow } from "../../src/models/event.js";
+import type { TicketTypeRow } from "../../src/models/ticket-type.js";
 import type { VenueRow } from "../../src/models/venue.js";
 import type { ModuleRow } from "../../src/models/module.js";
 import type { OrganizationRow } from "../../src/models/organization.js";
@@ -21,6 +23,8 @@ export const IDS = {
   module: "77777777-7777-4777-8777-777777777771",
   customerAccount: "88888888-8888-4888-8888-888888888881",
   venue: "99999999-9999-4999-8999-999999999991",
+  event: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+  ticketType: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
 } as const;
 
 const audit = {
@@ -32,7 +36,19 @@ const audit = {
 
 export function organizationRow(overrides: Partial<OrganizationRow> = {}): OrganizationRow {
   // has_branches true: the shared fixtures model an organization that uses branches (the database default is false).
-  return { id: IDS.orgA, name: "Org A", slug: "org-a", description: null, has_branches: true, is_active: true, ...audit, ...overrides };
+  return {
+    id: IDS.orgA,
+    name: "Org A",
+    slug: "org-a",
+    description: null,
+    has_branches: true,
+    country: "ET",
+    timezone: "Africa/Addis_Ababa",
+    default_currency: "ETB",
+    is_active: true,
+    ...audit,
+    ...overrides,
+  };
 }
 
 export function branchRow(overrides: Partial<BranchRow> = {}): BranchRow {
@@ -74,6 +90,47 @@ export function venueRow(overrides: Partial<VenueRow> = {}): VenueRow {
     city: "Addis Ababa",
     country: "ET",
     capacity: 2000,
+    is_active: true,
+    ...audit,
+    ...overrides,
+  };
+}
+
+/** A ready-to-publish draft: dates set, organization-wide, no links. */
+export function eventRow(overrides: Partial<EventRow> = {}): EventRow {
+  return {
+    id: IDS.event,
+    organization_id: IDS.orgA,
+    branch_id: null,
+    customer_account_id: null,
+    venue_id: null,
+    cover_file_id: null,
+    name: "Banking Forum",
+    slug: "banking-forum",
+    description: null,
+    starts_at: new Date("2027-03-12T06:00:00Z"),
+    ends_at: new Date("2027-03-12T14:00:00Z"),
+    timezone: "Africa/Addis_Ababa",
+    status: "DRAFT",
+    capacity: null,
+    registration_opens_at: null,
+    registration_closes_at: null,
+    visibility: "UNLISTED",
+    category: null,
+    ...audit,
+    ...overrides,
+  };
+}
+
+export function ticketTypeRow(overrides: Partial<TicketTypeRow> = {}): TicketTypeRow {
+  return {
+    id: IDS.ticketType,
+    organization_id: IDS.orgA,
+    event_id: IDS.event,
+    code: "GA",
+    name: "General Admission",
+    capacity: null,
+    display_order: 0,
     is_active: true,
     ...audit,
     ...overrides,

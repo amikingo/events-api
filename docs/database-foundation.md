@@ -13,6 +13,7 @@ references without FKs.
 9. `organization.has_branches` (column)
 10. `customer_account` 11. `venue` 12. seed: `EVENTS` + `CUSTOMERS` modules and menu
 13. grants: `EVENTS` + `CUSTOMERS` for existing `OWNER`/`VIEWER` roles
+14. `organization` defaults (columns) 15. `file` 16. `event` 17. `ticket_type`
 
 ## Tables
 
@@ -78,4 +79,35 @@ A reusable physical location (spec §4).
 - Constraints: `fk_venue_organization_id` (RESTRICT), `uq_venue_organization_id_id` (tenant-safe composite key for
   events), `ck_venue_capacity_positive`, `ck_venue_country_format`
 - Indexes: `idx_venue_organization_active`
+- Triggers: none
+
+### `organization` defaults (Phase 3b)
+- Columns added by `20261125000100-add-organization-defaults`: `country` (default `ET`), `timezone` (default
+  `Africa/Addis_Ababa`), `default_currency` (default `ETB`)
+- Constraints: `ck_organization_country_format`, `ck_organization_default_currency_format`, `ck_organization_timezone_present`
+
+### `file` (Phase 3b)
+Tenant-scoped metadata for stored files; uploading arrives in 3d.
+- Columns: `purpose` (`EVENT_COVER`), `storage_key`, `content_type`, `size_bytes`, `original_name`
+- Constraints: `fk_file_organization_id` (RESTRICT), `uq_file_organization_id_id`, `uq_file_storage_key`,
+  `ck_file_purpose`, `ck_file_size_positive`
+
+### `event` (Phase 3b)
+- Columns: `branch_id`, `customer_account_id`, `venue_id`, `cover_file_id` (all optional), `name`, `slug`,
+  `description`, `starts_at`, `ends_at`, `timezone`, `status`, `capacity`, `registration_opens_at`,
+  `registration_closes_at`, `visibility`, `category`
+- Constraints: `fk_event_organization_id`, `uq_event_organization_id_id` (for ticket types and registrations),
+  `uq_event_organization_id_slug`; composite FKs `fk_event_organization_branch`, `fk_event_organization_customer_account`,
+  `fk_event_organization_venue`, `fk_event_organization_cover_file` (same organization; NULL links unchecked);
+  `ck_event_slug_format`, `ck_event_status`, `ck_event_visibility`, `ck_event_capacity_positive`, `ck_event_dates_order`,
+  `ck_event_registration_window_order`, `ck_event_published_has_dates`, `ck_event_timezone_present`
+- Indexes: `idx_event_organization_status`, `idx_event_catalog` (`status`, `visibility`, `starts_at`)
+- Triggers: none
+
+### `ticket_type` (Phase 3b)
+- Columns: `event_id`, `code`, `name`, `capacity`, `display_order`, `is_active`
+- Constraints: composite `fk_ticket_type_organization_event` → `event (organization_id, id)`,
+  `uq_ticket_type_organization_event_id` (for Phase 4's registration FK), `uq_ticket_type_event_code`,
+  `ck_ticket_type_code_format`, `ck_ticket_type_capacity_positive`, `ck_ticket_type_display_order_non_negative`
+- Indexes: `idx_ticket_type_organization_event`
 - Triggers: none

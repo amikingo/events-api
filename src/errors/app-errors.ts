@@ -189,6 +189,20 @@ export class BranchInactiveError extends AppError {
   }
 }
 
+/** An event change its current status does not allow (e.g. an invalid transition, editing a CLOSED event). */
+export class InvalidEventStateError extends AppError {
+  constructor(message = "The event's current status does not allow this", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "invalid_event_state", details, cause: options?.cause });
+  }
+}
+
+/** Publishing refused: `details.missing` lists what the event still needs. */
+export class EventNotPublishableError extends AppError {
+  constructor(message = "The event is not ready to publish", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "event_not_publishable", details, cause: options?.cause });
+  }
+}
+
 export class InvalidBranchStateError extends AppError {
   constructor(message = "Invalid branch state", details?: unknown, options?: ErrorOptions) {
     super(message, { statusCode: 409, code: "invalid_branch_state", details, cause: options?.cause });

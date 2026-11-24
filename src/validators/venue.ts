@@ -1,17 +1,18 @@
 import { z } from "zod";
 import type { RequestContract } from "../middleware/validate.js";
-import { booleanQuerySchema, nullableText, organizationIdParamsSchema, paginationQuerySchema, statusChangeSchema, uuidSchema } from "./common.js";
+import {
+  booleanQuerySchema,
+  countryCodeSchema,
+  nullableText,
+  organizationIdParamsSchema,
+  paginationQuerySchema,
+  statusChangeSchema,
+  uuidSchema,
+} from "./common.js";
 
-/** ISO 3166-1 alpha-2, stored upper-case (e.g. "et" → "ET"). "" or null clears it. */
+/** Optional ISO 3166-1 alpha-2 code, stored upper-case (e.g. "et" → "ET"). "" or null clears it. */
 const countrySchema = z
-  .union([
-    z.literal(""),
-    z
-      .string()
-      .trim()
-      .toUpperCase()
-      .regex(/^[A-Z]{2}$/, "Use the two-letter country code, e.g. ET"),
-  ])
+  .union([z.literal(""), countryCodeSchema])
   .nullable()
   .optional()
   .transform((value) => (value === "" ? null : value));

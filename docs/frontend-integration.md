@@ -265,6 +265,21 @@ The permission column shows what the signed-in role needs: module code and actio
 | `GET /v1/organizations/{organizationId}/venues/{venueId}` | `EVENTS.view` | |
 | `PATCH /v1/organizations/{organizationId}/venues/{venueId}` | `EVENTS.update` | Any of the create fields except `is_active`; `null` clears. |
 | `PATCH /v1/organizations/{organizationId}/venues/{venueId}/status` | `EVENTS.update` | `{ is_active }`. Venues are deactivated, never deleted. |
+| `PATCH /v1/organizations/{organizationId}` | `ORGANIZATIONS.update` | The organization's defaults: `{ country?, timezone?, default_currency? }` (e.g. `ET`, `Africa/Addis_Ababa`, `ETB`). Changing the timezone never changes existing events. |
+| `POST /v1/organizations/{organizationId}/events` | `EVENTS.create` | `{ name, slug?, description?, starts_at?, ends_at?, timezone?, capacity?, registration_opens_at?, registration_closes_at?, visibility?, category?, branch_id?, customer_account_id?, venue_id?, cover_file_id? }`. Created as `DRAFT`, `UNLISTED` unless you send `PUBLIC`, with a **General Admission** ticket type. Omit `slug` to generate one; omit `timezone` to use the organization's. Leave `branch_id` out (organization-wide) unless the organizer picks a branch. |
+| `GET /v1/organizations/{organizationId}/events` | `EVENTS.view` | `?page&pageSize&status&visibility`. |
+| `GET /v1/organizations/{organizationId}/events/{eventId}` | `EVENTS.view` | |
+| `PATCH /v1/organizations/{organizationId}/events/{eventId}` | `EVENTS.update` | Any create field; `null` clears. The slug can change only while `DRAFT`. To **stop sign-ups early**, set `registration_closes_at` (the event stays published); extend or clear it to reopen. |
+| `PATCH /v1/organizations/{organizationId}/events/{eventId}/status` | `EVENTS.update` | `{ status }`: `PUBLISHED`, `CLOSED` or `CANCELLED`. Allowed: `DRAFT → PUBLISHED \| CANCELLED`, `PUBLISHED → CLOSED \| CANCELLED`. Publishing needs dates (`starts_at < ends_at`) and an active ticket type, else `409 event_not_publishable` with `details.missing` to show. |
+| `POST /v1/organizations/{organizationId}/events/{eventId}/ticket-types` | `EVENTS.update` | `{ code, name, capacity?, display_order?, is_active? }`. `code` is stored upper-case and unique in the event; `capacity` must fit within the event's. |
+| `GET /v1/organizations/{organizationId}/events/{eventId}/ticket-types` | `EVENTS.view` | Ordered by `display_order`. |
+| `PATCH /v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}` | `EVENTS.update` | Any of `{ code, name, capacity, display_order }`. |
+| `PATCH /v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}/status` | `EVENTS.update` | `{ is_active }`. A published event keeps at least one active ticket type (`409`). |
+
+**Event dates and times.** Send instants with an offset or `Z` (`2027-03-12T09:00:00+03:00`); the API answers in
+UTC (`…Z`). Show them in the event's own `timezone`. Show `display_status` for the badge: it is `LIVE` while a
+published event is running; a cancelled event shows `CANCELLED` even during its hours. `CLOSED` and `CANCELLED`
+events can't be edited (`409 invalid_event_state`).
 
 The menu gains *Event Management › Events* (`/events`) and *Clients* (`/clients`), above *Administration*. Venues
 have no menu item of their own: reach them from the Events area (they use the `EVENTS` permission). These routes
@@ -285,7 +300,7 @@ are organization-level: branch-limited staff get `403` for now.
 
 ## 7. Not available yet
 
-- **Events, ticket types, public event pages, cover upload:** Phase 3b–3d (clients and venues are available now).
+- **Public event pages and cover upload:** Phases 3c and 3d (clients, venues, events and ticket types are available now).
 - **Registrations and the guest list:** Phase 4.
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.
