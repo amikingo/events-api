@@ -106,7 +106,7 @@ Login, refresh and switch all return the same `data`:
   "user": { "id": "…", "mobile": "+2519…", "firstname": "…", "middlename": null, "lastname": "…" },
   "assignment":  { "id": "…", "organization_id": "…", "branch_id": null,
                    "role": { "id": "…", "code": "OWNER", "name": "Owner" },
-                   "organization": { "id": "…", "name": "Selam Events" }, "branch": null },
+                   "organization": { "id": "…", "name": "Selam Events", "has_branches": false }, "branch": null },
   "assignments": [ /* every active assignment, same shape */ ]
 }
 ```
@@ -120,7 +120,13 @@ Login, refresh and switch all return the same `data`:
 Use both to build menus and hide buttons. **The server checks permissions on every request anyway**, so this is
 for the user's convenience, not security.
 
-Two menu details:
+**Organizations without branches.** Most organizers have no branches. When `assignment.organization.has_branches`
+is `false`, **hide everything about branches**: branch pickers, branch columns, branch pages, branch filters. The
+server already leaves *Branches* out of `navigation` for them. Behind the scenes the organization still has one
+hidden `MAIN` branch, so the API never needs a branch from these users. If an owner adds a branch (`POST …/branches`),
+branches switch on for that organization. Fetch `/me` again afterwards, and the branch screens appear.
+
+Two more menu details:
 
 - **Organizations** (`route_name: "/organizations"`) also appears for staff of one organization, because they may
   read their own organization. Listing organizations is platform-only, so for tenant staff
@@ -241,10 +247,10 @@ The permission column shows what the signed-in role needs: module code and actio
 
 | Call | Permission | Body / query |
 |---|---|---|
-| `POST /v1/organizations` | `ORGANIZATIONS.create`, platform role | `{ organization: { name, slug?, description? }, default_branch?: { code, name } }`. A name with no Latin letters (e.g. Amharic) needs a `slug`, or you get `400` with issue code `slug_required`. Creates a `MAIN` branch unless `default_branch` is given. |
+| `POST /v1/organizations` | `ORGANIZATIONS.create`, platform role | `{ organization: { name, slug?, description?, has_branches? }, default_branch?: { code, name } }`. `has_branches` defaults to `false`, which keeps branches hidden (see section 3). A name with no Latin letters (e.g. Amharic) needs a `slug`, or you get `400` with issue code `slug_required`. Always creates one default branch: `MAIN`, or `default_branch` when given. |
 | `GET /v1/organizations` | `ORGANIZATIONS.view`, platform role | `?page&pageSize&is_active` |
 | `GET /v1/organizations/{organizationId}` | `ORGANIZATIONS.view` in that organization | |
-| `POST /v1/organizations/{organizationId}/branches` | `BRANCHES.create` | `{ code, name, description?, is_active? }`. `code` is letters, digits and `_`, stored upper-case. |
+| `POST /v1/organizations/{organizationId}/branches` | `BRANCHES.create` | `{ code, name, description?, is_active? }`. `code` is letters, digits and `_`, stored upper-case. In an organization without branches, this turns branches on. |
 | `GET /v1/organizations/{organizationId}/branches` | `BRANCHES.view` | `?page&pageSize&is_active` |
 | `GET /v1/organizations/{organizationId}/branches/{branchId}` | `BRANCHES.view` | |
 | `PATCH /v1/organizations/{organizationId}/branches/{branchId}` | `BRANCHES.update` | Any of `{ code, name, description }`. `description: null` clears it. |

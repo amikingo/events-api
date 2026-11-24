@@ -11,7 +11,7 @@ const UPDATABLE_FIELDS = ["code", "name", "description"] as const;
 
 async function createBranch(organizationId: string, input: BranchCreateInput, actorId: string | null): Promise<BranchRow> {
   return runTransaction(async (transaction) => {
-    ensureFound(await organizationRepository.findById(organizationId, { transaction }), "Organization not found");
+    const organization = ensureFound(await organizationRepository.findById(organizationId, { transaction }), "Organization not found");
 
     if (await branchRepository.findByOrganizationAndCode(organizationId, input.code, { transaction })) {
       throw new ConflictError("Branch code must be unique within the organization", { field: "code" });
@@ -28,7 +28,7 @@ async function createBranch(organizationId: string, input: BranchCreateInput, ac
       throw new InvalidBranchStateError("A default branch must be active");
     }
 
-    return branchRepository.create(
+    const branch = await branchRepository.create(
       {
         organization_id: organizationId,
         code: input.code,
@@ -41,6 +41,13 @@ async function createBranch(organizationId: string, input: BranchCreateInput, ac
       },
       { transaction },
     );
+
+    // An organization without branches that adds one starts using branches: its hidden default branch and the
+    // new one become visible to its staff.
+    if (!organization.has_branches) {
+      await organizationRepository.enableBranches(organizationId, actorId, { transaction });
+    }
+    return branch;
   });
 }
 

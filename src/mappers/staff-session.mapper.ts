@@ -12,7 +12,8 @@ export type AssignmentSummaryDto = {
   organization_id: string | null;
   branch_id: string | null;
   role: { id: string; code: string; name: string };
-  organization: { id: string; name: string } | null;
+  /** has_branches false: hide every branch field and screen for this person. */
+  organization: { id: string; name: string; has_branches: boolean } | null;
   branch: { id: string; code: string; name: string } | null;
 };
 
@@ -39,7 +40,9 @@ export function toAssignmentSummaryDto(assignment: AssignmentRow): AssignmentSum
     organization_id: assignment.organization_id,
     branch_id: assignment.branch_id,
     role: { id: assignment.role.id, code: assignment.role.code, name: assignment.role.name },
-    organization: assignment.organization ? { id: assignment.organization.id, name: assignment.organization.name } : null,
+    organization: assignment.organization
+      ? { id: assignment.organization.id, name: assignment.organization.name, has_branches: assignment.organization.has_branches }
+      : null,
     branch: assignment.branch
       ? { id: assignment.branch.id, code: assignment.branch.code, name: assignment.branch.name }
       : null,

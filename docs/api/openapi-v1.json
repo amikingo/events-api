@@ -178,7 +178,7 @@
     },
     "/v1/organizations": {
       "post": {
-        "summary": "Create a tenant with its default branch (platform scope)",
+        "summary": "Create a tenant (platform scope). A hidden MAIN branch is always created; has_branches (default false) decides whether its staff see branches",
         "tags": [
           "Organizations"
         ],
@@ -733,6 +733,9 @@
                 "nullable": true,
                 "type": "string",
                 "maxLength": 4000
+              },
+              "has_branches": {
+                "type": "boolean"
               }
             },
             "required": [

@@ -32,7 +32,7 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "post", path: "/v1/auth/staff/switch-assignment", contract: auth.staffSwitchAssignmentRequest, bodyComponent: "StaffSwitchAssignmentRequest", summary: "Re-issue the staff token for another active assignment", tags: ["Auth"], auth: "staff", successStatus: 200 },
 
   // --- Organizations --------------------------------------------------------------------------
-  { method: "post", path: "/v1/organizations", contract: organization.createOrganizationRequest, bodyComponent: "OrganizationCreateRequest", summary: "Create a tenant with its default branch (platform scope)", tags: ["Organizations"], auth: "staff", successStatus: 201 },
+  { method: "post", path: "/v1/organizations", contract: organization.createOrganizationRequest, bodyComponent: "OrganizationCreateRequest", summary: "Create a tenant (platform scope). A hidden MAIN branch is always created; has_branches (default false) decides whether its staff see branches", tags: ["Organizations"], auth: "staff", successStatus: 201 },
   { method: "get", path: "/v1/organizations", contract: organization.listOrganizationsRequest, summary: "List tenants (platform scope)", tags: ["Organizations"], auth: "staff", successStatus: 200 },
   { method: "get", path: "/v1/organizations/{organizationId}", contract: organization.getOrganizationRequest, summary: "Read one tenant", tags: ["Organizations"], auth: "staff", successStatus: 200 },
 

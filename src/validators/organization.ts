@@ -15,6 +15,8 @@ export const organizationCreateSchema = z.strictObject({
     name: z.string().trim().min(1).max(255),
     slug: slugSchema.optional(),
     description: nullableText(4000),
+    /** Default false: a hidden MAIN branch is created and staff never see branches. */
+    has_branches: z.boolean().optional(),
   }),
   default_branch: z
     .strictObject({

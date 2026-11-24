@@ -27,7 +27,8 @@ const audit = {
 };
 
 export function organizationRow(overrides: Partial<OrganizationRow> = {}): OrganizationRow {
-  return { id: IDS.orgA, name: "Org A", slug: "org-a", description: null, is_active: true, ...audit, ...overrides };
+  // has_branches true: the shared fixtures model an organization that uses branches (the database default is false).
+  return { id: IDS.orgA, name: "Org A", slug: "org-a", description: null, has_branches: true, is_active: true, ...audit, ...overrides };
 }
 
 export function branchRow(overrides: Partial<BranchRow> = {}): BranchRow {

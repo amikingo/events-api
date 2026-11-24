@@ -2,6 +2,7 @@ import type { Transaction } from "sequelize";
 import {
   BranchInactiveError,
   ConflictError,
+  InvalidBranchStateError,
   OrganizationInactiveError,
   RoleInactiveError,
 } from "../errors/app-errors.js";
@@ -24,10 +25,17 @@ import { organizationService } from "./organization.service.js";
  */
 export type AssignmentAction = "create" | "reactivate" | "unchanged";
 
-export type ProvisionOrganizerInput = { name: string; slug?: string | undefined; ownerUserId: string };
+export type ProvisionOrganizerInput = {
+  name: string;
+  slug?: string | undefined;
+  ownerUserId: string;
+  /** Default false: a hidden MAIN branch is created and staff never see branches. */
+  hasBranches?: boolean | undefined;
+};
 export type ProvisionOrganizerResult = {
   applied: boolean;
   slug: string;
+  hasBranches: boolean;
   organizationId: string | null;
   defaultBranchId: string | null;
   /** Role code → role id. */
@@ -109,6 +117,7 @@ async function provisionOrganizer(
   { apply }: { apply: boolean },
 ): Promise<ProvisionOrganizerResult> {
   const slug = organizationService.resolveSlug(input.name, input.slug);
+  const hasBranches = input.hasBranches ?? false;
 
   return runTransaction(async (transaction) => {
     await userRoleRepository.lockAssignmentsOfUser(input.ownerUserId, { transaction });
@@ -118,11 +127,11 @@ async function provisionOrganizer(
     await assertNotStaffElsewhere(input.ownerUserId, null, transaction);
 
     if (!apply) {
-      return { applied: false, slug, organizationId: null, defaultBranchId: null, roleIds: {}, ownerAssignmentId: null };
+      return { applied: false, slug, hasBranches, organizationId: null, defaultBranchId: null, roleIds: {}, ownerAssignmentId: null };
     }
 
     const { organization, branches } = await organizationService.createOrganizationInTransaction(
-      { name: input.name, slug, description: null },
+      { name: input.name, slug, description: null, hasBranches },
       actorId,
       transaction,
     );
@@ -145,6 +154,7 @@ async function provisionOrganizer(
     return {
       applied: true,
       slug,
+      hasBranches,
       organizationId: organization.id,
       defaultBranchId: branches[0]?.id ?? null,
       roleIds: Object.fromEntries([...roles].map(([code, role]) => [code, role.id])),
@@ -182,6 +192,9 @@ async function assignStaff(
 
     let branchId: string | null = null;
     if (branchCode !== undefined) {
+      if (!organization.has_branches) {
+        throw new InvalidBranchStateError("This organization has no branches. Add a branch first; that turns branches on.");
+      }
       const branch = ensureFound(
         await branchRepository.findByOrganizationAndCode(organization.id, branchCode, { transaction }),
         `Branch ${branchCode} does not exist in this organization`,

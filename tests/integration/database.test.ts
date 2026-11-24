@@ -61,7 +61,8 @@ test("migrations seed every module code the code base references", { skip }, asy
 
 test("tenant isolation, constraints, RBAC and the staff session work end to end", { skip }, async () => {
   const { organization: orgA, branches } = await organizationService.createOrganization(
-    { organization: { name: "Org A", description: undefined } },
+    // Uses branches: the session check below expects Administration › Branches.
+    { organization: { name: "Org A", description: undefined, has_branches: true } },
     ADMIN,
   );
   const { organization: orgB, branches: branchesB } = await organizationService.createOrganization(

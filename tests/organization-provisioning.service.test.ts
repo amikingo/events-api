@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { CreationAttributes, Transaction } from "sequelize";
-import { ConflictError, NotFoundError } from "../src/errors/app-errors.js";
+import { ConflictError, InvalidBranchStateError, NotFoundError } from "../src/errors/app-errors.js";
 import type { BranchRow } from "../src/models/branch.js";
+import type { OrganizationRow } from "../src/models/organization.js";
 import type { Role, RoleRow } from "../src/models/role.js";
 import type { UserRoleRow } from "../src/models/user-role.js";
 import { branchRepository } from "../src/repositories/branch.repository.js";
@@ -67,6 +68,10 @@ test("provisionOrganizer writes the organization, MAIN branch, default roles wit
 
   assert.equal(result.applied, true);
   assert.equal(result.slug, "selam-events");
+  assert.equal(result.hasBranches, false, "no branches unless the organizer says so");
+  const [organizationValues] = calls.createOrganization.mock.calls[0]?.arguments ?? [];
+  assert.equal(organizationValues?.has_branches, false);
+  assert.equal(calls.createBranch.mock.callCount(), 1, "the hidden default branch is still created");
   assert.equal(result.organizationId, NEW_ORG.id);
   assert.equal(result.ownerAssignmentId, "assignment-owner");
   assert.deepEqual(result.roleIds, { OWNER: "role-OWNER", VIEWER: "role-VIEWER" });
@@ -123,12 +128,27 @@ test("provisionOrganizer preview checks everything and writes nothing", async ()
   assert.deepEqual(result, {
     applied: false,
     slug: "selam-events",
+    hasBranches: false,
     organizationId: null,
     defaultBranchId: null,
     roleIds: {},
     ownerAssignmentId: null,
   });
   for (const write of Object.values(calls)) assert.equal(write.mock.callCount(), 0);
+});
+
+test("provisionOrganizer stores has_branches when the organizer has branches", async () => {
+  const calls = arrangeProvisioning();
+
+  const result = await organizationProvisioningService.provisionOrganizer(
+    { name: "Selam Events", ownerUserId: IDS.user, hasBranches: true },
+    null,
+    { apply: true },
+  );
+
+  assert.equal(result.hasBranches, true);
+  const [organizationValues] = calls.createOrganization.mock.calls[0]?.arguments ?? [];
+  assert.equal(organizationValues?.has_branches, true);
 });
 
 test("an owner who already has any assignment, even an inactive one, is refused before anything is written", async () => {
@@ -157,9 +177,15 @@ const ADDIS = branchRow({ id: IDS.branchA2, code: "ADDIS", is_default: false });
 const ASSIGN_TO_ADDIS = { organizationId: IDS.orgA, userId: IDS.user, roleCode: "viewer", branchCode: "addis" };
 
 function arrangeAssignment(
-  options: { role?: RoleRow | null; branch?: BranchRow | null; existing?: UserRoleRow | null; assignments?: UserRoleRow[] } = {},
+  options: {
+    organization?: OrganizationRow;
+    role?: RoleRow | null;
+    branch?: BranchRow | null;
+    existing?: UserRoleRow | null;
+    assignments?: UserRoleRow[];
+  } = {},
 ) {
-  mock.method(organizationRepository, "findById", async () => organizationRow());
+  mock.method(organizationRepository, "findById", async () => options.organization ?? organizationRow());
   mock.method(userRoleRepository, "listAllByUser", async () => options.assignments ?? []);
   return {
     findRole: mock.method(roleRepository, "findByOrganizationAndCode", async () =>
@@ -200,6 +226,12 @@ test("assignStaff refuses a branch that does not exist in the organization", asy
   const calls = arrangeAssignment({ branch: null });
   await assert.rejects(organizationProvisioningService.assignStaff(ASSIGN_TO_ADDIS, null, { apply: true }), NotFoundError);
   assert.equal(calls.create.mock.callCount(), 0);
+});
+
+test("assignStaff refuses a branch-limited assignment in an organization without branches", async () => {
+  const calls = arrangeAssignment({ organization: organizationRow({ has_branches: false }) });
+  await assert.rejects(organizationProvisioningService.assignStaff(ASSIGN_TO_ADDIS, null, { apply: true }), InvalidBranchStateError);
+  assert.equal(calls.findBranch.mock.callCount() + calls.create.mock.callCount(), 0);
 });
 
 test("assignStaff refuses someone with an assignment in another organization, even an inactive one", async () => {

@@ -17,6 +17,9 @@ references without FKs.
 - Constraints: `uq_organization_slug`, `ck_organization_slug_format`
 - Indexes: `idx_organization_is_active`
 - Triggers: none
+- `has_branches` (boolean, default `false`, added by `20261124000000-add-organization-has-branches`): whether the
+  organization's staff see branches. Every organization still has a default `MAIN` branch, created with it; when
+  `has_branches` is false that branch stays hidden. Adding a branch sets it to true (`branch.service.createBranch`).
 
 ### `branch`
 - Constraints: `fk_branch_organization_id`, `uq_branch_organization_id_id` (tenant-safe composite key),

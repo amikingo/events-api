@@ -10,9 +10,10 @@ import { slugSchema } from "../validators/organization.js";
  * Creates an organization with its MAIN branch, the default OWNER and VIEWER roles, and the owner's
  * organization-wide assignment, in one transaction. Preview by default; writes only with --confirm.
  *
- *   npm run provision:organizer -- --name "Selam Events" --owner-user-id <central-auth-uuid> [--slug selam-events] [--confirm]
+ *   npm run provision:organizer -- --name "Selam Events" --owner-user-id <central-auth-uuid> [--slug selam-events] [--has-branches] [--confirm]
  *
- * A name with no Latin letters (e.g. Amharic) needs --slug.
+ * A name with no Latin letters (e.g. Amharic) needs --slug. Without --has-branches the MAIN branch stays hidden
+ * and staff never see branches (adding a branch later turns them on).
  */
 try {
   const { values } = parseArgs({
@@ -21,6 +22,7 @@ try {
       name: { type: "string" },
       slug: { type: "string" },
       "owner-user-id": { type: "string" },
+      "has-branches": { type: "boolean", default: false },
       confirm: { type: "boolean", default: false },
     },
   });
@@ -32,7 +34,7 @@ try {
   if (slug && !slug.success) throw new Error("--slug must be lowercase words separated by single hyphens, e.g. selam-events");
 
   const result = await organizationProvisioningService.provisionOrganizer(
-    { name: name.data, slug: slug?.data, ownerUserId: ownerUserId.data },
+    { name: name.data, slug: slug?.data, ownerUserId: ownerUserId.data, hasBranches: values["has-branches"] },
     null,
     { apply: values.confirm },
   );

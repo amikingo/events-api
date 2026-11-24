@@ -54,12 +54,16 @@ export type OrganizationDraft = {
   /** Already resolved with resolveSlug. */
   slug: string;
   description: string | null;
+  /** false: the default branch stays hidden and staff never see branches. */
+  hasBranches: boolean;
   defaultBranch?: { code: string; name: string } | undefined;
 };
 
 /**
- * Aggregate write: an organization never exists without its default branch. Runs inside the caller's
- * transaction, so provisioning can add roles and assignments to the same unit of work.
+ * Aggregate write: an organization never exists without its default branch, even when it has no branches
+ * (has_branches = false keeps that branch hidden). Runs inside the caller's transaction, so provisioning can add
+ * roles and assignments to the same unit of work. The default branch is written by the repository directly, so
+ * it never counts as "adding a branch".
  */
 async function createOrganizationInTransaction(
   draft: OrganizationDraft,
@@ -71,7 +75,14 @@ async function createOrganizationInTransaction(
   }
 
   const organization = await organizationRepository.create(
-    { name: draft.name, slug: draft.slug, description: draft.description, created_by: actorId, updated_by: actorId },
+    {
+      name: draft.name,
+      slug: draft.slug,
+      description: draft.description,
+      has_branches: draft.hasBranches,
+      created_by: actorId,
+      updated_by: actorId,
+    },
     { transaction },
   );
 
@@ -101,6 +112,7 @@ async function createOrganization(
     name: input.organization.name,
     slug: resolveSlug(input.organization.name, input.organization.slug),
     description: input.organization.description ?? null,
+    hasBranches: input.organization.has_branches ?? false,
     defaultBranch: input.default_branch,
   };
   return runTransaction((transaction) => createOrganizationInTransaction(draft, actorId, transaction));

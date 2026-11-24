@@ -7,6 +7,7 @@ import { moduleRepository } from "../repositories/module.repository.js";
 import { roleModuleAccessRepository } from "../repositories/role-module-access.repository.js";
 import { userModuleAccessRepository } from "../repositories/user-module-access.repository.js";
 import { userRoleRepository, type AssignmentRow } from "../repositories/user-role.repository.js";
+import { MODULE_CODES } from "../utils/module-codes.js";
 import {
   ACTION_TO_FIELD,
   FULL_PERMISSION,
@@ -254,7 +255,12 @@ async function resolveStaffSession(
       : effectivePermission(roleAccessByModuleId.get(module.id), overrideByModuleId.get(module.id));
   }
 
-  return { permissions, navigation: buildNavigationTree(modules, permissions) };
+  // An organization without branches keeps a hidden default branch: its staff never see the Branches menu item.
+  // The permissions map is left as is, because it states what the API allows.
+  const hidesBranches = assignment.organization !== null && !assignment.organization.has_branches;
+  const navigationModules = hidesBranches ? modules.filter((module) => module.code !== MODULE_CODES.BRANCHES) : modules;
+
+  return { permissions, navigation: buildNavigationTree(navigationModules, permissions) };
 }
 
 export const permissionResolutionService = { resolvePermission, resolveStaffSession };

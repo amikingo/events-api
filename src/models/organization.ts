@@ -12,6 +12,8 @@ export class Organization extends Model<InferAttributes<Organization>, InferCrea
   declare name: string;
   declare slug: string;
   declare description: string | null;
+  /** false: a hidden MAIN branch exists, and staff never see branches. */
+  declare has_branches: CreationOptional<boolean>;
   declare is_active: CreationOptional<boolean>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
@@ -27,6 +29,7 @@ Organization.init(
     name: { type: DataTypes.STRING(255), allowNull: false },
     slug: { type: DataTypes.STRING(120), allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: true },
+    has_branches: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     is_active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,

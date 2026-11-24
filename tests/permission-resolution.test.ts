@@ -14,7 +14,7 @@ import {
   type PermissionScope,
 } from "../src/services/permission-resolution.service.js";
 import { DENIED_PERMISSION, type PermissionAction } from "../src/utils/rbac.js";
-import { assignment, branchRow, IDS, moduleRow, platformSuperAdmin, roleRow } from "./helpers/fixtures.js";
+import { assignment, branchRow, IDS, moduleRow, organizationRow, platformSuperAdmin, roleRow } from "./helpers/fixtures.js";
 
 const ORG_SCOPE = { level: "organization", organizationId: IDS.orgA, branchId: null } as const;
 const ORG_B_SCOPE = { level: "organization", organizationId: IDS.orgB, branchId: null } as const;
@@ -313,4 +313,56 @@ test("navigation keeps containers only when a child is visible, ordered by sno",
     tree.map((node) => [node.code, node.children.map((child) => child.code)]),
     [["ADMIN", ["ROLES", "BRANCHES"]]],
   );
+});
+
+// --- Organizations without branches (hidden default branch) --------------------------------------
+
+const ADMIN_CONTAINER = moduleRow({
+  id: "c0000000-0000-4000-8000-000000000011",
+  code: "ADMINISTRATION",
+  module_name: "Administration",
+  is_permission: false,
+  route_name: null,
+  sno: 1,
+});
+const ORGANIZATIONS_MODULE = moduleRow({
+  id: "a0000000-0000-4000-8000-000000000011",
+  code: "ORGANIZATIONS",
+  module_name: "Organizations",
+  parent_id: ADMIN_CONTAINER.id,
+  sno: 1,
+});
+const BRANCHES_MODULE = moduleRow({ code: "BRANCHES", module_name: "Branches", parent_id: ADMIN_CONTAINER.id, sno: 2 });
+
+function arrangeSession() {
+  mock.method(moduleRepository, "listActiveOrdered", async () => [ADMIN_CONTAINER, ORGANIZATIONS_MODULE, BRANCHES_MODULE]);
+  mock.method(roleModuleAccessRepository, "listByRoleId", async () => [
+    grant(IDS.roleA, { module_id: ORGANIZATIONS_MODULE.id, can_view: true }),
+    grant(IDS.roleA, { module_id: BRANCHES_MODULE.id, can_view: true }),
+  ]);
+  mock.method(userModuleAccessRepository, "listActiveByUserRole", async () => []);
+}
+
+const administrationItems = (navigation: Array<{ code: string; children: Array<{ code: string }> }>) =>
+  navigation.find((node) => node.code === "ADMINISTRATION")?.children.map((child) => child.code);
+
+test("staff of an organization without branches never see the Branches menu item; the permission map is unchanged", async () => {
+  arrangeSession();
+
+  const session = await permissionResolutionService.resolveStaffSession(
+    assignment({ organization: organizationRow({ has_branches: false }) }),
+  );
+
+  assert.deepEqual(administrationItems(session.navigation), ["ORGANIZATIONS"]);
+  assert.equal(session.permissions.BRANCHES?.view, true, "the permission map still states what the API allows");
+});
+
+test("staff of an organization with branches, and platform staff, see the Branches menu item", async () => {
+  arrangeSession();
+
+  const withBranches = await permissionResolutionService.resolveStaffSession(assignment());
+  assert.deepEqual(administrationItems(withBranches.navigation), ["ORGANIZATIONS", "BRANCHES"]);
+
+  const platform = await permissionResolutionService.resolveStaffSession(platformSuperAdmin());
+  assert.deepEqual(administrationItems(platform.navigation), ["ORGANIZATIONS", "BRANCHES"]);
 });

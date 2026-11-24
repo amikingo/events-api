@@ -43,6 +43,30 @@ test("the first branch of a tenant becomes the default, inside the service trans
   assert.deepEqual(options, { transaction: FAKE_TX });
 });
 
+test("adding a branch to an organization without branches turns branches on, in the same transaction", async () => {
+  mock.method(organizationRepository, "findById", async () => organizationRow({ has_branches: false }));
+  mock.method(branchRepository, "findByOrganizationAndCode", async () => null);
+  mock.method(branchRepository, "findActiveDefaultByOrganization", async () => branchRow());
+  mock.method(branchRepository, "create", async () => branchRow({ id: IDS.branchA2, code: "ADDIS", is_default: false }));
+  const enable = mock.method(organizationRepository, "enableBranches", async () => undefined);
+
+  await branchService.createBranch(IDS.orgA, { code: "ADDIS", name: "Addis Office", description: undefined }, IDS.user);
+
+  assert.deepEqual(enable.mock.calls[0]?.arguments, [IDS.orgA, IDS.user, { transaction: FAKE_TX }]);
+});
+
+test("adding a branch when branches are already on leaves the setting alone", async () => {
+  // beforeEach: organizationRow() uses branches
+  mock.method(branchRepository, "findByOrganizationAndCode", async () => null);
+  mock.method(branchRepository, "findActiveDefaultByOrganization", async () => branchRow());
+  mock.method(branchRepository, "create", async () => branchRow({ id: IDS.branchA2, code: "ADDIS", is_default: false }));
+  const enable = mock.method(organizationRepository, "enableBranches", async () => undefined);
+
+  await branchService.createBranch(IDS.orgA, { code: "ADDIS", name: "Addis Office", description: undefined }, IDS.user);
+
+  assert.equal(enable.mock.callCount(), 0);
+});
+
 test("updateBranch persists only allow-listed fields with PATCH semantics", async () => {
   mock.method(branchRepository, "findByOrganizationAndId", async () => branchRow());
   mock.method(branchRepository, "findByOrganizationAndCode", async () => null);

@@ -9,6 +9,7 @@ const attributes = [
   "name",
   "slug",
   "description",
+  "has_branches",
   "is_active",
   "created_at",
   "updated_at",
@@ -53,4 +54,9 @@ async function list(
   return { rows: toPlainList<OrganizationRow>(rows), count };
 }
 
-export const organizationRepository = { create, findById, findBySlug, list };
+/** Turns branches on (idempotent): used when an organization without branches adds one. */
+async function enableBranches(id: string, actorId: string | null, options: WriteOptions = {}): Promise<void> {
+  await Organization.update({ has_branches: true, updated_by: actorId }, { where: { id, has_branches: false }, ...txOptions(options) });
+}
+
+export const organizationRepository = { create, findById, findBySlug, list, enableBranches };

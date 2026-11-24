@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createApp } from "../../src/app.js";
 import { sequelize } from "../../src/db.js";
-import { ConflictError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
+import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { migrator } from "../../src/migrator.js";
 import { Branch, UserModuleAccess } from "../../src/models/index.js";
 import { moduleRepository } from "../../src/repositories/module.repository.js";
@@ -76,8 +76,9 @@ before(async () => {
   await migrator.down({ to: 0 });
   await migrator.up();
 
+  // Selam uses branches; Horn (below) does not, so it keeps only its hidden MAIN branch.
   const selam = await organizationProvisioningService.provisionOrganizer(
-    { name: "Selam Events", ownerUserId: PEOPLE.SELAM_OWNER },
+    { name: "Selam Events", ownerUserId: PEOPLE.SELAM_OWNER, hasBranches: true },
     null,
     { apply: true },
   );
@@ -207,4 +208,32 @@ test("row 18: one person, one organization; repeating an assignment is a no-op; 
     devStaffTokenService.issueDevelopmentStaffToken({ userId: PEOPLE.NO_ROLE, environment: "development" }),
     StaffAssignmentNotFoundError,
   );
+});
+
+const administrationItems = (navigation: Array<{ code: string; children: Array<{ code: string }> }>) =>
+  navigation.find((node) => node.code === "ADMINISTRATION")?.children.map((child) => child.code);
+
+test("rows 19–21: an organization without branches hides them, refuses branch-limited staff, and turns them on when it adds one", { skip }, async () => {
+  // Row 19: Horn has only its hidden MAIN branch.
+  const before = await as("HORN_OWNER", "GET", "/v1/auth/staff/me");
+  assert.equal(before.status, 200);
+  assert.equal(before.body.data.assignment.organization.has_branches, false);
+  assert.deepEqual(administrationItems(before.body.data.navigation), ["ORGANIZATIONS"]);
+
+  // Row 20: no branch-limited staff in an organization without branches.
+  await assert.rejects(
+    organizationProvisioningService.assignStaff(
+      { organizationId: fixture.hornId, userId: "c7777777-7777-4777-8777-777777777777", roleCode: "VIEWER", branchCode: "MAIN" },
+      null,
+      { apply: true },
+    ),
+    InvalidBranchStateError,
+  );
+
+  // Row 21: adding a branch turns branches on.
+  const created = await as("HORN_OWNER", "POST", branchesOf(fixture.hornId), { code: "HARAR", name: "Harar Office" });
+  assert.equal(created.status, 201);
+  const after = await as("HORN_OWNER", "GET", "/v1/auth/staff/me");
+  assert.equal(after.body.data.assignment.organization.has_branches, true);
+  assert.deepEqual(administrationItems(after.body.data.navigation), ["ORGANIZATIONS", "BRANCHES"]);
 });

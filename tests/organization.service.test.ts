@@ -20,6 +20,27 @@ beforeEach(() => {
 });
 afterEach(() => mock.restoreAll());
 
+test("has_branches defaults to false, and the hidden default branch is still created", async () => {
+  const create = mock.method(organizationRepository, "create", async () => organizationRow());
+  const createBranch = mock.method(branchRepository, "create", async () => branchRow());
+
+  await organizationService.createOrganization({ organization: { name: "Selam Events", description: undefined } }, null);
+
+  assert.equal(create.mock.calls[0]?.arguments[0]?.has_branches, false, "no branches unless the organizer says so");
+  assert.equal(createBranch.mock.callCount(), 1, "the default branch is always created");
+});
+
+test("has_branches is stored when the organizer has branches", async () => {
+  const create = mock.method(organizationRepository, "create", async () => organizationRow());
+
+  await organizationService.createOrganization(
+    { organization: { name: "Selam Events", description: undefined, has_branches: true } },
+    null,
+  );
+
+  assert.equal(create.mock.calls[0]?.arguments[0]?.has_branches, true);
+});
+
 /** Creates an organization and returns the slug the service saved. */
 async function savedSlug(name: string, slug?: string): Promise<string | undefined> {
   const create = mock.method(organizationRepository, "create", async () => organizationRow());

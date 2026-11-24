@@ -321,12 +321,17 @@ The starter already contains the RBAC engine (modules, roles, role grants, assig
    | 16 | SELAM_VIEWER + override `BRANCHES.can_create = true` | `POST …/branches` | 201 (override allows) |
    | 17 | SELAM_OWNER + override `BRANCHES.can_create = false` | `POST …/branches` | 403 (deny wins) |
    | 18 | — | `assignStaff` for HORN_OWNER into Selam | rejected (one person, one organization) |
+   | 19 | HORN_OWNER (Horn has no branches) | `GET /v1/auth/staff/me` | `organization.has_branches = false`; Administration shows Organizations only |
+   | 20 | — | `assignStaff` with a branch code in Horn | rejected (`invalid_branch_state`) |
+   | 21 | HORN_OWNER | `POST …/branches`, then `GET /v1/auth/staff/me` | 201; then `has_branches = true` and Branches visible |
+
+   **Organizations without branches** (decided 24 November 2026): every organization keeps a default `MAIN` branch, created with it. `organization.has_branches` (default `false`, new migration `20261124000000-add-organization-has-branches`) decides whether its staff see branches. Adding a branch turns it on. Selam is provisioned with `--has-branches`; Horn without.
 
    Also unit-test the provisioning service (transaction propagation, role and grant creation, errors) with the `transactionManager` and repository mocks, like `branch.service.test.ts`.
 
    Test files run one at a time (`--test-concurrency=1` in `npm test`), because this file and `tests/integration/database.test.ts` both migrate `events_test` down and up.
 
-5. **Docs:** `docs/rbac-application-flow.md` gets the default roles and the scripts; `docs/database-foundation.md` is unchanged (no new tables).
+5. **Docs:** `docs/rbac-application-flow.md` gets the default roles, the scripts and organizations without branches; `docs/database-foundation.md` gets the `has_branches` column (no new tables).
 
 ### Demo (on `events_dev`)
 
@@ -341,7 +346,7 @@ curl -X POST -H "Authorization: Bearer <viewer token>" -H 'Content-Type: applica
 
 ### Done when
 
-- All 18 rows of the matrix pass in `TEST_DATABASE=1 npm test`, and `npm run check` passes.
+- All 21 rows of the matrix pass in `TEST_DATABASE=1 npm test`, and `npm run check` passes.
 - The demo reproduces an allowed and a denied request from the command line.
 - **This completes the first milestone:** a staff member signs in, sees their permissions in `/me`, can act in their own organization, and is denied everywhere else.
 
@@ -354,6 +359,7 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 ### Phase 3 — Events
 
 - **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
+- **Branches are hidden for most organizers:** a record that belongs to a branch (event, venue) uses the organization's default branch automatically when `has_branches` is false or no branch is given. Screens for those organizers never ask for a branch.
 - **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.
 - **Event states:** `DRAFT`, `PUBLISHED`, `CLOSED`, `CANCELLED`. *Live* is derived from dates. A new event gets **General Admission** automatically.
 - **Public read endpoints:** catalog (published + `PUBLIC`), and event detail by organization slug + event slug (published, `PUBLIC` or `UNLISTED`).

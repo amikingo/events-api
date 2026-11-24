@@ -77,13 +77,14 @@ Operational scripts. Each previews by default, writes only with `--confirm`, pri
 project owner runs it:
 
 ```bash
-npm run provision:organizer -- --name "Selam Events" --owner-user-id <uuid> [--slug selam-events] [--confirm]
+npm run provision:organizer -- --name "Selam Events" --owner-user-id <uuid> [--slug selam-events] [--has-branches] [--confirm]
 npm run assign:staff -- --organization-slug selam-events --user-id <uuid> --role-code VIEWER [--branch-code ADDIS] [--confirm]
 npm run dev:staff-token -- --user-id <uuid> [--assignment-id <uuid>]     # development only
 ```
 
 - `provision:organizer` creates the organization, its `MAIN` branch, the two roles with their grants and the
-  owner's organization-wide assignment, all in one transaction (`organizationProvisioningService`).
+  owner's organization-wide assignment, all in one transaction (`organizationProvisioningService`). Without
+  `--has-branches` the organization has no branches (see below).
 - `assign:staff` gives a person a role, organization-wide or for one branch. An identical active assignment is
   left unchanged; an identical **inactive** one is reactivated rather than duplicated.
 - `dev:staff-token` prints a normal 15-minute staff token for one of the person's assignments, so staff screens
@@ -102,6 +103,22 @@ Rules both write paths enforce, with friendly errors before the database's backs
   organization) makes the seeded *Administration › Organizations* item (`/organizations`) visible to tenant staff,
   but listing organizations is platform-only. The frontend should open the person's **own** organization
   (`/organizations/{assignment.organization_id}`) for tenant staff.
+
+## Organizations without branches
+
+Most organizers have no branches. `organization.has_branches` (default `false`) records the choice:
+
+- Every organization still gets a default `MAIN` branch, created with it, so anything that needs a branch can
+  rely on one. With `has_branches = false` that branch is **hidden**:
+  - `/me` reports `assignment.organization.has_branches = false`;
+  - the server leaves the *Branches* item out of the navigation. The `permissions` map is unchanged, because it
+    states what the API allows. Platform staff always see *Branches*.
+- **Adding a branch turns branches on.** `branch.service.createBranch` sets `has_branches = true` in the same
+  transaction. From then on `MAIN` and the new branch are both visible, and the owner can rename `MAIN`.
+- **No branch-limited staff while branches are off.** `assign:staff --branch-code` is refused with
+  `invalid_branch_state`; add a branch first.
+- Set it at creation with `POST /v1/organizations` `{ organization: { has_branches: true } }` or
+  `provision:organizer --has-branches`.
 
 ## Managing role assignments over HTTP (not built yet)
 
