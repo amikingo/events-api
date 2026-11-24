@@ -5,12 +5,14 @@ import { createApp } from "../src/app.js";
 import { centralAuthClient } from "../src/clients/central-auth.client.js";
 import { STAFF_CENTRAL_SESSION_COOKIE, STAFF_REFRESH_COOKIE } from "../src/config/app.js";
 import { authConfig } from "../src/config/auth.js";
-import { CentralAuthUnavailableError } from "../src/errors/app-errors.js";
+import { CentralAuthRateLimitedError, CentralAuthUnavailableError, InvalidCredentialsError } from "../src/errors/app-errors.js";
 import { userRoleRepository } from "../src/repositories/user-role.repository.js";
 import { authTokenService } from "../src/services/auth-token.service.js";
+import { permissionResolutionService } from "../src/services/permission-resolution.service.js";
 import { logger } from "../src/utils/logger.js";
-import { assignment, IDS } from "./helpers/fixtures.js";
-import { withServer } from "./helpers/http.js";
+import { DENIED_PERMISSION, FULL_PERMISSION } from "../src/utils/rbac.js";
+import { assignment, IDS, staffToken } from "./helpers/fixtures.js";
+import { call, withServer } from "./helpers/http.js";
 
 /**
  * HTTP-level tests of staff login, refresh and logout. Central Auth is a test double
@@ -94,16 +96,21 @@ afterEach(() => mock.restoreAll());
 
 // --- Login --------------------------------------------------------------------------------------
 
+const CENTRAL_LOGIN_OK = async () => ({ accessToken: centralAccessToken(), refreshToken: REFRESH_TOKEN, refreshExpiresIn: null });
+
 test("login sets the refresh cookie and a central-session confirmation bound to it", async () => {
-  mock.method(centralAuthClient, "passwordLogin", async () => ({
-    accessToken: centralAccessToken(),
-    refreshToken: REFRESH_TOKEN,
-    refreshExpiresIn: null,
-  }));
+  const login = mock.method(centralAuthClient, "passwordLogin", CENTRAL_LOGIN_OK);
   mock.method(userRoleRepository, "listActiveAssignmentsByUser", async () => [assignment()]);
 
   await withServer(app, async (baseUrl) => {
-    const response = await post(baseUrl, "/v1/auth/staff/login", { body: { mobile: "0911000000", password: "secret" } });
+    const response = await post(baseUrl, "/v1/auth/staff/login", {
+      body: { mobile: "0911000000", password: "secret", device_name: "Chrome on Mac", platform: "web" },
+    });
+    assert.deepEqual(
+      login.mock.calls[0]?.arguments,
+      [{ mobile: "+251911000000", password: "secret", device_name: "Chrome on Mac", platform: "web" }],
+      "auth-cheche gets the normalised mobile and the device fields",
+    );
     assert.equal(response.status, 200);
     assert.ok(response.body.data.accessToken);
     assert.equal(JSON.stringify(response.body).includes(REFRESH_TOKEN), false, "the refresh token never appears in JSON");
@@ -117,7 +124,80 @@ test("login sets the refresh cookie and a central-session confirmation bound to 
   });
 });
 
+test("login without an active staff assignment is refused with 403 and sets no cookie", async () => {
+  mock.method(centralAuthClient, "passwordLogin", CENTRAL_LOGIN_OK);
+  mock.method(userRoleRepository, "listActiveAssignmentsByUser", async () => []);
+
+  await withServer(app, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/auth/staff/login", { body: { mobile: "0911000000", password: "secret" } });
+    assert.equal(response.status, 403);
+    assert.equal(response.body.error.code, "staff_assignment_not_found");
+    assert.deepEqual(response.setCookie, []);
+  });
+});
+
+test("Central Auth refusals and outages map to stable error codes", async () => {
+  const cases: Array<[string, Error, number, string]> = [
+    ["wrong credentials", new InvalidCredentialsError("Invalid mobile number or password"), 401, "invalid_credentials"],
+    ["rate limited or account locked", new CentralAuthRateLimitedError(), 429, "central_auth_rate_limited"],
+    ["Central Auth down", new CentralAuthUnavailableError(), 503, "central_auth_unavailable"],
+  ];
+
+  for (const [label, error, status, code] of cases) {
+    mock.method(centralAuthClient, "passwordLogin", async () => {
+      throw error;
+    });
+    await withServer(app, async (baseUrl) => {
+      const response = await post(baseUrl, "/v1/auth/staff/login", { body: { mobile: "0911000000", password: "secret" } });
+      assert.equal(response.status, status, label);
+      assert.equal(response.body.error.code, code, label);
+    });
+    mock.restoreAll();
+  }
+});
+
+test("a legacy body with pin, or any unknown field, is rejected before auth-cheche is called", async () => {
+  const login = mock.method(centralAuthClient, "passwordLogin", CENTRAL_LOGIN_OK);
+
+  await withServer(app, async (baseUrl) => {
+    for (const body of [
+      { mobile: "0911000000", pin: "1234", password: "secret" },
+      { mobile: "0911000000", password: "secret", remember_me: true },
+    ]) {
+      const response = await post(baseUrl, "/v1/auth/staff/login", { body });
+      assert.equal(response.status, 400, JSON.stringify(Object.keys(body)));
+      assert.equal(response.body.error.code, "validation_error");
+    }
+  });
+  assert.equal(login.mock.callCount(), 0);
+});
+
 // --- Refresh ------------------------------------------------------------------------------------
+
+test("refresh without a refresh cookie is 401 refresh_token_missing", async () => {
+  await withServer(app, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/auth/staff/refresh");
+    assert.equal(response.status, 401);
+    assert.equal(response.body.error.code, "refresh_token_missing");
+  });
+});
+
+test("refresh from an untrusted site is refused before anything happens", async () => {
+  const centralRefresh = mock.method(centralAuthClient, "refreshAccessToken", async () => {
+    throw new Error("Central Auth must not be called");
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/auth/staff/refresh", {
+      cookies: { [STAFF_REFRESH_COOKIE]: REFRESH_TOKEN },
+      headers: { Origin: "http://evil.example" },
+    });
+    assert.equal(response.status, 403);
+    assert.equal(response.body.error.code, "refresh_origin_not_allowed");
+    assert.deepEqual(response.setCookie, []);
+  });
+  assert.equal(centralRefresh.mock.callCount(), 0);
+});
 
 test("refresh with a valid confirmation skips Central Auth, keeps both cookies, and re-reads assignments", async () => {
   const centralRefresh = mock.method(centralAuthClient, "refreshAccessToken", async () => {
@@ -261,5 +341,49 @@ test("logout from the trusted site goes through", async () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual(response.body.data, { revoked: true });
+  });
+});
+
+// --- Current session (/me) -----------------------------------------------------------------------
+
+test("GET /staff/me returns user, assignment, permissions and navigation for a valid staff token", async () => {
+  mock.method(userRoleRepository, "findActiveAssignmentByIdAndUser", async () => assignment());
+  mock.method(userRoleRepository, "listActiveAssignmentsByUser", async () => [assignment()]);
+  const permissions = { BRANCHES: { ...FULL_PERMISSION }, ROLES: { ...DENIED_PERMISSION } };
+  mock.method(permissionResolutionService, "resolveStaffSession", async () => ({ permissions, navigation: [] }));
+
+  await withServer(app, async (baseUrl) => {
+    const response = await call(baseUrl, "GET", "/v1/auth/staff/me", { token: staffToken() });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.data.user.id, IDS.user);
+    assert.equal(response.body.data.assignment.id, IDS.assignment);
+    assert.deepEqual(response.body.data.permissions, permissions);
+    assert.deepEqual(response.body.data.navigation, []);
+  });
+});
+
+test("GET /staff/me refuses an expired staff token and a missing one", async () => {
+  const expired = jwt.sign(
+    {
+      token_type: "staff_access",
+      assignment_id: IDS.assignment,
+      role_id: IDS.roleA,
+      organization_id: IDS.orgA,
+      branch_id: null,
+      exp: nowSeconds() - 10,
+      ...PROFILE,
+    },
+    authConfig.appTokenSecret,
+    { algorithm: "HS256", issuer: authConfig.appIssuer, audience: authConfig.appAudience, subject: IDS.user },
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const expiredResponse = await call(baseUrl, "GET", "/v1/auth/staff/me", { token: expired });
+    assert.equal(expiredResponse.status, 401);
+    assert.equal(expiredResponse.body.error.code, "expired_token");
+
+    const missingResponse = await call(baseUrl, "GET", "/v1/auth/staff/me");
+    assert.equal(missingResponse.status, 401);
+    assert.equal(missingResponse.body.error.code, "authentication_required");
   });
 });

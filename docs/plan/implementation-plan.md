@@ -6,7 +6,7 @@ This file is the working plan for Claude Code. Work **one phase at a time**. Eac
 
 How to use it:
 
-- **Phase 0:** the project has been generated from the `ts-backend-blueprint` starter into `events-api`. What remains of Phase 0 is listed in its section below.
+- **Phase 0:** done (24 November 2026). The project lives in the repository `github.com/amikingo/events-api`. Next is Phase 1.
 - **Later phases:** say: *"Carry out Phase N of docs/plan/implementation-plan.md. Do not start Phase N+1."*
 
 ---
@@ -29,13 +29,13 @@ These are needed for the **live** checks only. Building and automated tests use 
 1. The auth-cheche base URL for development.
 2. The shared JWT secret (auth-cheche's `APP_AUTH_TOKEN`).
 3. A `service_id` registered in auth-cheche for the Events product.
-4. Test accounts (mobile, PIN, password), ideally three: one future owner, one future viewer, one with no role.
+4. Test accounts (mobile, password), ideally three: one future owner, one future viewer, one with no role.
 
 ## Rules for every phase
 
 - Follow `AGENTS.md`. Read the closest existing module (`branch`) before writing a new one, and copy its shape.
 - **Databases and `.env`:** the agent never runs migrations, seeds, database-connected tests (`TEST_DATABASE=1`), or scripts that load `.env` (`dev`, `db:migrate*`, `bootstrap:super-admin` and the scripts added later). It writes the files and gives the exact commands; the project owner runs them, against `events_dev` and `events_test` only. Integration tests migrate **down to zero** at start and end, so they run against `events_test` only, never `events_dev`.
-- **Git:** the project is not a git repository until it moves into the real repository. The agent runs no git command that changes anything; it proposes commits instead.
+- **Git:** the project lives in the repository `github.com/amikingo/events-api`. The agent runs read-only git commands only (`status`, `diff`, `log`, `show`); the project owner stages, commits and pushes. The agent proposes commit messages instead.
 - **Asking first:** the agent asks before every install, test, type-check or build run.
 - **Env files:** the agent may read and edit `.env.example` only. It never reads or touches `.env` or any other env file.
 - **Dependencies:** add none unless the phase says so. If one is unavoidable, list it in the report with the reason.
@@ -47,7 +47,14 @@ These are needed for the **live** checks only. Building and automated tests use 
 
 **Goal:** a generated Events API that passes the starter's full check suite against local PostgreSQL.
 
-Status on 24 November 2026: steps 1–5 are done (`npm run check` passes; database tests skipped). Steps 6–8 are the project owner's.
+**Status: done on 24 November 2026.** Verified on the developer's machine:
+
+- `TEST_DATABASE=1 npm test`: 50 of 50 passed, none skipped (the integration tests ran on `events_test`).
+- `npm run db:migrate`: all 8 migrations applied to `events_dev`. `npm run db:migrate:status`: nothing pending.
+- `npm run dev`: the API starts and listens on port 5010.
+- After moving into the repository: `npm run check` passes (47 passed, 3 database tests skipped), and the project was pushed.
+- Not reported: the `/health/ready` and `/v1/docs` checks.
+- Known issue, not fixed yet: `npm run db:migrate:status` fails with "Validation error" on a database that has never been migrated. Run `npm run db:migrate` first.
 
 ### Prerequisites (on the developer's machine)
 
@@ -163,37 +170,42 @@ Built and tested with test doubles (see `docs/authentication.md` and `docs/rbac-
 
 Planned Central Auth integrations (creating staff accounts, reading users, editing details, forgot password) and the role-assignment rules are documented there as *not built yet*.
 
-### auth-cheche facts to implement against (latest auth-cheche guide)
+### auth-cheche facts to implement against (auth-cheche's live spec, `https://auth.cheche.et/api/v1/swagger/doc.json`)
+
+Decision (24 November 2026): PIN sign-in is the legacy setup. Staff log in with **mobile + password**.
 
 | Topic | auth-cheche contract |
 |---|---|
-| Sign-in | `POST /v1/users/signin/pin-password?service_id=<uuid>` with body `{ mobile, pin, password, device_id, device_name, platform }` |
-| Sign-in response | Not wrapped: `{ message, access_token, refresh_token, service_ids, service_id, session_id }` |
-| Refresh | `POST /v1/auth/refresh` with body `{ refresh_token }` |
+| Base URL | Production `https://auth.cheche.et/api`; every path starts with `/v1`. (The guide's `https://auth.cheche.et/v1` is out of date.) |
+| Sign-in | `POST /v1/users/signin/password?service_id=<uuid>` with body `{ mobile, password, device_id?, device_name?, platform? }`. `service_id` makes auth-cheche refuse accounts not registered for the service. |
+| Sign-in replies | 200 not wrapped: `{ message, access_token, refresh_token, … }`. 400 invalid input · 401 invalid credentials · 403 not verified or not registered for the service · 404 user not found · 429 account locked after too many failed attempts. A sign-in attempt on an unverified account resends an OTP. |
+| Refresh | `POST /v1/auth/refresh` with body `{ refresh_token }`; returns a new access **and** refresh token (rotation) |
+| Logout | `POST /v1/auth/logout` with optional body `{ refresh_token }`; no Bearer token required |
 | Token | HS256, signed with the shared secret (`APP_AUTH_TOKEN` on auth-cheche's side) |
 | Claims | `user_id`, `sub`, `firstname`, `middlename`, `lastname`, `mobile`, `service_ids`, `token_type` (`"access"` or `"refresh"`), `auth_role`, `session_id`, `iss = "auth_api"`, `exp`, `iat` |
 | Lifetimes | Access 3 days, refresh 7 days |
 | Mobile format | `+251XXXXXXXXX` |
 | Errors | `{ "error": "…" }`; OTP endpoints `{ "response": "…" }`; 429 `{ "message": "Too many requests" }` |
+| Rate limit | 5 requests per second per IP (all of this API's calls share the server's IP) |
 
 ### Steps
 
 1. **Inspect first.** Read `src/clients/central-auth.client.ts`, `src/validators/auth.ts`, `src/services/auth.service.ts`, `src/services/auth-token.service.ts`, `src/routes/v1/auth.ts`, the auth tests and fixtures. Report anything that contradicts the table above before changing code.
 
 2. **Central Auth client** (`src/clients/central-auth.client.ts`):
-   - Replace `passwordLogin` with `pinPasswordLogin(input)`, which calls `POST /v1/users/signin/pin-password` with the query parameter `service_id = CENTRAL_AUTH_SERVICE_ID` and the body `{ mobile, pin, password, device_id?, device_name?, platform? }`. Keep `credentialsFlow: true` and `requireRefresh: true`.
+   - `passwordLogin(input)` keeps calling `POST /v1/users/signin/password`, now with the query parameter `service_id = CENTRAL_AUTH_SERVICE_ID` and the body `{ mobile, password, device_id?, device_name?, platform? }`. Keep `credentialsFlow: true` and `requireRefresh: true`.
    - `refreshAccessToken` keeps calling `POST /v1/auth/refresh` with `{ refresh_token }`.
    - Make the upstream error-message reader accept `error`, `response` and `message` fields.
    - Map an upstream **429** to a new error `CentralAuthRateLimitedError` (HTTP 429, code `central_auth_rate_limited`), added to `src/errors/app-errors.ts` following the existing class shape.
+   - Login and refresh refusals (400, 401, 403, 404) all become `invalid_credentials` with one fixed message, so the screen never learns whether the account exists; the real reason goes to the server log.
 
 3. **Login contract** (`src/validators/auth.ts`): `staffLoginRequest` body becomes:
    - `mobile`: the existing mobile schema, normalised to `+251XXXXXXXXX`
-   - `pin`: digits only, `/^\d{4,8}$/`
    - `password`: non-empty string, max 128
    - `device_id`, `device_name`: optional strings, max 128
    - `platform`: optional enum `ios | android | web`
 
-   `src/services/auth.service.ts` passes these through to `pinPasswordLogin`. Nothing else in the login logic changes: the user still needs an active staff assignment, and the starter's assignment selection rules stay.
+   No `pin`: a body that still sends one is rejected (400). `src/services/auth.service.ts` passes these through to `passwordLogin`. Nothing else in the login logic changes: the user still needs an active staff assignment, and the starter's assignment selection rules stay.
 
 4. **Token verification** (`src/services/auth-token.service.ts`): the starter's Central Auth claim schema already accepts the claims above (loose object, `token_type = "access"`, issuer `auth_api`). Confirm with a test that a token shaped exactly like the auth-cheche example verifies, and that a token with `token_type = "refresh"` is rejected. Do **not** add a `service_ids` check; the staff assignment is the gate.
 
@@ -206,7 +218,7 @@ Planned Central Auth integrations (creating staff accounts, reading users, editi
    - Login with valid credentials but no active assignment: 403 `staff_assignment_not_found`.
    - Login with wrong credentials (upstream 401): 401 `invalid_credentials`.
    - Upstream 429: 429 `central_auth_rate_limited`. Upstream down or timing out: 503 `central_auth_unavailable`.
-   - Unknown body field: 400 `validation_error`, and auth-cheche is not called.
+   - Unknown body field (including a legacy `pin`): 400 `validation_error`, and auth-cheche is not called.
    - Refresh with cookie: 200 and a new access token. Without cookie: 401 `refresh_token_missing`. From an untrusted `Origin`: 403 `refresh_origin_not_allowed`.
    - Logout: 200 and both cookies are cleared; `data.revoked` is `true` when Central Auth confirms the revoke, `false` when it fails or no cookie was sent (already built and tested, see above).
    - `GET /v1/auth/staff/me` with a valid staff token: 200 with user, assignment, permissions and navigation. With an expired token: 401 `expired_token`. Without a token: 401 `authentication_required`.
@@ -218,7 +230,7 @@ Planned Central Auth integrations (creating staff accounts, reading users, editi
 
       ```bash
       curl -i -c cookies.txt -H 'Content-Type: application/json' -H 'Origin: http://localhost:3000' \
-        -d '{"mobile":"09XXXXXXXX","pin":"XXXXXX","password":"XXXX","platform":"web"}' \
+        -d '{"mobile":"09XXXXXXXX","password":"XXXX","platform":"web"}' \
         http://localhost:5010/v1/auth/staff/login
       curl -i -H "Authorization: Bearer <accessToken>" http://localhost:5010/v1/auth/staff/me
       curl -i -b cookies.txt -c cookies.txt -X POST -H 'Origin: http://localhost:3000' \
@@ -333,3 +345,5 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 ### Phase 5 — Pilot walkthrough
 
 Connect the staff and public screens to the API and run the full flow against PostgreSQL: a guest discovers an event, registers, receives a code, and appears once on the staff guest list.
+
+- The staff app never sees the refresh token: it lives only in the HttpOnly cookie. Do not copy the auth-cheche guide's frontend example, which keeps tokens in `localStorage`.

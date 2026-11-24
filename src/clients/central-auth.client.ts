@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { authConfig } from "../config/auth.js";
 import {
+  CentralAuthRateLimitedError,
   CentralAuthUnavailableError,
   ConflictError,
   InvalidCredentialsError,
@@ -11,6 +12,22 @@ import {
 import { requestJson, UpstreamRequestError } from "./http.js";
 
 const UPSTREAM = "central_auth";
+
+/**
+ * Login and refresh refusals always get this text, whatever Central said, so the screen never learns
+ * whether the account exists, is unverified or is not registered for this service. The real reason
+ * goes to the server log through the error's cause.
+ */
+const CREDENTIALS_REFUSED_MESSAGE = "Invalid mobile number or password";
+const CREDENTIALS_REFUSED_STATUSES = [400, 401, 403, 404];
+
+export type PasswordLoginInput = {
+  mobile: string;
+  password: string;
+  device_id?: string | undefined;
+  device_name?: string | undefined;
+  platform?: "ios" | "android" | "web" | undefined;
+};
 
 export type CentralTokens = {
   accessToken: string;
@@ -32,9 +49,14 @@ function unwrapEnvelope(body: unknown): unknown {
   return body;
 }
 
+/** auth-cheche puts its text in `error` (standard), `response` (OTP endpoints) or `message` (429). */
 function upstreamMessage(body: unknown, fallback: string): string {
-  if (body && typeof body === "object" && "message" in body && typeof body.message === "string" && body.message.trim()) {
-    return body.message.trim();
+  if (body && typeof body === "object") {
+    const record = body as Record<string, unknown>;
+    for (const field of ["error", "response", "message"]) {
+      const value = record[field];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
   }
   return fallback;
 }
@@ -50,13 +72,19 @@ async function call(path: string, init: { method: "GET" | "POST"; body?: unknown
 
     if (!response.ok) {
       const message = upstreamMessage(response.body, "Central Auth rejected the request");
-      if (init.credentialsFlow && [400, 401, 403].includes(response.status)) throw new InvalidCredentialsError(message);
-      if (response.status === 400) throw new ValidationAppError(message);
-      if (response.status === 401 || response.status === 403) throw new InvalidCredentialsError(message);
-      if (response.status === 404) throw new NotFoundError(message);
-      if (response.status === 409) throw new ConflictError(message);
-      if (response.status >= 500) throw new CentralAuthUnavailableError();
-      throw new MalformedCentralAuthResponseError();
+      // For the server log only (the error handler logs the cause); never sent to the client.
+      const cause = new Error(`Central Auth ${response.status}: ${message}`);
+      // auth-cheche answers 429 both for its per-IP rate limit and for an account locked after failed attempts.
+      if (response.status === 429) throw new CentralAuthRateLimitedError(undefined, undefined, { cause });
+      if (init.credentialsFlow && CREDENTIALS_REFUSED_STATUSES.includes(response.status)) {
+        throw new InvalidCredentialsError(CREDENTIALS_REFUSED_MESSAGE, undefined, { cause });
+      }
+      if (response.status === 400) throw new ValidationAppError(message, undefined, { cause });
+      if (response.status === 401 || response.status === 403) throw new InvalidCredentialsError(message, undefined, { cause });
+      if (response.status === 404) throw new NotFoundError(message, undefined, { cause });
+      if (response.status === 409) throw new ConflictError(message, undefined, { cause });
+      if (response.status >= 500) throw new CentralAuthUnavailableError(undefined, undefined, { cause });
+      throw new MalformedCentralAuthResponseError(undefined, undefined, { cause });
     }
     return unwrapEnvelope(response.body);
   } catch (error) {
@@ -83,9 +111,17 @@ function parseTokens(payload: unknown, { requireRefresh }: { requireRefresh: boo
   };
 }
 
-async function passwordLogin(input: { mobile: string; password: string }): Promise<CentralTokens> {
-  // No Authorization header is forwarded; service_id is server-owned and only sent where the contract requires it.
-  const payload = await call("/v1/users/signin/password", { method: "POST", body: input, credentialsFlow: true });
+/**
+ * auth-cheche password sign-in. service_id (server-owned, from config) makes auth-cheche refuse accounts
+ * that are not registered for this product. No Authorization header is sent.
+ */
+async function passwordLogin(input: PasswordLoginInput): Promise<CentralTokens> {
+  const query = new URLSearchParams({ service_id: authConfig.centralAuthServiceId });
+  const payload = await call(`/v1/users/signin/password?${query.toString()}`, {
+    method: "POST",
+    body: input,
+    credentialsFlow: true,
+  });
   return parseTokens(payload, { requireRefresh: true });
 }
 

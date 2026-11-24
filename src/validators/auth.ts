@@ -17,9 +17,13 @@ export const mobileSchema = z
     return normalized;
   });
 
+/** auth-cheche password sign-in. PIN sign-in is legacy: a body that still sends `pin` is rejected (strict). */
 export const staffLoginSchema = z.strictObject({
   mobile: mobileSchema,
-  password: z.string().min(1).max(256),
+  password: z.string().min(1).max(128),
+  device_id: z.string().trim().min(1).max(128).optional(),
+  device_name: z.string().trim().min(1).max(128).optional(),
+  platform: z.enum(["ios", "android", "web"]).optional(),
 });
 
 /** Optional body. Express 5 leaves req.body undefined when nothing was sent. */

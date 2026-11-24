@@ -36,6 +36,15 @@ test("a malformed AUTH_REFRESH_COOKIE_PATH_PREFIX stops startup and names only t
   }
 });
 
+test("CENTRAL_AUTH_API must not end in /v1, because the client adds /v1/... itself", () => {
+  for (const value of ["http://localhost:5003", "https://auth.cheche.et/api"]) {
+    assert.equal(parseEnv({ ...BASE, CENTRAL_AUTH_API: value }).CENTRAL_AUTH_API, value);
+  }
+  for (const value of ["https://auth.cheche.et/api/v1", "https://auth.cheche.et/v1/", "http://localhost:5003/V1"]) {
+    assert.deepEqual(rejectedKeys({ ...BASE, CENTRAL_AUTH_API: value }), ["CENTRAL_AUTH_API"], value);
+  }
+});
+
 test("AUTH_CENTRAL_SESSION_TTL_SECONDS defaults to 6 hours, accepts 0 (off), rejects negatives", () => {
   assert.equal(parseEnv(BASE).AUTH_CENTRAL_SESSION_TTL_SECONDS, 21_600);
   assert.equal(parseEnv({ ...BASE, AUTH_CENTRAL_SESSION_TTL_SECONDS: "0" }).AUTH_CENTRAL_SESSION_TTL_SECONDS, 0);

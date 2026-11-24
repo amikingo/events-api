@@ -98,7 +98,7 @@ function confirmCentralSession(identity: CentralIdentity, refreshToken: string |
 }
 
 async function staffLogin(input: StaffLoginInput): Promise<StaffTokenResult> {
-  const tokens = await centralAuthClient.passwordLogin({ mobile: input.mobile, password: input.password });
+  const tokens = await centralAuthClient.passwordLogin(input);
   const identity = authTokenService.verifyCentralAccessToken(tokens.accessToken);
 
   const assignments = await loadUsableAssignments(identity.userId);

@@ -6,6 +6,7 @@ const SENSITIVE_KEYS = new Set([
   "old_password",
   "new_password",
   "otp",
+  "pin",
   "token",
   "access_token",
   "refresh_token",
@@ -40,5 +41,6 @@ export const LOG_REDACT_PATHS = [
   "*.access_token",
   "*.refresh_token",
   "*.otp",
+  "*.pin",
   "*.secret",
 ];

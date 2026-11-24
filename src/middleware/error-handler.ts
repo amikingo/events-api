@@ -111,7 +111,9 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   if (normalized.statusCode >= 500) {
     log.error({ err: safeErrorLog(error), code: normalized.code }, "Request failed");
   } else {
-    log.info({ code: normalized.code, statusCode: normalized.statusCode }, "Request rejected");
+    // The cause (e.g. "Central Auth 403: ...") explains a refusal whose client message is deliberately generic.
+    const cause = error instanceof Error && error.cause instanceof Error ? { cause: error.cause.message } : {};
+    log.info({ code: normalized.code, statusCode: normalized.statusCode, ...cause }, "Request rejected");
   }
 
   const body: ErrorEnvelope = { success: false, error: { code: normalized.code, message: normalized.message } };

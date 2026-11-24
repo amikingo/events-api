@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import jwt from "jsonwebtoken";
 import { authConfig } from "../src/config/auth.js";
-import { UnsupportedTokenError } from "../src/errors/app-errors.js";
+import { InvalidTokenError, UnsupportedTokenError } from "../src/errors/app-errors.js";
 import { authTokenService, centralSessionLifetimeSeconds } from "../src/services/auth-token.service.js";
 import { IDS, staffToken } from "./helpers/fixtures.js";
 
@@ -30,6 +30,38 @@ function centralAccessToken(): string {
     subject: IDS.user,
   });
 }
+
+test("a token shaped exactly like auth-cheche's example verifies; its extra claims are ignored", () => {
+  const token = jwt.sign(
+    {
+      user_id: IDS.user,
+      firstname: "Abebe",
+      middlename: "Bikila",
+      lastname: "Tola",
+      mobile: "+251912345678",
+      service_ids: ["c8a14b3d-7a6b-4e8c-9a1d-2e3f4a5b6c7d", "f47ac10b-58cc-4372-a567-0e02b2c3d4e5"],
+      token_type: "access",
+      auth_role: "super_admin",
+      session_id: "sess-98765-abcd",
+    },
+    authConfig.centralAuthJwtSecret,
+    { algorithm: "HS256", expiresIn: 3 * 24 * 3600, issuer: "auth_api", subject: IDS.user },
+  );
+
+  const identity = authTokenService.verifyCentralAccessToken(token);
+  assert.equal(identity.userId, IDS.user);
+  assert.deepEqual(identity.profile, { mobile: "+251912345678", firstname: "Abebe", middlename: "Bikila", lastname: "Tola" });
+});
+
+test("a Central refresh token is never accepted as an access token", () => {
+  const refresh = jwt.sign({ user_id: IDS.user, token_type: "refresh" }, authConfig.centralAuthJwtSecret, {
+    algorithm: "HS256",
+    expiresIn: 7 * 24 * 3600,
+    issuer: "auth_api",
+    subject: IDS.user,
+  });
+  assert.throws(() => authTokenService.verifyCentralAccessToken(refresh), InvalidTokenError);
+});
 
 test("confirmation lifetime: off at 0, none near Central expiry, otherwise the smaller limit", () => {
   const now = 1_000_000;

@@ -22,11 +22,27 @@
 
 | Endpoint | Notes |
 |---|---|
-| `POST /v1/auth/staff/login` `{ mobile, password }` | Central Auth password login → local token in JSON; refresh token **only** in the HttpOnly `events_staff_refresh` cookie (`Path=/v1/auth/staff`). Also sets the `events_staff_central_session` cookie (see below). Rejects upstream logins without a refresh token. |
-| `POST /v1/auth/staff/refresh` `{ assignment_id? }` | Reads the cookies only. Rate-limited, `Cache-Control: no-store`, Origin must be trusted. Skips Central Auth while the central-session cookie is valid (see below); assignments are re-read from the DB on every refresh. Requires `assignment_id` when several assignments are active (`409 staff_context_required`). Rotated refresh tokens replace the cookie. Session-ending failures clear both cookies. |
+| `POST /v1/auth/staff/login` `{ mobile, password, device_id?, device_name?, platform? }` | auth-cheche password sign-in (`POST /v1/users/signin/password?service_id=<CENTRAL_AUTH_SERVICE_ID>`; PIN sign-in is legacy and a body with `pin` gets 400) → local token in JSON; refresh token **only** in the HttpOnly `events_staff_refresh` cookie (`Path=/v1/auth/staff`). Also sets the `events_staff_central_session` cookie (see below). Rejects upstream logins without a refresh token. Errors: see "Central Auth refusals" below. |
+| `POST /v1/auth/staff/refresh` `{ assignment_id? }` | Reads the cookies only. Rate-limited, `Cache-Control: no-store`, Origin must be trusted. Skips Central Auth while the central-session cookie is valid (see below); assignments are re-read from the DB on every refresh. Requires `assignment_id` when several assignments are active (`409 staff_context_required`). auth-cheche rotates the refresh token on every Central refresh; the new one replaces the cookie. Session-ending failures clear both cookies. |
 | `POST /v1/auth/staff/logout` | Clears both cookies first, then revokes the Central Auth session with `POST /v1/auth/logout` `{ refresh_token }` (no Bearer: staff hold only this API's token). Best effort: a Central failure is logged without token values and never blocks logout. `data.revoked` is `true` only when Central confirmed; `false` when it failed or no cookie was sent. Same rate limit, Origin check and `no-store` as refresh. |
 | `GET /v1/auth/staff/me` | Revalidates the assignment from the DB; returns user, assignment, assignments, flat `permissions`, nested `navigation`. Never calls Central Auth. |
 | `POST /v1/auth/staff/switch-assignment` `{ assignment_id }` | Re-mints the token for another active assignment. This is how a person with several roles changes what they may do: permissions are checked for the token's assignment only (see `docs/rbac-application-flow.md`). |
+
+## Central Auth refusals
+
+| auth-cheche answers | Client sees | Why |
+|---|---|---|
+| Login or refresh refused: 400, 401, 403 (unverified / not registered for this service), 404 (no such user) | `401 invalid_credentials`, always "Invalid mobile number or password" | The screen never learns whether the account exists, is unverified or is not registered for Events. The real reason is in the server log ("Request rejected", `cause: "Central Auth <status>: <text>"`). On refresh this becomes `refresh_token_invalid` and both cookies are cleared. |
+| 429 (per-IP rate limit, or account locked after failed attempts) | `429 central_auth_rate_limited` | |
+| 5xx, timeout, network failure | `503 central_auth_unavailable` | |
+| Not JSON or an unexpected shape | `502 central_auth_malformed_response` | |
+
+auth-cheche puts its error text in `error` (standard), `response` (OTP endpoints) or `message` (429); all three
+are read. Two auth-cheche behaviours to know:
+
+- Its rate limit is 5 requests per second **per IP**, and every call from this API comes from the server's IP, so
+  all staff logins and Central refreshes share one budget (the central-session cookie removes most refresh calls).
+- A sign-in attempt on an unverified account makes auth-cheche resend an OTP SMS.
 
 ## Staff central session (fewer Central Auth calls)
 
@@ -55,7 +71,9 @@ identity from body or query.
 
 ## Configuration
 
-Required: `CENTRAL_AUTH_API`, `APP_AUTH_TOKEN`, `CENTRAL_AUTH_SERVICE_ID`.
+Required: `CENTRAL_AUTH_API` (base URL **without** `/v1`, e.g. `https://auth.cheche.et/api`; the client adds
+`/v1/...` and startup refuses a trailing `/v1`), `APP_AUTH_TOKEN`, `CENTRAL_AUTH_SERVICE_ID` (sent on sign-in, so
+auth-cheche refuses accounts not registered for Events).
 Optional: `APP_TOKEN_TTL_SECONDS`, `CENTRAL_AUTH_TIMEOUT_MS`, `AUTH_REFRESH_COOKIE_SECURE` (default: on in
 production), `AUTH_REFRESH_COOKIE_SAME_SITE`, `AUTH_REFRESH_COOKIE_DOMAIN`, `AUTH_REFRESH_TTL_SECONDS`,
 `AUTH_REFRESH_TRUSTED_ORIGINS` (required in production for browser refresh/logout),

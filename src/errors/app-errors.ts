@@ -130,6 +130,13 @@ export class CentralAuthUnavailableError extends AppError {
   }
 }
 
+/** auth-cheche answered 429: its per-IP rate limit, or an account locked after too many failed attempts. */
+export class CentralAuthRateLimitedError extends AppError {
+  constructor(message = "Too many attempts. Try again later.", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 429, code: "central_auth_rate_limited", details, cause: options?.cause });
+  }
+}
+
 export class MalformedCentralAuthResponseError extends AppError {
   constructor(message = "Central Auth returned an invalid response", details?: unknown, options?: ErrorOptions) {
     super(message, { statusCode: 502, code: "central_auth_malformed_response", details, cause: options?.cause });

@@ -30,7 +30,10 @@ const EnvSchema = z.object({
 
   APP_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(900),
 
-  CENTRAL_AUTH_API: z.url(),
+  // Base URL without /v1, e.g. https://auth.cheche.et/api: the client adds /v1/... itself.
+  CENTRAL_AUTH_API: z
+    .url()
+    .refine((value) => !/\/v1\/?$/i.test(value), "must not end in /v1: the client adds /v1/... itself"),
   // auth-cheche's shared secret (same name there). Verifies Central Auth tokens and signs this API's own
   // tokens (one secret, like bookings_api).
   APP_AUTH_TOKEN: z.string().min(32),
