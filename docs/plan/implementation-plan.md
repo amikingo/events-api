@@ -272,6 +272,14 @@ Decisions (24 November 2026): PIN sign-in is the legacy setup. Staff log in with
 
 **Goal:** prove with real database data that an owner can act in their own organization, a viewer's write is denied, office-scoped staff are limited to their office, and nobody reaches another organization or platform administration.
 
+**Status (24 November 2026): done, verified on the real database.**
+
+- **Built:** default `OWNER` and `VIEWER` roles; the provisioning service and scripts (`provision:organizer`, `assign:staff`, `dev:staff-token`); and organizations without branches (`has_branches`, hidden `MAIN` branch, migration `20261124000000-add-organization-has-branches`).
+- **Checks:**
+  - `TEST_DATABASE=1 npm test`: 104 of 104 passed, none skipped. That includes all 21 rows of the authorization matrix on `events_test`.
+  - The migration was applied to `events_dev`.
+- **Not run by hand yet:** the demo scripts on `events_dev`. Their logic runs in the tests; their command-line handling has only been type-checked and linted.
+
 The starter already contains the RBAC engine (modules, roles, role grants, assignments, overrides, Super Admin, explicit scope, `/me` permissions and menu) and protected routes for organizations and branches. This phase adds the provisioning the pilot needs and proves the rules end to end. **No new HTTP endpoints** are added in this phase.
 
 ### Steps
