@@ -1,10 +1,12 @@
 import type { AppModule } from "./module.js";
 import type { Branch } from "./branch.js";
+import type { CustomerAccount } from "./customer-account.js";
 import type { Organization } from "./organization.js";
 import type { Role } from "./role.js";
 import type { RoleModuleAccess } from "./role-module-access.js";
 import type { UserModuleAccess } from "./user-module-access.js";
 import type { UserRole } from "./user-role.js";
+import type { Venue } from "./venue.js";
 
 type Models = {
   Organization: typeof Organization;
@@ -14,11 +16,13 @@ type Models = {
   RoleModuleAccess: typeof RoleModuleAccess;
   UserRole: typeof UserRole;
   UserModuleAccess: typeof UserModuleAccess;
+  CustomerAccount: typeof CustomerAccount;
+  Venue: typeof Venue;
 };
 
 /** Every association is declared here, once, with an explicit `as` alias and foreign key. */
 export function initAssociations(models: Models): void {
-  const { Organization, Branch, AppModule, Role, RoleModuleAccess, UserRole, UserModuleAccess } = models;
+  const { Organization, Branch, AppModule, Role, RoleModuleAccess, UserRole, UserModuleAccess, CustomerAccount, Venue } = models;
 
   Organization.hasMany(Branch, { foreignKey: "organization_id", as: "branches" });
   Branch.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
@@ -37,4 +41,7 @@ export function initAssociations(models: Models): void {
   UserRole.hasMany(UserModuleAccess, { foreignKey: "user_role_id", as: "overrides" });
   UserModuleAccess.belongsTo(UserRole, { foreignKey: "user_role_id", as: "assignment" });
   UserModuleAccess.belongsTo(AppModule, { foreignKey: "module_id", as: "module" });
+
+  CustomerAccount.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+  Venue.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
 }

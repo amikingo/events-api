@@ -10,6 +10,9 @@ references without FKs.
 1. `organization` 2. `branch` 3. `module` 4. `role` 5. `role_module_access`
 6. `user_role` (+ `fn_user_role_scope_guard` trigger) 7. `user_module_access`
 8. seed: platform modules + `SUPER_ADMIN` role
+9. `organization.has_branches` (column)
+10. `customer_account` 11. `venue` 12. seed: `EVENTS` + `CUSTOMERS` modules and menu
+13. grants: `EVENTS` + `CUSTOMERS` for existing `OWNER`/`VIEWER` roles
 
 ## Tables
 
@@ -57,4 +60,22 @@ references without FKs.
 ### `user_module_access`
 - Constraints: FKs (CASCADE), `uq_user_module_access_user_role_id_module_id`,
   `ck_user_module_access_has_override` (at least one non-null flag)
+- Triggers: none
+
+### `customer_account` (Phase 3a)
+The client commissioning an event (spec §3); not an attendee.
+- Columns: `name`, `kind` (`ORGANIZATION` default / `INDIVIDUAL`), `type` (sector, free text), `primary_contact_name`,
+  `primary_contact_email`, `primary_contact_phone`, `is_active`
+- Constraints: `fk_customer_account_organization_id` (RESTRICT), `uq_customer_account_organization_id_id`
+  (tenant-safe composite key for events), `ck_customer_account_kind`, `ck_customer_account_type_organization_only`
+  (an individual has no `type`)
+- Indexes: `idx_customer_account_organization_active`
+- Triggers: none
+
+### `venue` (Phase 3a)
+A reusable physical location (spec §4).
+- Columns: `name`, `address`, `city`, `country` (ISO alpha-2), `capacity`, `is_active`
+- Constraints: `fk_venue_organization_id` (RESTRICT), `uq_venue_organization_id_id` (tenant-safe composite key for
+  events), `ck_venue_capacity_positive`, `ck_venue_country_format`
+- Indexes: `idx_venue_organization_active`
 - Triggers: none

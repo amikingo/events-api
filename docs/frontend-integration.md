@@ -255,6 +255,20 @@ The permission column shows what the signed-in role needs: module code and actio
 | `GET /v1/organizations/{organizationId}/branches/{branchId}` | `BRANCHES.view` | |
 | `PATCH /v1/organizations/{organizationId}/branches/{branchId}` | `BRANCHES.update` | Any of `{ code, name, description }`. `description: null` clears it. |
 | `PATCH /v1/organizations/{organizationId}/branches/{branchId}/status` | `BRANCHES.update` | `{ is_active }`. The default branch cannot be deactivated. |
+| `POST /v1/organizations/{organizationId}/customer-accounts` | `CUSTOMERS.create` | A **client** commissioning events (not an attendee): `{ name, kind?, type?, primary_contact_name?, primary_contact_email?, primary_contact_phone?, is_active? }`. `kind` is `ORGANIZATION` (default) or `INDIVIDUAL`; `type` is a sector (e.g. Corporate, NGO) and must be empty for an individual (`400`, issue path `body.type`). Ethiopian mobiles come back as `+251…`. |
+| `GET /v1/organizations/{organizationId}/customer-accounts` | `CUSTOMERS.view` | `?page&pageSize&is_active`. Use `is_active=true` for pickers. |
+| `GET /v1/organizations/{organizationId}/customer-accounts/{customerAccountId}` | `CUSTOMERS.view` | |
+| `PATCH /v1/organizations/{organizationId}/customer-accounts/{customerAccountId}` | `CUSTOMERS.update` | Any of the create fields except `is_active`; `null` clears. Changing to `INDIVIDUAL` needs `type: null` in the same request if a type is stored. |
+| `PATCH /v1/organizations/{organizationId}/customer-accounts/{customerAccountId}/status` | `CUSTOMERS.update` | `{ is_active }`. Clients are deactivated, never deleted. |
+| `POST /v1/organizations/{organizationId}/venues` | `EVENTS.create` | `{ name, address?, city?, country?, capacity?, is_active? }`. `country` is a two-letter code (`ET`); `capacity` describes the place (the event's own capacity comes in 3b). |
+| `GET /v1/organizations/{organizationId}/venues` | `EVENTS.view` | `?page&pageSize&is_active`. |
+| `GET /v1/organizations/{organizationId}/venues/{venueId}` | `EVENTS.view` | |
+| `PATCH /v1/organizations/{organizationId}/venues/{venueId}` | `EVENTS.update` | Any of the create fields except `is_active`; `null` clears. |
+| `PATCH /v1/organizations/{organizationId}/venues/{venueId}/status` | `EVENTS.update` | `{ is_active }`. Venues are deactivated, never deleted. |
+
+The menu gains *Event Management › Events* (`/events`) and *Clients* (`/clients`), above *Administration*. Venues
+have no menu item of their own: reach them from the Events area (they use the `EVENTS` permission). These routes
+are organization-level: branch-limited staff get `403` for now.
 
 ---
 
@@ -271,6 +285,7 @@ The permission column shows what the signed-in role needs: module code and actio
 
 ## 7. Not available yet
 
-- **Events, ticket types, registrations, public event pages:** Phases 3–4 of the plan.
+- **Events, ticket types, public event pages, cover upload:** Phase 3b–3d (clients and venues are available now).
+- **Registrations and the guest list:** Phase 4.
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.

@@ -366,8 +366,21 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 
 ### Phase 3 — Events
 
+**Source of truth:** `docs/event-management-mvp1-final.md` (sections 3, 4, 5, 7). Feature doc: `docs/events.md`.
+**Steps:**
+- **3a** clients (`customer_account`) and venues, plus the `EVENTS` and `CUSTOMERS` modules and menu;
+- **3b** `event` and `ticket_type`, plus tenant-scoped `file` metadata and a nullable `cover_file_id`;
+- **3c** the public catalog and event detail;
+- **3d** cover upload and the storage provider. 3d stays on the MVP 1 list, so covers are ready for launch.
+
+**Decisions (24 November 2026):**
+- `customer_account` is the commissioning client, never an attendee.
+- One name and description per event; map links, translated fields and a category table come later.
+- An organization-wide event uses `branch_id = NULL`, even when a default `MAIN` branch exists. Organizations without branches therefore never involve the hidden branch.
+
+**3a status: built; checks run by the agent; awaiting the owner's `db:migrate` and `TEST_DATABASE=1 npm test`.**
+
 - **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
-- **Branches are hidden for most organizers:** a record that belongs to a branch (event, venue) uses the organization's default branch automatically when `has_branches` is false or no branch is given. Screens for those organizers never ask for a branch.
 - **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.
 - **Event states:** `DRAFT`, `PUBLISHED`, `CLOSED`, `CANCELLED`. *Live* is derived from dates. A new event gets **General Admission** automatically.
 - **Public read endpoints:** catalog (published + `PUBLIC`), and event detail by organization slug + event slug (published, `PUBLIC` or `UNLISTED`).

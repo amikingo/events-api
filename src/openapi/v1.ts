@@ -3,7 +3,9 @@ import { APP_TITLE, STAFF_REFRESH_COOKIE } from "../config/app.js";
 import type { RequestContract } from "../middleware/validate.js";
 import * as auth from "../validators/auth.js";
 import * as branch from "../validators/branch.js";
+import * as customerAccount from "../validators/customer-account.js";
 import * as organization from "../validators/organization.js";
+import * as venue from "../validators/venue.js";
 
 export type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
 
@@ -42,6 +44,20 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "get", path: "/v1/organizations/{organizationId}/branches/{branchId}", contract: branch.getBranchRequest, summary: "Read a branch", tags: ["Branches"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/branches/{branchId}", contract: branch.updateBranchRequest, bodyComponent: "BranchUpdateRequest", summary: "Update a branch (PATCH semantics)", tags: ["Branches"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/branches/{branchId}/status", contract: branch.changeBranchStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a branch", tags: ["Branches"], auth: "staff", successStatus: 200 },
+
+  // --- Clients (customer_account: who commissions an event; not attendees) -----------------------
+  { method: "post", path: "/v1/organizations/{organizationId}/customer-accounts", contract: customerAccount.createCustomerAccountRequest, bodyComponent: "CustomerAccountCreateRequest", summary: "Record a client commissioning events (an organization or an individual)", tags: ["Clients"], auth: "staff", successStatus: 201 },
+  { method: "get", path: "/v1/organizations/{organizationId}/customer-accounts", contract: customerAccount.listCustomerAccountsRequest, summary: "List clients", tags: ["Clients"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/customer-accounts/{customerAccountId}", contract: customerAccount.getCustomerAccountRequest, summary: "Read a client", tags: ["Clients"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/customer-accounts/{customerAccountId}", contract: customerAccount.updateCustomerAccountRequest, bodyComponent: "CustomerAccountUpdateRequest", summary: "Update a client (PATCH semantics)", tags: ["Clients"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/customer-accounts/{customerAccountId}/status", contract: customerAccount.changeCustomerAccountStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a client", tags: ["Clients"], auth: "staff", successStatus: 200 },
+
+  // --- Venues -----------------------------------------------------------------------------------
+  { method: "post", path: "/v1/organizations/{organizationId}/venues", contract: venue.createVenueRequest, bodyComponent: "VenueCreateRequest", summary: "Create a reusable physical venue", tags: ["Venues"], auth: "staff", successStatus: 201 },
+  { method: "get", path: "/v1/organizations/{organizationId}/venues", contract: venue.listVenuesRequest, summary: "List venues", tags: ["Venues"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/venues/{venueId}", contract: venue.getVenueRequest, summary: "Read a venue", tags: ["Venues"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/venues/{venueId}", contract: venue.updateVenueRequest, bodyComponent: "VenueUpdateRequest", summary: "Update a venue (PATCH semantics)", tags: ["Venues"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/venues/{venueId}/status", contract: venue.changeVenueStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a venue", tags: ["Venues"], auth: "staff", successStatus: 200 },
 ];
 
 // ---------------------------------------------------------------------------------------------

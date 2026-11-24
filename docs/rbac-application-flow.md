@@ -67,11 +67,12 @@ Every organization created by `provision:organizer` starts with two roles (`src/
 
 | Role | Grants |
 |---|---|
-| `OWNER` | `ORGANIZATIONS` view, update · `BRANCHES` view, create, update · `ROLES` view · `USER_ROLES` view |
-| `VIEWER` | `ORGANIZATIONS` view · `BRANCHES` view |
+| `OWNER` | `ORGANIZATIONS` view, update · `BRANCHES` view, create, update · `ROLES` view · `USER_ROLES` view · `EVENTS` view, create, update · `CUSTOMERS` view, create, update |
+| `VIEWER` | `ORGANIZATIONS` view · `BRANCHES` view · `EVENTS` view · `CUSTOMERS` view |
 
-Later phases add their modules to these templates and extend existing organizations through migrations. A
-default role never gets a platform-only module (`MODULES`, `ROLE_TEMPLATES`).
+Later phases add their modules to these templates and extend existing organizations through migrations (Phase 3:
+`20261125000003-grant-events-and-customers-to-default-roles`). A default role never gets a platform-only module
+(`MODULES`, `ROLE_TEMPLATES`).
 
 Operational scripts. Each previews by default, writes only with `--confirm`, prints JSON, and loads `.env`, so the
 project owner runs it:

@@ -25,6 +25,8 @@ const MODULES = [
   moduleRow({ id: "module-branches", code: "BRANCHES" }),
   moduleRow({ id: "module-roles", code: "ROLES" }),
   moduleRow({ id: "module-user-roles", code: "USER_ROLES" }),
+  moduleRow({ id: "module-events", code: "EVENTS" }),
+  moduleRow({ id: "module-customers", code: "CUSTOMERS" }),
 ];
 const flags = (grant: { can_view?: boolean; can_create?: boolean; can_update?: boolean; can_delete?: boolean; can_import?: boolean; can_export?: boolean; can_notify?: boolean } | undefined) => [
   grant?.can_view,
@@ -86,9 +88,11 @@ test("provisionOrganizer writes the organization, MAIN branch, default roles wit
   const [ownerGrants = []] = calls.bulkCreate.mock.calls[0]?.arguments ?? [];
   assert.deepEqual(
     ownerGrants.map((grant) => grant.module_id),
-    ["module-organizations", "module-branches", "module-roles", "module-user-roles"],
+    ["module-organizations", "module-branches", "module-roles", "module-user-roles", "module-events", "module-customers"],
     "only permission modules, never the container",
   );
+  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-events")), [true, true, true, false, false, false, false]);
+  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-customers")), [true, true, true, false, false, false, false]);
   assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-branches")), [true, true, true, false, false, false, false]);
   assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-organizations")), [true, false, true, false, false, false, false]);
   const [viewerGrants = []] = calls.bulkCreate.mock.calls[1]?.arguments ?? [];
@@ -97,6 +101,8 @@ test("provisionOrganizer writes the organization, MAIN branch, default roles wit
     [
       ["module-organizations", true, false, false, false, false, false, false],
       ["module-branches", true, false, false, false, false, false, false],
+      ["module-events", true, false, false, false, false, false, false],
+      ["module-customers", true, false, false, false, false, false, false],
     ],
   );
 

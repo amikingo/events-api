@@ -4,7 +4,7 @@ import { createApp } from "../../src/app.js";
 import { sequelize } from "../../src/db.js";
 import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { migrator } from "../../src/migrator.js";
-import { Branch, UserModuleAccess } from "../../src/models/index.js";
+import { Branch, CustomerAccount, UserModuleAccess } from "../../src/models/index.js";
 import { moduleRepository } from "../../src/repositories/module.repository.js";
 import { userRoleRepository } from "../../src/repositories/user-role.repository.js";
 import { authTokenService } from "../../src/services/auth-token.service.js";
@@ -236,4 +236,47 @@ test("rows 19–21: an organization without branches hides them, refuses branch-
   const after = await as("HORN_OWNER", "GET", "/v1/auth/staff/me");
   assert.equal(after.body.data.assignment.organization.has_branches, true);
   assert.deepEqual(administrationItems(after.body.data.navigation), ["ORGANIZATIONS", "BRANCHES"]);
+});
+
+test("rows 22–25: clients and venues are tenant-scoped, read-only for viewers, and appear under Event Management", { skip }, async () => {
+  const clients = `/v1/organizations/${fixture.selamId}/customer-accounts`;
+  const venues = `/v1/organizations/${fixture.selamId}/venues`;
+
+  // Row 22: the owner records a client and a venue.
+  const client = await as("SELAM_OWNER", "POST", clients, { name: "ABC Bank", type: "Corporate", primary_contact_phone: "0911223344" });
+  assert.equal(client.status, 201);
+  assert.equal(client.body.data.primary_contact_phone, "+251911223344");
+  const venue = await as("SELAM_OWNER", "POST", venues, { name: "Millennium Hall", city: "Addis Ababa", country: "et", capacity: 2000 });
+  assert.equal(venue.status, 201);
+  assert.equal(venue.body.data.country, "ET");
+  // The database itself refuses an individual client with a sector type (backstop behind the service).
+  await assert.rejects(
+    CustomerAccount.create({
+      organization_id: fixture.selamId,
+      name: "Hana Bekele",
+      kind: "INDIVIDUAL",
+      type: "NGO",
+      primary_contact_name: null,
+      primary_contact_email: null,
+      primary_contact_phone: null,
+      created_by: null,
+      updated_by: null,
+    }),
+  );
+
+  // Row 23: a viewer reads clients and venues but cannot create them.
+  const list = await as("SELAM_VIEWER", "GET", clients);
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body.data.map((row: { name: string }) => row.name), ["ABC Bank"]);
+  assert.equal((await as("SELAM_VIEWER", "GET", venues)).status, 200);
+  assert.equal((await as("SELAM_VIEWER", "POST", clients, { name: "Rogue Client" })).status, 403);
+
+  // Row 24: another organization never reaches them, not even with the id.
+  assert.equal((await as("HORN_OWNER", "GET", clients)).status, 403);
+  assert.equal((await as("HORN_OWNER", "GET", `/v1/organizations/${fixture.hornId}/venues/${venue.body.data.id}`)).status, 404);
+
+  // Row 25: the menu shows Event Management › Events, Clients.
+  const me = await as("SELAM_VIEWER", "GET", "/v1/auth/staff/me");
+  const navigation: Array<{ code: string; children: Array<{ code: string }> }> = me.body.data.navigation;
+  assert.deepEqual(navigation.find((node) => node.code === "EVENT_MANAGEMENT")?.children.map((child) => child.code), ["EVENTS", "CUSTOMERS"]);
 });

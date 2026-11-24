@@ -1,6 +1,8 @@
 import jwt from "jsonwebtoken";
 import { authConfig } from "../../src/config/auth.js";
 import type { BranchRow } from "../../src/models/branch.js";
+import type { CustomerAccountRow } from "../../src/models/customer-account.js";
+import type { VenueRow } from "../../src/models/venue.js";
 import type { ModuleRow } from "../../src/models/module.js";
 import type { OrganizationRow } from "../../src/models/organization.js";
 import type { RoleRow } from "../../src/models/role.js";
@@ -17,6 +19,8 @@ export const IDS = {
   rolePlatform: "55555555-5555-4555-8555-555555555559",
   assignment: "66666666-6666-4666-8666-666666666661",
   module: "77777777-7777-4777-8777-777777777771",
+  customerAccount: "88888888-8888-4888-8888-888888888881",
+  venue: "99999999-9999-4999-8999-999999999991",
 } as const;
 
 const audit = {
@@ -39,6 +43,37 @@ export function branchRow(overrides: Partial<BranchRow> = {}): BranchRow {
     name: "Main",
     description: null,
     is_default: true,
+    is_active: true,
+    ...audit,
+    ...overrides,
+  };
+}
+
+export function customerAccountRow(overrides: Partial<CustomerAccountRow> = {}): CustomerAccountRow {
+  return {
+    id: IDS.customerAccount,
+    organization_id: IDS.orgA,
+    name: "ABC Bank",
+    kind: "ORGANIZATION",
+    type: "Corporate",
+    primary_contact_name: null,
+    primary_contact_email: null,
+    primary_contact_phone: null,
+    is_active: true,
+    ...audit,
+    ...overrides,
+  };
+}
+
+export function venueRow(overrides: Partial<VenueRow> = {}): VenueRow {
+  return {
+    id: IDS.venue,
+    organization_id: IDS.orgA,
+    name: "Millennium Hall",
+    address: null,
+    city: "Addis Ababa",
+    country: "ET",
+    capacity: 2000,
     is_active: true,
     ...audit,
     ...overrides,

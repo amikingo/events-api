@@ -13,6 +13,10 @@ export const MODULE_CODES = {
   USER_ROLES: "USER_ROLES",
   USER_MODULE_ACCESSES: "USER_MODULE_ACCESSES",
   // Business modules
+  /** Events, their ticket types, and venues. */
+  EVENTS: "EVENTS",
+  /** customer_account: the clients commissioning events (menu label "Clients"); not attendees. */
+  CUSTOMERS: "CUSTOMERS",
 } as const;
 
 export type ModuleCode = (typeof MODULE_CODES)[keyof typeof MODULE_CODES];
