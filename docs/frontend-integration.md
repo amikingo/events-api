@@ -5,7 +5,7 @@ full contract (every field, every status) is in [`docs/api/openapi-v1.json`](api
 `http://localhost:5010/v1/docs` while the API runs.
 
 **Available now:** staff sign-in, session, role switching, organizations, and branches.
-**Not yet:** events, registrations, public pages (Phases 3–4), and email sign-in. See the end of this page.
+**Not yet:** events, registrations and public pages (Phases 3–4). See the end of this page.
 
 ---
 
@@ -79,7 +79,7 @@ send it after a reload. A person with several roles otherwise gets `409 staff_co
 
 | Call | Body | Notes |
 |---|---|---|
-| `POST /v1/auth/staff/login` | `{ mobile, password, device_name?, device_id?, platform? }` | `mobile` may start with `09` or `07`, or with `251` or `+251` (spaces and dashes are ignored). `platform` is `"web"` for the browser. Send with `credentials: "include"` so the cookies are stored. A legacy `pin` field gets `400`. |
+| `POST /v1/auth/staff/login` | `{ mobile, password, … }` **or** `{ email, password, … }`, plus optional `device_name`, `device_id`, `platform` | Send exactly one of `mobile` or `email` (both or neither gets `400`). `mobile` may start with `09` or `07`, or with `251` or `+251` (spaces and dashes are ignored). Email login works only for accounts that have an email in auth-cheche. `platform` is `"web"` for the browser. Send with `credentials: "include"` so the cookies are stored. A legacy `pin` field gets `400`. |
 | `POST /v1/auth/staff/refresh` | `{ assignment_id? }` | `credentials: "include"`, no Bearer header. Returns a new access token. |
 | `POST /v1/auth/staff/logout` | none | `credentials: "include"`. Returns `{ revoked: true \| false }`. Clear the in-memory token whatever the answer. |
 | `GET /v1/auth/staff/me` | | Bearer. User, current assignment, all assignments, `permissions`, `navigation`. |
@@ -119,12 +119,13 @@ function rememberSession(data: { accessToken: string; assignment: { id: string }
   localStorage.setItem("assignmentId", data.assignment.id); // not a secret
 }
 
-export async function login(mobile: string, password: string): Promise<void> {
+/** `identifier` is either { mobile } or { email }. */
+export async function login(identifier: { mobile: string } | { email: string }, password: string): Promise<void> {
   const res = await fetch(`${API}/v1/auth/staff/login`, {
     method: "POST",
     credentials: "include", // store the HttpOnly cookies
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mobile, password, platform: "web" }),
+    body: JSON.stringify({ ...identifier, password, platform: "web" }),
   });
   const body = await res.json();
   if (!res.ok) throw body.error; // { code, message, details? }
@@ -193,7 +194,7 @@ Usage: `await api("/v1/organizations/<id>/branches?page=1")`, or
 | Code | Status | Meaning | Do this |
 |---|---|---|---|
 | `validation_error` | 400 | The body, query or path is invalid | Show field errors from `details.issues[]` (`{ path, message, code }`, e.g. `path: "body.mobile"`) |
-| `invalid_credentials` | 401 | Wrong mobile or password, or no access to Events | Show the message as is: "Invalid mobile number or password" |
+| `invalid_credentials` | 401 | Wrong mobile, email or password, or no access to Events | Show the message as is: "Invalid mobile number, email or password" |
 | `staff_assignment_not_found` | 403 | Signed in, but no active role in this API (or the role was removed) | "You don't have access to Events yet" and back to login |
 | `staff_context_required` | 409 | Refresh needs to know which role (`details.count` > 1) | Let the user pick from `assignments`, then refresh with `assignment_id` |
 | `expired_token` | 401 | The access token expired | Refresh once, retry (the example does this) |
@@ -244,6 +245,5 @@ The permission column shows what the signed-in role needs: module code and actio
 ## 7. Not available yet
 
 - **Events, ticket types, registrations, public event pages:** Phases 3–4 of the plan.
-- **Email sign-in:** auth-cheche supports it; whether to add it here is being decided.
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.

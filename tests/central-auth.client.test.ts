@@ -54,6 +54,8 @@ test("a rejected logout throws, so the caller reports revoked: false", async () 
 // --- Password sign-in -----------------------------------------------------------------------------
 
 const LOGIN = { mobile: "+251911000000", password: "secret-password", device_name: "Chrome on Mac", platform: "web" as const };
+const EMAIL_LOGIN = { email: "staff@example.et", password: "secret-password", platform: "web" as const };
+const REFUSED_MESSAGE = "Invalid mobile number, email or password";
 /** auth-cheche's sign-in reply: not wrapped in a data envelope. */
 const SIGNIN_REPLY = {
   message: "Signin successful",
@@ -80,6 +82,29 @@ test("password login posts to /v1/users/signin/password with our service_id and 
   assert.ok(!headerNames.includes("authorization"));
 });
 
+test("email login posts to /v1/users/signin/email with our service_id and no Authorization header", async () => {
+  const calls = fakeFetch(200, JSON.stringify(SIGNIN_REPLY));
+
+  const tokens = await centralAuthClient.emailLogin(EMAIL_LOGIN);
+
+  assert.deepEqual(tokens, { accessToken: "access-abc", refreshToken: "refresh-abc", refreshExpiresIn: null });
+  const [{ url, init } = { url: "", init: undefined }] = calls;
+  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/signin/email?service_id=${authConfig.centralAuthServiceId}`);
+  const body = init?.body;
+  assert.ok(typeof body === "string", "the request body is a JSON string");
+  assert.deepEqual(JSON.parse(body), EMAIL_LOGIN);
+  const headerNames = Object.keys((init?.headers ?? {}) as Record<string, string>).map((name) => name.toLowerCase());
+  assert.ok(!headerNames.includes("authorization"));
+});
+
+test("a refused email login gets the same fixed message as a mobile login", async () => {
+  fakeFetch(404, JSON.stringify({ error: "user not found" }));
+  await assert.rejects(
+    centralAuthClient.emailLogin(EMAIL_LOGIN),
+    (error: unknown) => error instanceof InvalidCredentialsError && error.message === REFUSED_MESSAGE,
+  );
+});
+
 test("a sign-in reply without a refresh token is refused", async () => {
   fakeFetch(200, JSON.stringify({ message: "Signin successful", access_token: "access-abc" }));
   await assert.rejects(centralAuthClient.passwordLogin(LOGIN), MalformedCentralAuthResponseError);
@@ -97,7 +122,7 @@ test("every refused login gets the same message; auth-cheche's reason stays in t
     fakeFetch(status, JSON.stringify({ error: reason }));
     await assert.rejects(centralAuthClient.passwordLogin(LOGIN), (error: unknown) => {
       assert.ok(error instanceof InvalidCredentialsError, `${status} becomes invalid_credentials`);
-      assert.equal(error.message, "Invalid mobile number or password", `${status} uses the fixed message`);
+      assert.equal(error.message, REFUSED_MESSAGE, `${status} uses the fixed message`);
       assert.ok(error.cause instanceof Error, `${status} keeps a cause`);
       assert.equal(error.cause.message, `Central Auth ${status}: ${reason}`);
       return true;

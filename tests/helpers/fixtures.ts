@@ -1,3 +1,5 @@
+import jwt from "jsonwebtoken";
+import { authConfig } from "../../src/config/auth.js";
 import type { BranchRow } from "../../src/models/branch.js";
 import type { ModuleRow } from "../../src/models/module.js";
 import type { OrganizationRow } from "../../src/models/organization.js";
@@ -90,6 +92,8 @@ export function platformSuperAdmin(): AssignmentRow {
   });
 }
 
+const TEST_PROFILE = { mobile: "+251911000000", firstname: "Test", middlename: null, lastname: "User" };
+
 export function staffToken(scope: { organizationId?: string | null; branchId?: string | null } = {}): string {
   return authTokenService.signAppStaffToken({
     userId: IDS.user,
@@ -99,6 +103,16 @@ export function staffToken(scope: { organizationId?: string | null; branchId?: s
       organization_id: scope.organizationId === undefined ? IDS.orgA : scope.organizationId,
       branch_id: scope.branchId ?? null,
     },
-    profile: { mobile: "+251911000000", firstname: "Test", middlename: null, lastname: "User" },
+    profile: TEST_PROFILE,
   }).token;
+}
+
+/** A Central Auth-style access token (HS256, iss auth_api, 3 days), as auth-cheche would issue it. */
+export function centralAccessToken(): string {
+  return jwt.sign({ user_id: IDS.user, token_type: "access", ...TEST_PROFILE }, authConfig.centralAuthJwtSecret, {
+    algorithm: "HS256",
+    expiresIn: 3 * 24 * 3600,
+    issuer: authConfig.centralIssuer,
+    subject: IDS.user,
+  });
 }

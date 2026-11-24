@@ -18,16 +18,16 @@ const UPSTREAM = "central_auth";
  * whether the account exists, is unverified or is not registered for this service. The real reason
  * goes to the server log through the error's cause.
  */
-const CREDENTIALS_REFUSED_MESSAGE = "Invalid mobile number or password";
+const CREDENTIALS_REFUSED_MESSAGE = "Invalid mobile number, email or password";
 const CREDENTIALS_REFUSED_STATUSES = [400, 401, 403, 404];
 
-export type PasswordLoginInput = {
-  mobile: string;
-  password: string;
+type SignInDevice = {
   device_id?: string | undefined;
   device_name?: string | undefined;
   platform?: "ios" | "android" | "web" | undefined;
 };
+export type PasswordLoginInput = { mobile: string; password: string } & SignInDevice;
+export type EmailLoginInput = { email: string; password: string } & SignInDevice;
 
 export type CentralTokens = {
   accessToken: string;
@@ -112,17 +112,24 @@ function parseTokens(payload: unknown, { requireRefresh }: { requireRefresh: boo
 }
 
 /**
- * auth-cheche password sign-in. service_id (server-owned, from config) makes auth-cheche refuse accounts
- * that are not registered for this product. No Authorization header is sent.
+ * Shared by both sign-in calls. service_id (server-owned, from config) makes auth-cheche refuse accounts
+ * that are not registered for this product; refusals get the fixed message; a refresh token is required.
+ * No Authorization header is sent.
  */
-async function passwordLogin(input: PasswordLoginInput): Promise<CentralTokens> {
+async function signIn(path: string, body: PasswordLoginInput | EmailLoginInput): Promise<CentralTokens> {
   const query = new URLSearchParams({ service_id: authConfig.centralAuthServiceId });
-  const payload = await call(`/v1/users/signin/password?${query.toString()}`, {
-    method: "POST",
-    body: input,
-    credentialsFlow: true,
-  });
+  const payload = await call(`${path}?${query.toString()}`, { method: "POST", body, credentialsFlow: true });
   return parseTokens(payload, { requireRefresh: true });
+}
+
+/** auth-cheche mobile + password sign-in. */
+async function passwordLogin(input: PasswordLoginInput): Promise<CentralTokens> {
+  return signIn("/v1/users/signin/password", input);
+}
+
+/** auth-cheche email + password sign-in. Works only for accounts that have an email in auth-cheche. */
+async function emailLogin(input: EmailLoginInput): Promise<CentralTokens> {
+  return signIn("/v1/users/signin/email", input);
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<CentralTokens> {
@@ -143,4 +150,4 @@ async function logout(refreshToken: string): Promise<void> {
   await call("/v1/auth/logout", { method: "POST", body: { refresh_token: refreshToken } });
 }
 
-export const centralAuthClient = { passwordLogin, refreshAccessToken, logout };
+export const centralAuthClient = { passwordLogin, emailLogin, refreshAccessToken, logout };

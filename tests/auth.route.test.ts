@@ -11,7 +11,7 @@ import { authTokenService } from "../src/services/auth-token.service.js";
 import { permissionResolutionService } from "../src/services/permission-resolution.service.js";
 import { logger } from "../src/utils/logger.js";
 import { DENIED_PERMISSION, FULL_PERMISSION } from "../src/utils/rbac.js";
-import { assignment, IDS, staffToken } from "./helpers/fixtures.js";
+import { assignment, centralAccessToken, IDS, staffToken } from "./helpers/fixtures.js";
 import { call, withServer } from "./helpers/http.js";
 
 /**
@@ -71,16 +71,6 @@ function assertCookieSet(setCookie: string[], name: string, maxAge: { min: numbe
   return decodeURIComponent(header.slice(name.length + 1).split(";")[0] ?? "");
 }
 
-/** A Central Auth-style access token (HS256, shared secret, iss auth_api), as auth-cheche would issue it. */
-function centralAccessToken(): string {
-  return jwt.sign({ user_id: IDS.user, token_type: "access", ...PROFILE }, authConfig.centralAuthJwtSecret, {
-    algorithm: "HS256",
-    expiresIn: 3 * 24 * 3600,
-    issuer: authConfig.centralIssuer,
-    subject: IDS.user,
-  });
-}
-
 function confirmationFor(refreshToken: string): string {
   const signed = authTokenService.signStaffCentralSession({
     userId: IDS.user,
@@ -138,7 +128,7 @@ test("login without an active staff assignment is refused with 403 and sets no c
 
 test("Central Auth refusals and outages map to stable error codes", async () => {
   const cases: Array<[string, Error, number, string]> = [
-    ["wrong credentials", new InvalidCredentialsError("Invalid mobile number or password"), 401, "invalid_credentials"],
+    ["wrong credentials", new InvalidCredentialsError("Invalid mobile number, email or password"), 401, "invalid_credentials"],
     ["rate limited or account locked", new CentralAuthRateLimitedError(), 429, "central_auth_rate_limited"],
     ["Central Auth down", new CentralAuthUnavailableError(), 503, "central_auth_unavailable"],
   ];

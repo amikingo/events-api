@@ -17,14 +17,27 @@ export const mobileSchema = z
     return normalized;
   });
 
-/** auth-cheche password sign-in. PIN sign-in is legacy: a body that still sends `pin` is rejected (strict). */
-export const staffLoginSchema = z.strictObject({
-  mobile: mobileSchema,
-  password: z.string().min(1).max(128),
-  device_id: z.string().trim().min(1).max(128).optional(),
-  device_name: z.string().trim().min(1).max(128).optional(),
-  platform: z.enum(["ios", "android", "web"]).optional(),
-});
+/**
+ * auth-cheche sign-in with mobile OR email, plus password: exactly one of the two.
+ * PIN sign-in is legacy: a body that still sends `pin` is rejected (strict).
+ */
+export const staffLoginSchema = z
+  .strictObject({
+    mobile: mobileSchema.optional(),
+    // Not lower-cased: auth-cheche may compare emails exactly.
+    email: z.email().max(254).optional(),
+    password: z.string().min(1).max(128),
+    device_id: z.string().trim().min(1).max(128).optional(),
+    device_name: z.string().trim().min(1).max(128).optional(),
+    platform: z.enum(["ios", "android", "web"]).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mobile === undefined && value.email === undefined) {
+      ctx.addIssue({ code: "custom", path: ["mobile"], message: "Send either mobile or email" });
+    } else if (value.mobile !== undefined && value.email !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["email"], message: "Send either mobile or email, not both" });
+    }
+  });
 
 /** Optional body. Express 5 leaves req.body undefined when nothing was sent. */
 export const staffRefreshSchema = z.strictObject({ assignment_id: uuidSchema.optional() }).optional();

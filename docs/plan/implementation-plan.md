@@ -172,12 +172,14 @@ Planned Central Auth integrations (creating staff accounts, reading users, editi
 
 ### auth-cheche facts to implement against (auth-cheche's live spec, `https://auth.cheche.et/api/v1/swagger/doc.json`)
 
-Decision (24 November 2026): PIN sign-in is the legacy setup. Staff log in with **mobile + password**.
+Decisions (24 November 2026): PIN sign-in is the legacy setup. Staff log in with **mobile + password** or
+**email + password** (exactly one of mobile or email per request).
 
 | Topic | auth-cheche contract |
 |---|---|
 | Base URL | Production `https://auth.cheche.et/api`; every path starts with `/v1`. (The guide's `https://auth.cheche.et/v1` is out of date.) |
 | Sign-in | `POST /v1/users/signin/password?service_id=<uuid>` with body `{ mobile, password, device_id?, device_name?, platform? }`. `service_id` makes auth-cheche refuse accounts not registered for the service. |
+| Email sign-in | `POST /v1/users/signin/email?service_id=<uuid>` with body `{ email, password, device_id?, device_name?, platform? }`; same replies as mobile sign-in. Only for accounts that have an email in auth-cheche. |
 | Sign-in replies | 200 not wrapped: `{ message, access_token, refresh_token, … }`. 400 invalid input · 401 invalid credentials · 403 not verified or not registered for the service · 404 user not found · 429 account locked after too many failed attempts. A sign-in attempt on an unverified account resends an OTP. |
 | Refresh | `POST /v1/auth/refresh` with body `{ refresh_token }`; returns a new access **and** refresh token (rotation) |
 | Logout | `POST /v1/auth/logout` with optional body `{ refresh_token }`; no Bearer token required |

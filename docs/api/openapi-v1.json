@@ -12,7 +12,7 @@
   "paths": {
     "/v1/auth/staff/login": {
       "post": {
-        "summary": "Staff password login (sets the HttpOnly refresh cookie)",
+        "summary": "Staff login with mobile or email + password (sets the HttpOnly refresh cookie)",
         "tags": [
           "Auth"
         ],
@@ -652,6 +652,12 @@
             "minLength": 9,
             "maxLength": 20
           },
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
           "password": {
             "type": "string",
             "minLength": 1,
@@ -677,7 +683,6 @@
           }
         },
         "required": [
-          "mobile",
           "password"
         ],
         "additionalProperties": false

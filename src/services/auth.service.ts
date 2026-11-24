@@ -97,8 +97,16 @@ function confirmCentralSession(identity: CentralIdentity, refreshToken: string |
   return signed ? { action: "set", token: signed.token, maxAgeSeconds: signed.expiresIn } : { action: "clear" };
 }
 
+/** Signs in at auth-cheche by email or by mobile. The validator guarantees exactly one of the two. */
+function signInAtCentral(input: StaffLoginInput): Promise<CentralTokens> {
+  const { mobile, email, ...credentials } = input;
+  if (email !== undefined) return centralAuthClient.emailLogin({ email, ...credentials });
+  if (mobile !== undefined) return centralAuthClient.passwordLogin({ mobile, ...credentials });
+  throw new ValidationAppError("Send either mobile or email");
+}
+
 async function staffLogin(input: StaffLoginInput): Promise<StaffTokenResult> {
-  const tokens = await centralAuthClient.passwordLogin(input);
+  const tokens = await signInAtCentral(input);
   const identity = authTokenService.verifyCentralAccessToken(tokens.accessToken);
 
   const assignments = await loadUsableAssignments(identity.userId);

@@ -25,7 +25,7 @@ export type ApiOperation = {
 /** The v1 operation list: one entry per route. A route without an entry fails tests/openapi.test.ts. */
 export const v1Operations: readonly ApiOperation[] = [
   // --- Auth ---------------------------------------------------------------------------------
-  { method: "post", path: "/v1/auth/staff/login", contract: auth.staffLoginRequest, bodyComponent: "StaffLoginRequest", summary: "Staff password login (sets the HttpOnly refresh cookie)", tags: ["Auth"], auth: "public", successStatus: 200 },
+  { method: "post", path: "/v1/auth/staff/login", contract: auth.staffLoginRequest, bodyComponent: "StaffLoginRequest", summary: "Staff login with mobile or email + password (sets the HttpOnly refresh cookie)", tags: ["Auth"], auth: "public", successStatus: 200 },
   { method: "post", path: "/v1/auth/staff/refresh", contract: auth.staffRefreshRequest, bodyComponent: "StaffRefreshRequest", summary: "Renew the staff access token from the refresh cookie", tags: ["Auth"], auth: "refresh-cookie", successStatus: 200 },
   { method: "post", path: "/v1/auth/staff/logout", contract: auth.staffLogoutRequest, summary: "Sign out: clear the refresh cookie and revoke the Central Auth session (best effort; data.revoked says whether Central confirmed)", tags: ["Auth"], auth: "refresh-cookie", successStatus: 200 },
   { method: "get", path: "/v1/auth/staff/me", contract: auth.currentStaffSessionRequest, summary: "Current staff session: assignment, flat permissions, nested navigation", tags: ["Auth"], auth: "staff", successStatus: 200 },

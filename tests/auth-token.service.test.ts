@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import { authConfig } from "../src/config/auth.js";
 import { InvalidTokenError, UnsupportedTokenError } from "../src/errors/app-errors.js";
 import { authTokenService, centralSessionLifetimeSeconds } from "../src/services/auth-token.service.js";
-import { IDS, staffToken } from "./helpers/fixtures.js";
+import { centralAccessToken, IDS, staffToken } from "./helpers/fixtures.js";
 
 const PROFILE = { mobile: "+251911000000", firstname: "Test", middlename: null, lastname: "User" };
 const REFRESH_TOKEN = "central-refresh-token-value";
@@ -19,16 +19,6 @@ function confirmation(refreshToken = REFRESH_TOKEN): string {
   });
   assert.ok(signed, "a confirmation is issued while the feature is on");
   return signed.token;
-}
-
-/** A Central Auth-style access token (HS256, iss auth_api), as auth-cheche would issue it. */
-function centralAccessToken(): string {
-  return jwt.sign({ user_id: IDS.user, token_type: "access", ...PROFILE }, authConfig.centralAuthJwtSecret, {
-    algorithm: "HS256",
-    expiresIn: 3 * 24 * 3600,
-    issuer: authConfig.centralIssuer,
-    subject: IDS.user,
-  });
 }
 
 test("a token shaped exactly like auth-cheche's example verifies; its extra claims are ignored", () => {
