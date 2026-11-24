@@ -1,0 +1,335 @@
+# Events API — implementation plan
+
+Version 1 · 24 November 2026 · Backend first
+
+This file is the working plan for Claude Code. Work **one phase at a time**. Each phase ends with a short report and a demo; the next phase starts only after that phase is verified.
+
+How to use it:
+
+- **Phase 0:** the project has been generated from the `ts-backend-blueprint` starter into `events-api`. What remains of Phase 0 is listed in its section below.
+- **Later phases:** say: *"Carry out Phase N of docs/plan/implementation-plan.md. Do not start Phase N+1."*
+
+---
+
+## Fixed decisions (do not re-open during implementation)
+
+| Topic | Decision |
+|---|---|
+| Starting point | The verified TypeScript starter from the `ts-backend-blueprint` skill (derived from `bookings_api`). Node 24, Express 5, TypeScript 6 (strict, ESM), Sequelize 6, PostgreSQL, Umzug migrations, Zod 4, `node:test`. |
+| Project identity | Folder `events-api`, slug `events`, title `Events API`, **no table prefix**. |
+| Architecture rules | The generated project's `AGENTS.md` and `docs/architecture/backend-module-standard.md` are binding. |
+| Identity | Staff log in through Central Auth (**auth-cheche**). The API never stores credentials, only the Central Auth `user_id`. |
+| Product behaviour (phases 3–5) | The *MVP 1 product and schema specification* of 23 November 2026. Review suggestions made after it are backlog, not scope. |
+| Infrastructure for now | Local PostgreSQL: the PostgreSQL 17 already installed with Homebrew on the developer's machine. No Docker, CI or devcontainer files until the real repository exists (it brings its own). Every connection detail lives in `.env`, so moving to the real repository and database later changes no code. |
+
+## What only the project owner can provide
+
+These are needed for the **live** checks only. Building and automated tests use test doubles until they arrive; live checks are reported as *pending* until then.
+
+1. The auth-cheche base URL for development.
+2. The shared JWT secret (auth-cheche's `APP_AUTH_TOKEN`).
+3. A `service_id` registered in auth-cheche for the Events product.
+4. Test accounts (mobile, PIN, password), ideally three: one future owner, one future viewer, one with no role.
+
+## Rules for every phase
+
+- Follow `AGENTS.md`. Read the closest existing module (`branch`) before writing a new one, and copy its shape.
+- **Databases and `.env`:** the agent never runs migrations, seeds, database-connected tests (`TEST_DATABASE=1`), or scripts that load `.env` (`dev`, `db:migrate*`, `bootstrap:super-admin` and the scripts added later). It writes the files and gives the exact commands; the project owner runs them, against `events_dev` and `events_test` only. Integration tests migrate **down to zero** at start and end, so they run against `events_test` only, never `events_dev`.
+- **Git:** the project is not a git repository until it moves into the real repository. The agent runs no git command that changes anything; it proposes commits instead.
+- **Asking first:** the agent asks before every install, test, type-check or build run.
+- **Env files:** the agent may read and edit `.env.example` only. It never reads or touches `.env` or any other env file.
+- **Dependencies:** add none unless the phase says so. If one is unavoidable, list it in the report with the reason.
+- **End every phase with a report** containing: files created or changed; commands to reproduce the demo; test results (unit, route, integration); and which checks used test doubles versus live auth-cheche.
+
+---
+
+## Phase 0 — Local setup
+
+**Goal:** a generated Events API that passes the starter's full check suite against local PostgreSQL.
+
+Status on 24 November 2026: steps 1–5 are done (`npm run check` passes; database tests skipped). Steps 6–8 are the project owner's.
+
+### Prerequisites (on the developer's machine)
+
+Node 24 and npm, Python 3, Homebrew PostgreSQL 17 listening on `127.0.0.1:5432`, and the skill at `/Users/joedee/typescript-backend-blueprint/skill/ts-backend-blueprint`.
+
+### Steps
+
+1. **Generate the project** (agent). Done.
+
+   ```bash
+   python3 /Users/joedee/typescript-backend-blueprint/skill/ts-backend-blueprint/scripts/init_project.py \
+     /Users/joedee/cheche-projects/Event_management/events-api \
+     --slug events --title "Events API" --table-prefix ""
+   ```
+
+   The script printed no "possible leftovers" warning. No `git init`.
+
+2. **Remove the Docker/CI items the starter ships** (agent). Done: `Dockerfile`, `.dockerignore`, `.github/`, `.devcontainer/`. `.gitignore` stays, because it keeps `.env` out of the real repository.
+
+3. **Move this plan into the project** at `docs/plan/implementation-plan.md` (agent). Done.
+
+4. **Install packages:** `npm ci` in the project folder. Done.
+
+5. **Run the check suite** (agent): `npm run check` (typecheck, lint, unit + route + contract tests, OpenAPI snapshot). No database, `.env` or network involved; the database tests are skipped. Done.
+
+6. **Create the database login and databases** (project owner). In `psql -d postgres` as the Homebrew superuser. Run the check queries first; each must return 0 rows. `CREATE DATABASE` cannot run inside a transaction, so these take effect immediately.
+
+   ```sql
+   -- check first: both must return 0 rows
+   SELECT rolname FROM pg_roles WHERE rolname = 'events';
+   SELECT datname FROM pg_database WHERE datname IN ('events_dev', 'events_test');
+
+   CREATE ROLE events LOGIN PASSWORD 'events';
+   CREATE DATABASE events_dev OWNER events;
+   CREATE DATABASE events_test OWNER events;
+
+   -- verify: two rows, owner = events
+   SELECT datname, pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname LIKE 'events\_%';
+   ```
+
+   `events` / `events` is a local-only development login. It matches the defaults in `tests/setup-env.ts`, so integration tests need no extra configuration. It gets no superuser or create-database rights; owning its databases is enough for migrations.
+
+7. **Create `.env`** (project owner): `cp .env.example .env`, then set:
+
+   ```ini
+   NODE_ENV=development
+   PORT=5010
+   LOG_LEVEL=debug
+   TRUST_PROXY_HOPS=0
+   JSON_BODY_LIMIT=1mb
+   CORS_ALLOWED_ORIGINS=http://localhost:3000
+   API_DOCS_ENABLED=true
+
+   POSTGRES_HOST=127.0.0.1
+   POSTGRES_PORT=5432
+   POSTGRES_DATABASE=events_dev
+   POSTGRES_USER=events
+   POSTGRES_PASSWORD=events
+   POSTGRES_SSL=disable
+   POSTGRES_POOL_MAX=10
+
+   # Lifetime of this API's staff access tokens, in seconds.
+   APP_TOKEN_TTL_SECONDS=900
+
+   # auth-cheche base URL WITHOUT the trailing /v1 (the client adds /v1/... itself).
+   # Placeholder until the real URL is provided:
+   CENTRAL_AUTH_API=http://localhost:5003
+   # auth-cheche's shared secret (same name there). Also signs this API's staff tokens (one secret,
+   # like bookings_api). Placeholder until provided (must be 32+ chars):
+   APP_AUTH_TOKEN=placeholder-central-auth-secret-0000000000
+   # The Events product's service_id in auth-cheche. Placeholder until provided:
+   CENTRAL_AUTH_SERVICE_ID=00000000-0000-4000-8000-000000000000
+   CENTRAL_AUTH_TIMEOUT_MS=10000
+
+   AUTH_REFRESH_COOKIE_SAME_SITE=lax
+   # auth-cheche refresh tokens live 7 days
+   AUTH_REFRESH_TTL_SECONDS=604800
+   AUTH_REFRESH_TRUSTED_ORIGINS=http://localhost:3000
+   ```
+
+   `PORT=5010` avoids the ports auth-cheche uses locally (5000 and 5003). There is no separate token secret: `APP_AUTH_TOKEN` also signs this API's staff tokens (see "Known risk / later" in `docs/authentication.md`). The real value is never pasted into chat.
+
+8. **Database-backed checks** (project owner), in the project folder:
+   1. `env | grep POSTGRES` prints **nothing** (shell values override the test defaults and could point the tests at another database).
+   2. `TEST_DATABASE=1 npm test`: all tests pass, none skipped. Uses `events_test` and migrates it up and back down to zero.
+   3. `npm run db:migrate`: 8 migrations applied to `events_dev`.
+   4. `npm run db:migrate:status`: `"pending": []`.
+   5. `npm run dev`, then `curl -i http://localhost:5010/health/ready` returns `200 {"status":"ready"}`, and `http://localhost:5010/v1/docs` shows the API docs.
+
+### Done when
+
+- `npm run check` passes.
+- `TEST_DATABASE=1 npm test` passes all tests, including the integration tests.
+- `GET http://localhost:5010/health/ready` returns 200, and `/v1/docs` shows the API docs.
+- `npm run db:migrate:status` on `events_dev` shows no pending migrations.
+
+---
+
+## Phase 1 — Authentication against auth-cheche
+
+**Goal:** staff log in through auth-cheche; `/v1/auth/staff/me` works; refresh and logout behave as the starter defines.
+
+The starter's auth flow (Central Auth login → local staff token → HttpOnly refresh cookie → `/me`) stays as it is. What changes is the Central Auth client and the login contract, because the current auth-cheche contract differs from what the starter was written against.
+
+### Already done before Phase 1 (bookings_api updates)
+
+Built and tested with test doubles (see `docs/authentication.md` and `docs/rbac-application-flow.md`):
+
+1. Only the signed-in assignment counts for permissions; other roles need a switch (`POST /v1/auth/staff/switch-assignment`).
+2. Logout revokes the Central Auth session (`POST /v1/auth/logout` `{ refresh_token }`), best effort; `data.revoked` says whether Central confirmed.
+3. A central-session confirmation cookie (`events_staff_central_session`) lets staff refresh skip Central Auth for up to `AUTH_CENTRAL_SESSION_TTL_SECONDS` (default 6 hours).
+4. `AUTH_REFRESH_COOKIE_PATH_PREFIX` for running behind a proxy path such as `/api`.
+
+Planned Central Auth integrations (creating staff accounts, reading users, editing details, forgot password) and the role-assignment rules are documented there as *not built yet*.
+
+### auth-cheche facts to implement against (latest auth-cheche guide)
+
+| Topic | auth-cheche contract |
+|---|---|
+| Sign-in | `POST /v1/users/signin/pin-password?service_id=<uuid>` with body `{ mobile, pin, password, device_id, device_name, platform }` |
+| Sign-in response | Not wrapped: `{ message, access_token, refresh_token, service_ids, service_id, session_id }` |
+| Refresh | `POST /v1/auth/refresh` with body `{ refresh_token }` |
+| Token | HS256, signed with the shared secret (`APP_AUTH_TOKEN` on auth-cheche's side) |
+| Claims | `user_id`, `sub`, `firstname`, `middlename`, `lastname`, `mobile`, `service_ids`, `token_type` (`"access"` or `"refresh"`), `auth_role`, `session_id`, `iss = "auth_api"`, `exp`, `iat` |
+| Lifetimes | Access 3 days, refresh 7 days |
+| Mobile format | `+251XXXXXXXXX` |
+| Errors | `{ "error": "…" }`; OTP endpoints `{ "response": "…" }`; 429 `{ "message": "Too many requests" }` |
+
+### Steps
+
+1. **Inspect first.** Read `src/clients/central-auth.client.ts`, `src/validators/auth.ts`, `src/services/auth.service.ts`, `src/services/auth-token.service.ts`, `src/routes/v1/auth.ts`, the auth tests and fixtures. Report anything that contradicts the table above before changing code.
+
+2. **Central Auth client** (`src/clients/central-auth.client.ts`):
+   - Replace `passwordLogin` with `pinPasswordLogin(input)`, which calls `POST /v1/users/signin/pin-password` with the query parameter `service_id = CENTRAL_AUTH_SERVICE_ID` and the body `{ mobile, pin, password, device_id?, device_name?, platform? }`. Keep `credentialsFlow: true` and `requireRefresh: true`.
+   - `refreshAccessToken` keeps calling `POST /v1/auth/refresh` with `{ refresh_token }`.
+   - Make the upstream error-message reader accept `error`, `response` and `message` fields.
+   - Map an upstream **429** to a new error `CentralAuthRateLimitedError` (HTTP 429, code `central_auth_rate_limited`), added to `src/errors/app-errors.ts` following the existing class shape.
+
+3. **Login contract** (`src/validators/auth.ts`): `staffLoginRequest` body becomes:
+   - `mobile`: the existing mobile schema, normalised to `+251XXXXXXXXX`
+   - `pin`: digits only, `/^\d{4,8}$/`
+   - `password`: non-empty string, max 128
+   - `device_id`, `device_name`: optional strings, max 128
+   - `platform`: optional enum `ios | android | web`
+
+   `src/services/auth.service.ts` passes these through to `pinPasswordLogin`. Nothing else in the login logic changes: the user still needs an active staff assignment, and the starter's assignment selection rules stay.
+
+4. **Token verification** (`src/services/auth-token.service.ts`): the starter's Central Auth claim schema already accepts the claims above (loose object, `token_type = "access"`, issuer `auth_api`). Confirm with a test that a token shaped exactly like the auth-cheche example verifies, and that a token with `token_type = "refresh"` is rejected. Do **not** add a `service_ids` check; the staff assignment is the gate.
+
+5. **Secret length:** if the real auth-cheche secret turns out shorter than 32 characters, lower the minimum for `APP_AUTH_TOKEN` in `src/config/env.ts`. Because it is the only secret, this also shortens the key that signs this API's staff tokens: state that in the Phase 1 report.
+
+6. **Documentation:** update `.env.example` comments (base URL without `/v1`; 7-day refresh) and `docs/authentication.md`. Regenerate the OpenAPI snapshot with `npm run openapi`.
+
+7. **Tests** (test double for auth-cheche: `mock.method(centralAuthClient, …)`; Central Auth-style tokens signed in fixtures with `APP_AUTH_TOKEN`, using the claim shape above):
+   - Login success: 200; body has `accessToken` and **no** refresh token; `Set-Cookie: events_staff_refresh` is `HttpOnly`, `Path=/v1/auth/staff`.
+   - Login with valid credentials but no active assignment: 403 `staff_assignment_not_found`.
+   - Login with wrong credentials (upstream 401): 401 `invalid_credentials`.
+   - Upstream 429: 429 `central_auth_rate_limited`. Upstream down or timing out: 503 `central_auth_unavailable`.
+   - Unknown body field: 400 `validation_error`, and auth-cheche is not called.
+   - Refresh with cookie: 200 and a new access token. Without cookie: 401 `refresh_token_missing`. From an untrusted `Origin`: 403 `refresh_origin_not_allowed`.
+   - Logout: 200 and both cookies are cleared; `data.revoked` is `true` when Central Auth confirms the revoke, `false` when it fails or no cookie was sent (already built and tested, see above).
+   - `GET /v1/auth/staff/me` with a valid staff token: 200 with user, assignment, permissions and navigation. With an expired token: 401 `expired_token`. Without a token: 401 `authentication_required`.
+
+8. **Live check** (only when auth-cheche access is available; the project owner runs the commands that load `.env`):
+   1. Get the test user's Central Auth `user_id`: call auth-cheche sign-in directly and read `user_id` from the access token's payload (the middle segment of the JWT, base64-decoded).
+   2. Give that user a platform assignment: `npm run bootstrap:super-admin -- --user-id <id>` (preview), then the same with `--confirm`.
+   3. Exercise the API:
+
+      ```bash
+      curl -i -c cookies.txt -H 'Content-Type: application/json' -H 'Origin: http://localhost:3000' \
+        -d '{"mobile":"09XXXXXXXX","pin":"XXXXXX","password":"XXXX","platform":"web"}' \
+        http://localhost:5010/v1/auth/staff/login
+      curl -i -H "Authorization: Bearer <accessToken>" http://localhost:5010/v1/auth/staff/me
+      curl -i -b cookies.txt -c cookies.txt -X POST -H 'Origin: http://localhost:3000' \
+        http://localhost:5010/v1/auth/staff/refresh
+      curl -i -b cookies.txt -c cookies.txt -X POST -H 'Origin: http://localhost:3000' \
+        http://localhost:5010/v1/auth/staff/logout
+      ```
+
+### Done when
+
+- All Phase 1 tests pass, `npm run check` passes, and `TEST_DATABASE=1 npm test` passes.
+- The report states whether the live check ran, or is pending credentials.
+
+---
+
+## Phase 2 — Authorization and tenant isolation
+
+**Goal:** prove with real database data that an owner can act in their own organization, a viewer's write is denied, office-scoped staff are limited to their office, and nobody reaches another organization or platform administration.
+
+The starter already contains the RBAC engine (modules, roles, role grants, assignments, overrides, Super Admin, explicit scope, `/me` permissions and menu) and protected routes for organizations and branches. This phase adds the provisioning the pilot needs and proves the rules end to end. **No new HTTP endpoints** are added in this phase.
+
+### Steps
+
+1. **Default tenant roles** as a constant in `src/utils/default-roles.ts`, using existing module codes only:
+
+   | Role code | Name | Grants |
+   |---|---|---|
+   | `OWNER` | Owner | `ORGANIZATIONS`: view, update · `BRANCHES`: view, create, update · `ROLES`: view · `USER_ROLES`: view |
+   | `VIEWER` | Viewer | `ORGANIZATIONS`: view · `BRANCHES`: view |
+
+   Later phases add their modules (`CUSTOMERS`, `EVENTS`, `REGISTRATIONS`) and extend these grants through migrations.
+
+2. **Provisioning service** `src/services/organization-provisioning.service.ts`, an aggregate service running in **one** `runTransaction`:
+   - `provisionOrganizer({ name, slug?, ownerUserId }, actorId)`: creates the organization and its default `MAIN` branch (reuse the existing organization creation logic), creates the `OWNER` and `VIEWER` roles for that organization with their grants, and creates the owner's organization-wide assignment.
+   - `assignStaff({ organizationId, userId, roleCode, branchCode? }, actorId)`: creates an assignment, scoped to the branch when `branchCode` is given. Friendly errors for an unknown role or branch, a duplicate assignment, and a user already assigned in another organization (the database trigger stays as the backstop).
+   - Add the repository methods these need (role create and find by organization and code, role grant bulk create, branch find by organization and code, assignment create), following the `branch` repository conventions.
+
+3. **Scripts** following the `bootstrap-super-admin.ts` template (preview by default, `--confirm` to write, JSON output):
+   - `src/scripts/provision-organizer.ts --name "Selam Events" --owner-user-id <uuid> [--slug selam-events] [--confirm]`
+   - `src/scripts/assign-staff.ts --organization-slug selam-events --user-id <uuid> --role-code VIEWER [--branch-code ADDIS] [--confirm]`
+   - `src/scripts/dev-staff-token.ts --user-id <uuid>`: **development only**. Refuses to run when `NODE_ENV=production`. Signs a staff token with `APP_AUTH_TOKEN` for that user's active assignment, so the demo below works before auth-cheche access arrives.
+   - Add the matching `npm` scripts in `package.json`.
+
+4. **Integration test** `tests/integration/authorization.test.ts`. Real PostgreSQL (`events_test`), real app via `createApp()` + `withServer`, real signed staff tokens, **no** stubbed permission engine. Fixture, built through the provisioning service:
+   - **Selam Events:** branches `MAIN` and `ADDIS`. Users: `SELAM_OWNER` (OWNER), `SELAM_VIEWER` (VIEWER), `SELAM_ADDIS` (VIEWER, scoped to `ADDIS`).
+   - **Horn Health Alliance:** branch `MAIN`. User: `HORN_OWNER` (OWNER).
+   - `SUPER` (platform Super Admin, via the bootstrap service) and `NO_ROLE` (no assignment).
+
+   | # | Caller | Request | Expected |
+   |---|---|---|---|
+   | 1 | SELAM_OWNER | `GET /v1/organizations/{selam}/branches` | 200, exactly Selam's 2 branches |
+   | 2 | SELAM_OWNER | `POST /v1/organizations/{selam}/branches` | 201 |
+   | 3 | SELAM_VIEWER | `GET /v1/organizations/{selam}/branches` | 200 |
+   | 4 | SELAM_VIEWER | `POST /v1/organizations/{selam}/branches` | 403 `permission_denied`; no row created |
+   | 5 | SELAM_VIEWER | `PATCH …/branches/{selamMain}` | 403 |
+   | 6 | SELAM_ADDIS | `GET …/branches/{selamAddis}` | 200 |
+   | 7 | SELAM_ADDIS | `GET …/branches/{selamMain}` | 403 |
+   | 8 | SELAM_ADDIS | `GET /v1/organizations/{selam}/branches` (organization-wide) | 403 |
+   | 9 | SELAM_OWNER | `GET /v1/organizations/{horn}/branches` | 403 |
+   | 10 | SELAM_OWNER | `GET /v1/organizations/{horn}` | 403 |
+   | 11 | SELAM_OWNER | `POST /v1/organizations` (platform) | 403 |
+   | 12 | SUPER | `POST /v1/organizations` | 201 |
+   | 13 | SUPER | `GET /v1/organizations/{horn}/branches` | 200 |
+   | 14 | SELAM_VIEWER | `GET /v1/auth/staff/me` | `permissions.BRANCHES` = view only; the menu shows Administration › Branches and no Access Control |
+   | 15 | SELAM_OWNER | `GET /v1/auth/staff/me` | `BRANCHES` view/create/update; Access Control visible |
+   | 16 | SELAM_VIEWER + override `BRANCHES.can_create = true` | `POST …/branches` | 201 (override allows) |
+   | 17 | SELAM_OWNER + override `BRANCHES.can_create = false` | `POST …/branches` | 403 (deny wins) |
+   | 18 | — | `assignStaff` for HORN_OWNER into Selam | rejected (one person, one organization) |
+
+   Also unit-test the provisioning service (transaction propagation, role and grant creation, errors) with the `transactionManager` and repository mocks, like `branch.service.test.ts`.
+
+5. **Docs:** `docs/rbac-application-flow.md` gets the default roles and the scripts; `docs/database-foundation.md` is unchanged (no new tables).
+
+### Demo (on `events_dev`)
+
+```bash
+npm run provision:organizer -- --name "Selam Events" --owner-user-id <owner-uuid> --confirm
+npm run assign:staff -- --organization-slug selam-events --user-id <viewer-uuid> --role-code VIEWER --confirm
+npm run dev:staff-token -- --user-id <owner-uuid>     # or log in through auth-cheche if live
+curl -H "Authorization: Bearer <owner token>"  http://localhost:5010/v1/organizations/<selam-id>/branches   # 200
+curl -X POST -H "Authorization: Bearer <viewer token>" -H 'Content-Type: application/json' \
+  -d '{"code":"ADDIS","name":"Addis Office"}' http://localhost:5010/v1/organizations/<selam-id>/branches  # 403
+```
+
+### Done when
+
+- All 18 rows of the matrix pass in `TEST_DATABASE=1 npm test`, and `npm run check` passes.
+- The demo reproduces an allowed and a denied request from the command line.
+- **This completes the first milestone:** a staff member signs in, sees their permissions in `/me`, can act in their own organization, and is denied everywhere else.
+
+---
+
+## Phases 3–5 — outline
+
+Each of these phases gets its detailed version (steps, tables, endpoints, test matrix) in this file **after the previous phase is verified**. Scope is the 23 November MVP 1 specification.
+
+### Phase 3 — Events
+
+- **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
+- **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.
+- **Event states:** `DRAFT`, `PUBLISHED`, `CLOSED`, `CANCELLED`. *Live* is derived from dates. A new event gets **General Admission** automatically.
+- **Public read endpoints:** catalog (published + `PUBLIC`), and event detail by organization slug + event slug (published, `PUBLIC` or `UNLISTED`).
+- **Proof:** Selam publishes an organization-wide forum for ABC Bank; it appears in the catalog; an unlisted workshop opens by link only; a draft stays private; PostgreSQL rejects a venue from another organization.
+
+### Phase 4 — Registration
+
+- **Tables:** `person`, `registration`, the message outbox, and a durable retry key for public submissions.
+- **Module:** `REGISTRATIONS`.
+- **One registration service** behind staff entry and public entry: lock the event, then the ticket type; check status, registration window and both capacities; store `CONFIRMED`, source, actor and a random code; record the privacy notice shown; queue the confirmation in the same transaction; an outbox worker sends it.
+- **Proof:** two guests race for the last seat and only one wins; a retried submission returns the original registration with one confirmation in total; cancelling frees the seat.
+
+### Phase 5 — Pilot walkthrough
+
+Connect the staff and public screens to the API and run the full flow against PostgreSQL: a guest discovers an event, registers, receives a code, and appears once on the staff guest list.

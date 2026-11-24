@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.eslintcache
+
+# Logs
+*.log
+
+# Secrets: never commit. .env.example (placeholders only) is the exception.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# curl cookie jars from live auth checks hold real refresh tokens
+cookies*.txt
+
+# Local tool settings
+.claude/settings.local.json
+.idea/
+.vscode/
+
+# OS
+.DS_Store

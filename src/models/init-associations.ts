@@ -1,0 +1,40 @@
+import type { AppModule } from "./module.js";
+import type { Branch } from "./branch.js";
+import type { Organization } from "./organization.js";
+import type { Role } from "./role.js";
+import type { RoleModuleAccess } from "./role-module-access.js";
+import type { UserModuleAccess } from "./user-module-access.js";
+import type { UserRole } from "./user-role.js";
+
+type Models = {
+  Organization: typeof Organization;
+  Branch: typeof Branch;
+  AppModule: typeof AppModule;
+  Role: typeof Role;
+  RoleModuleAccess: typeof RoleModuleAccess;
+  UserRole: typeof UserRole;
+  UserModuleAccess: typeof UserModuleAccess;
+};
+
+/** Every association is declared here, once, with an explicit `as` alias and foreign key. */
+export function initAssociations(models: Models): void {
+  const { Organization, Branch, AppModule, Role, RoleModuleAccess, UserRole, UserModuleAccess } = models;
+
+  Organization.hasMany(Branch, { foreignKey: "organization_id", as: "branches" });
+  Branch.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+
+  AppModule.belongsTo(AppModule, { foreignKey: "parent_id", as: "parent" });
+  AppModule.hasMany(AppModule, { foreignKey: "parent_id", as: "children" });
+
+  Role.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+  Role.hasMany(RoleModuleAccess, { foreignKey: "role_id", as: "accesses" });
+  RoleModuleAccess.belongsTo(Role, { foreignKey: "role_id", as: "role" });
+  RoleModuleAccess.belongsTo(AppModule, { foreignKey: "module_id", as: "module" });
+
+  UserRole.belongsTo(Role, { foreignKey: "role_id", as: "role" });
+  UserRole.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+  UserRole.belongsTo(Branch, { foreignKey: "branch_id", as: "branch" });
+  UserRole.hasMany(UserModuleAccess, { foreignKey: "user_role_id", as: "overrides" });
+  UserModuleAccess.belongsTo(UserRole, { foreignKey: "user_role_id", as: "assignment" });
+  UserModuleAccess.belongsTo(AppModule, { foreignKey: "module_id", as: "module" });
+}

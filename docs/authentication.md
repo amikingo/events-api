@@ -1,0 +1,119 @@
+# Authentication
+
+## Model
+
+- **Central Auth** owns identity: password login, OTP, refresh tokens. This API never stores passwords.
+- **Staff**: after Central Auth login, the API loads the user's active local assignments (`user_role`) and mints
+  its **own** short-lived access token (HS256, `APP_AUTH_TOKEN`, `iss`/`aud` = `events_api`,
+  `token_type = staff_access`, `sub` = Central Auth user id, claims `assignment_id`, `role_id`,
+  `organization_id`, `branch_id`, profile names). TTL = min(`APP_TOKEN_TTL_SECONDS`, upstream remaining lifetime).
+- **Customers** (when needed): the Central Auth access token itself, verified with `APP_AUTH_TOKEN`
+  (`iss = auth_api`, `token_type = access`).
+- One shared secret, like bookings_api: `APP_AUTH_TOKEN` (auth-cheche's secret, same name there) both verifies
+  Central Auth tokens and signs this API's own tokens. Only these checks keep the three token types apart:
+  - Central token: issuer `auth_api` and `token_type = access`.
+  - Staff token: issuer and audience `events_api` and `token_type = staff_access`.
+  - Central-session confirmation: issuer and audience `events_api`, `token_type = staff_central_session`, and the
+    matching refresh-token hash.
+
+  See "Known risk / later" below.
+
+## Endpoints
+
+| Endpoint | Notes |
+|---|---|
+| `POST /v1/auth/staff/login` `{ mobile, password }` | Central Auth password login → local token in JSON; refresh token **only** in the HttpOnly `events_staff_refresh` cookie (`Path=/v1/auth/staff`). Also sets the `events_staff_central_session` cookie (see below). Rejects upstream logins without a refresh token. |
+| `POST /v1/auth/staff/refresh` `{ assignment_id? }` | Reads the cookies only. Rate-limited, `Cache-Control: no-store`, Origin must be trusted. Skips Central Auth while the central-session cookie is valid (see below); assignments are re-read from the DB on every refresh. Requires `assignment_id` when several assignments are active (`409 staff_context_required`). Rotated refresh tokens replace the cookie. Session-ending failures clear both cookies. |
+| `POST /v1/auth/staff/logout` | Clears both cookies first, then revokes the Central Auth session with `POST /v1/auth/logout` `{ refresh_token }` (no Bearer: staff hold only this API's token). Best effort: a Central failure is logged without token values and never blocks logout. `data.revoked` is `true` only when Central confirmed; `false` when it failed or no cookie was sent. Same rate limit, Origin check and `no-store` as refresh. |
+| `GET /v1/auth/staff/me` | Revalidates the assignment from the DB; returns user, assignment, assignments, flat `permissions`, nested `navigation`. Never calls Central Auth. |
+| `POST /v1/auth/staff/switch-assignment` `{ assignment_id }` | Re-mints the token for another active assignment. This is how a person with several roles changes what they may do: permissions are checked for the token's assignment only (see `docs/rbac-application-flow.md`). |
+
+## Staff central session (fewer Central Auth calls)
+
+After login and after each successful Central refresh, the API signs a small "Central Auth confirmed this
+person" token and stores it in the HttpOnly `events_staff_central_session` cookie (same path and options as
+the refresh cookie).
+
+- Signed with `APP_AUTH_TOKEN`, `token_type = staff_central_session`, `iss`/`aud` = `events_api`. Every token
+  check requires its own exact `token_type`, so it can never pass as a staff access token or a Central token.
+- Claims: `sub` (user id), `central_exp` (the Central access token's expiry), profile names and mobile, and
+  `refresh_token_hash` (SHA-256 of the refresh token it was issued with). It only counts together with that
+  same refresh cookie.
+- Lifetime: min(`AUTH_CENTRAL_SESSION_TTL_SECONDS`, Central expiry − 5 minutes). `0` turns the feature off.
+- On refresh: valid confirmation → Central Auth is not called and neither cookie changes. Missing, expired,
+  tampered or mismatched → Central refresh as usual and a new confirmation. Assignments are always re-read.
+- Trade-off: for up to the TTL (default 6 hours), refresh does not notice a session ended at Central Auth
+  (password change, logout elsewhere, disabled account). Removing the person's assignment here still takes
+  effect at their next refresh.
+
+## Request identity
+
+`req.auth` is the only identity source: `{ kind: "staff", userId, assignmentId, roleId, organizationId, branchId,
+profile, expiresAt }` or `{ kind: "customer", userId, token, profile, expiresAt }`. It is set only by
+`requireStaffAuthentication` / `requireCustomerAuthentication` / `optionalCustomerAuthentication`. No route reads
+identity from body or query.
+
+## Configuration
+
+Required: `CENTRAL_AUTH_API`, `APP_AUTH_TOKEN`, `CENTRAL_AUTH_SERVICE_ID`.
+Optional: `APP_TOKEN_TTL_SECONDS`, `CENTRAL_AUTH_TIMEOUT_MS`, `AUTH_REFRESH_COOKIE_SECURE` (default: on in
+production), `AUTH_REFRESH_COOKIE_SAME_SITE`, `AUTH_REFRESH_COOKIE_DOMAIN`, `AUTH_REFRESH_TTL_SECONDS`,
+`AUTH_REFRESH_TRUSTED_ORIGINS` (required in production for browser refresh/logout),
+`AUTH_REFRESH_COOKIE_PATH_PREFIX` (proxy path prefix such as `/api`, put in front of every auth cookie path;
+must look like `/segment[/segment]`, no `//`, no trailing `/`; checked at startup),
+`AUTH_CENTRAL_SESSION_TTL_SECONDS` (default 21600; `0` = ask Central Auth on every refresh).
+
+## Known risk / later
+
+One shared secret (`APP_AUTH_TOKEN`) is a deliberate choice for now, matching bookings_api.
+
+- **The risk:** any service holding `APP_AUTH_TOKEN` can sign a staff token for this API, for any person and any
+  role. It also works the other way: tokens this API signs carry a signature other Cheche services trust, so
+  those services keep them out only through their own `token_type` / issuer checks (this API never issues
+  `token_type = access` or `refresh`).
+- **What protects us today:** the token checks listed under Model. `tests/auth-token.service.test.ts` proves
+  that, with the shared key, none of the three token types passes as another.
+- **Splitting it out later:** add a new secret setting in `src/config/env.ts`, point `appTokenSecret` in
+  `src/config/auth.ts` at it, and add a startup check that it differs from `APP_AUTH_TOKEN`. No other code
+  changes. Staff do not need to log in again: their next refresh issues new tokens signed with the new secret.
+
+## Planned Central Auth integrations (not built yet)
+
+None of these exist yet. When one is built, follow the rules below: they match bookings_api and each one
+prevents a known failure. All of them go through `src/clients/central-auth.client.ts` and use the **service
+token** issued by Central Auth (never a token this API signs itself, see blueprint §17).
+
+### Creating staff accounts
+
+- `POST /v1/users/create-verified?service_id=<CENTRAL_AUTH_SERVICE_ID>` with the service token. Body: the names,
+  `mobile`, `password`.
+- `409` means the account already exists. Treat it as "existing account", not as a failure.
+- Afterwards, confirm the account is registered to our service: check `service_ids` in the response first, then
+  `GET /v1/users/{id}`. If our service is missing, raise a partial-provisioning error.
+  *Why:* Central Auth refuses password sign-in for a service the account isn't registered to, so the staff
+  member would exist but could never log in.
+
+### Reading users
+
+- `POST /v1/users/specific_users` with the service token.
+- Parse leniently (`z.looseObject`, field by field):
+  - names may arrive as `{ en, am }` objects: keep both, never drop them;
+  - mobiles are normalized to `+2519XXXXXXXX` (`src/utils/mobile.ts`);
+  - `"1"` / `"true"` become booleans;
+  - one field with an odd shape must not make the whole user disappear: fall back to `null` for that field.
+
+### Editing a staff member's details
+
+- `PUT /v1/users/{id}` with the service token.
+- Allowed fields: names, email, sex, date of birth. Send only the fields that changed.
+- **Never** mobile, status, PIN or password.
+  *Why:* a Central Auth account is the same person in every Cheche app. Changing the mobile here would let
+  someone take over the account everywhere through an OTP password reset.
+- A `401`/`403` from Central becomes a "Central Auth refused" conflict (`409`), not "your session expired":
+  the staff member's own session is fine, Central refused the service call.
+
+### Forgot password
+
+- `POST /v1/users/reset-password` with `{ mobile, otp, new_password }`.
+- Map "OTP expired" and "invalid OTP" to their own stable error codes (one `AppError` class each), so the screen
+  can tell the user what to do.
