@@ -1,8 +1,8 @@
-import { Op } from "sequelize";
+import { Op, type CreationAttributes } from "sequelize";
 import { RoleModuleAccess } from "../models/index.js";
 import type { RoleModuleAccessRow } from "../models/role-module-access.js";
 import { toPlainList } from "../utils/sequelize.js";
-import { txOptions, type RepoOptions } from "./helpers.js";
+import { txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
 
 const attributes = [
   "id",
@@ -41,4 +41,9 @@ async function listByRoleId(roleId: string, options: RepoOptions = {}): Promise<
   return toPlainList<RoleModuleAccessRow>(rows);
 }
 
-export const roleModuleAccessRepository = { listByRoleIdsAndModule, listByRoleId };
+async function bulkCreate(values: CreationAttributes<RoleModuleAccess>[], options: WriteOptions = {}): Promise<void> {
+  if (values.length === 0) return;
+  await RoleModuleAccess.bulkCreate(values, txOptions(options));
+}
+
+export const roleModuleAccessRepository = { listByRoleIdsAndModule, listByRoleId, bulkCreate };

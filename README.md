@@ -29,9 +29,13 @@ npm run dev                   # http://localhost:5010/v1/docs
 | `db:migration:create -- --name <kebab>` | scaffold a timestamped migration |
 | `openapi` / `openapi:check` | write / verify `docs/api/openapi-v1.json` |
 | `bootstrap:super-admin` | preview/apply the platform SUPER_ADMIN assignment |
+| `provision:organizer` | preview/apply a new organization with its MAIN branch, OWNER/VIEWER roles and owner |
+| `assign:staff` | preview/apply a staff assignment (organization-wide or one branch) |
+| `dev:staff-token` | development only: print a staff token for a person, without auth-cheche |
 
 Integration tests: `TEST_DATABASE=1 POSTGRES_…=… npm test` against a **disposable** database (they migrate
-up and fully down).
+up and fully down). Test files run one at a time (`--test-concurrency=1`), so the integration files never share
+the database at the same moment.
 
 ## Production
 

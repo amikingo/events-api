@@ -29,6 +29,19 @@ You need Node 24 and a local PostgreSQL (15 or newer).
 | `CENTRAL_AUTH_API`, `APP_AUTH_TOKEN`, `CENTRAL_AUTH_SERVICE_ID` | Real auth-cheche values, from the project owner. `CENTRAL_AUTH_API` has **no** `/v1` at the end. Without them, login returns `503 central_auth_unavailable`. |
 | `LOG_LEVEL` | `info` or `debug`, so you can see why a request was refused. |
 
+**Working without auth-cheche (development only).** Until the auth-cheche values arrive, you can still build the
+staff screens. Create an organization and a person locally, then print a normal staff token for them:
+
+```bash
+npm run provision:organizer -- --name "Selam Events" --owner-user-id <any-uuid> --confirm
+npm run dev:staff-token -- --user-id <the-same-uuid>
+```
+
+Put the printed `accessToken` in your app's memory, as if login had returned it. Every Bearer call (`/me`,
+organizations, branches) then works. It lasts 15 minutes; run the command again for a new one. Login, refresh and
+logout still need auth-cheche. The script refuses to run unless `NODE_ENV=development`. Treat the token like a
+password.
+
 **Your account needs a role in this API.** An auth-cheche account alone gets `403 staff_assignment_not_found`
 at login. Once you know your auth-cheche `user_id` (the project owner can find it), give yourself platform
 access in your local database:
@@ -106,6 +119,14 @@ Login, refresh and switch all return the same `data`:
 
 Use both to build menus and hide buttons. **The server checks permissions on every request anyway**, so this is
 for the user's convenience, not security.
+
+Two menu details:
+
+- **Organizations** (`route_name: "/organizations"`) also appears for staff of one organization, because they may
+  read their own organization. Listing organizations is platform-only, so for tenant staff
+  (`assignment.organization_id` is not null) open `/organizations/{assignment.organization_id}` instead of the list.
+- **Access Control** items (Roles, Staff Assignments, …) can appear for owners, but their endpoints don't exist
+  yet. Show those pages as "coming soon".
 
 ### Example (framework-free TypeScript)
 

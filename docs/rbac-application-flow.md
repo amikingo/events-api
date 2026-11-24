@@ -61,10 +61,51 @@ are UX only — backend middleware is the authority.
 3. Gate routes with `requirePermission({ moduleCode, action, scope })`.
 4. The integration test fails if a code in `MODULE_CODES` has no row.
 
-## Managing role assignments (not built yet)
+## Default roles and provisioning (scripts)
 
-There are no endpoints for managing roles, role access or assignments yet (only the `bootstrap:super-admin`
-script).
+Every organization created by `provision:organizer` starts with two roles (`src/utils/default-roles.ts`):
+
+| Role | Grants |
+|---|---|
+| `OWNER` | `ORGANIZATIONS` view, update · `BRANCHES` view, create, update · `ROLES` view · `USER_ROLES` view |
+| `VIEWER` | `ORGANIZATIONS` view · `BRANCHES` view |
+
+Later phases add their modules to these templates and extend existing organizations through migrations. A
+default role never gets a platform-only module (`MODULES`, `ROLE_TEMPLATES`).
+
+Operational scripts. Each previews by default, writes only with `--confirm`, prints JSON, and loads `.env`, so the
+project owner runs it:
+
+```bash
+npm run provision:organizer -- --name "Selam Events" --owner-user-id <uuid> [--slug selam-events] [--confirm]
+npm run assign:staff -- --organization-slug selam-events --user-id <uuid> --role-code VIEWER [--branch-code ADDIS] [--confirm]
+npm run dev:staff-token -- --user-id <uuid> [--assignment-id <uuid>]     # development only
+```
+
+- `provision:organizer` creates the organization, its `MAIN` branch, the two roles with their grants and the
+  owner's organization-wide assignment, all in one transaction (`organizationProvisioningService`).
+- `assign:staff` gives a person a role, organization-wide or for one branch. An identical active assignment is
+  left unchanged; an identical **inactive** one is reactivated rather than duplicated.
+- `dev:staff-token` prints a normal 15-minute staff token for one of the person's assignments, so staff screens
+  work without auth-cheche. It refuses to run unless `NODE_ENV=development`. With the shared `APP_AUTH_TOKEN`
+  (see `docs/authentication.md`, "Known risk"), anyone holding the secret could sign such a token anyway; the
+  script adds convenience, not a new capability.
+
+Rules both write paths enforce, with friendly errors before the database's backstop:
+
+- **One person, one organization, counting inactive assignments.** `fn_user_role_scope_guard` refuses an
+  assignment when the person has *any* other assignment (active or not) in another organization or at platform
+  level, and the service mirrors that. Someone who once worked for organization A cannot be added to B until their
+  old rows are removed. Writes for one person are serialized with an advisory lock, because the trigger alone
+  cannot see another transaction's uncommitted row.
+- **Tenant staff and the *Organizations* menu item.** `ORGANIZATIONS.view` (needed to read your own
+  organization) makes the seeded *Administration › Organizations* item (`/organizations`) visible to tenant staff,
+  but listing organizations is platform-only. The frontend should open the person's **own** organization
+  (`/organizations/{assignment.organization_id}`) for tenant staff.
+
+## Managing role assignments over HTTP (not built yet)
+
+There are no endpoints for managing roles, role access or assignments yet (only the scripts above).
 When they are built, these rules apply. Each is enforced in the service with a friendly error first; the
 database trigger and constraints stay as the backstop.
 

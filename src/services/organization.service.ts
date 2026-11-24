@@ -1,3 +1,4 @@
+import type { Transaction } from "sequelize";
 import { ConflictError, ValidationAppError } from "../errors/app-errors.js";
 import type { BranchRow } from "../models/branch.js";
 import type { OrganizationRow } from "../models/organization.js";
@@ -43,48 +44,71 @@ function slugFromName(name: string): string {
   return slug;
 }
 
+/** The slug the client sent, or one made from the name (refused with slug_required for e.g. Amharic names). */
+function resolveSlug(name: string, slug: string | undefined): string {
+  return slug ?? slugFromName(name);
+}
+
+export type OrganizationDraft = {
+  name: string;
+  /** Already resolved with resolveSlug. */
+  slug: string;
+  description: string | null;
+  defaultBranch?: { code: string; name: string } | undefined;
+};
+
 /**
- * Aggregate service: an organization never exists without its default branch,
- * so both rows are written in one managed transaction.
+ * Aggregate write: an organization never exists without its default branch. Runs inside the caller's
+ * transaction, so provisioning can add roles and assignments to the same unit of work.
  */
+async function createOrganizationInTransaction(
+  draft: OrganizationDraft,
+  actorId: string | null,
+  transaction: Transaction,
+): Promise<{ organization: OrganizationRow; branches: BranchRow[] }> {
+  if (await organizationRepository.findBySlug(draft.slug, { transaction })) {
+    throw new ConflictError("Organization slug is already in use", { field: "slug" });
+  }
+
+  const organization = await organizationRepository.create(
+    { name: draft.name, slug: draft.slug, description: draft.description, created_by: actorId, updated_by: actorId },
+    { transaction },
+  );
+
+  const defaultBranch = await branchRepository.create(
+    {
+      organization_id: organization.id,
+      code: draft.defaultBranch?.code ?? MAIN_BRANCH.code,
+      name: draft.defaultBranch?.name ?? MAIN_BRANCH.name,
+      description: null,
+      is_default: true,
+      is_active: true,
+      created_by: actorId,
+      updated_by: actorId,
+    },
+    { transaction },
+  );
+
+  return { organization, branches: [defaultBranch] };
+}
+
+/** The slug is resolved first, so an unusable name is refused before any transaction opens. */
 async function createOrganization(
   input: OrganizationCreateInput,
   actorId: string | null,
 ): Promise<{ organization: OrganizationRow; branches: BranchRow[] }> {
-  const slug = input.organization.slug ?? slugFromName(input.organization.name);
+  const draft: OrganizationDraft = {
+    name: input.organization.name,
+    slug: resolveSlug(input.organization.name, input.organization.slug),
+    description: input.organization.description ?? null,
+    defaultBranch: input.default_branch,
+  };
+  return runTransaction((transaction) => createOrganizationInTransaction(draft, actorId, transaction));
+}
 
-  return runTransaction(async (transaction) => {
-    if (await organizationRepository.findBySlug(slug, { transaction })) {
-      throw new ConflictError("Organization slug is already in use", { field: "slug" });
-    }
-
-    const organization = await organizationRepository.create(
-      {
-        name: input.organization.name,
-        slug,
-        description: input.organization.description ?? null,
-        created_by: actorId,
-        updated_by: actorId,
-      },
-      { transaction },
-    );
-
-    const defaultBranch = await branchRepository.create(
-      {
-        organization_id: organization.id,
-        code: input.default_branch?.code ?? MAIN_BRANCH.code,
-        name: input.default_branch?.name ?? MAIN_BRANCH.name,
-        description: null,
-        is_default: true,
-        is_active: true,
-        created_by: actorId,
-        updated_by: actorId,
-      },
-      { transaction },
-    );
-
-    return { organization, branches: [defaultBranch] };
-  });
+/** Used by operational scripts that name an organization by slug. */
+async function getOrganizationBySlug(slug: string): Promise<OrganizationRow> {
+  return ensureFound(await organizationRepository.findBySlug(slug), `Organization "${slug}" not found`);
 }
 
 async function listOrganizations(query: OrganizationListQuery): Promise<{ rows: OrganizationRow[]; count: number }> {
@@ -96,4 +120,11 @@ async function getOrganization(organizationId: string): Promise<OrganizationRow>
   return ensureFound(await organizationRepository.findById(organizationId), "Organization not found");
 }
 
-export const organizationService = { createOrganization, listOrganizations, getOrganization };
+export const organizationService = {
+  createOrganization,
+  createOrganizationInTransaction,
+  resolveSlug,
+  listOrganizations,
+  getOrganization,
+  getOrganizationBySlug,
+};

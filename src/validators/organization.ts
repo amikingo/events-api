@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { RequestContract } from "../middleware/validate.js";
 import { booleanQuerySchema, codeSchema, nullableText, organizationIdParamsSchema, paginationQuerySchema } from "./common.js";
 
-const slugSchema = z
+export const slugSchema = z
   .string()
   .trim()
   .toLowerCase()

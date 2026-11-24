@@ -38,7 +38,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node --import tsx --import ./tests/setup-env.ts --test \"tests/**/*.test.ts\"",
+    "test": "node --import tsx --import ./tests/setup-env.ts --test --test-concurrency=1 \"tests/**/*.test.ts\"",
     "check": "npm run typecheck && npm run lint && npm test && npm run openapi:check",
     "db:migrate": "tsx --env-file-if-exists=.env src/scripts/migrate.ts up",
     "db:migrate:undo": "tsx --env-file-if-exists=.env src/scripts/migrate.ts down",
@@ -46,6 +46,9 @@
     "db:migration:create": "tsx src/scripts/migrate.ts create",
     "openapi": "tsx src/scripts/generate-openapi.ts",
     "openapi:check": "tsx src/scripts/generate-openapi.ts --check",
-    "bootstrap:super-admin": "tsx --env-file-if-exists=.env src/scripts/bootstrap-super-admin.ts"
+    "bootstrap:super-admin": "tsx --env-file-if-exists=.env src/scripts/bootstrap-super-admin.ts",
+    "provision:organizer": "tsx --env-file-if-exists=.env src/scripts/provision-organizer.ts",
+    "assign:staff": "tsx --env-file-if-exists=.env src/scripts/assign-staff.ts",
+    "dev:staff-token": "tsx --env-file-if-exists=.env src/scripts/dev-staff-token.ts"
   }
 }

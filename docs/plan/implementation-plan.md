@@ -157,6 +157,26 @@ Node 24 and npm, Python 3, Homebrew PostgreSQL 17 listening on `127.0.0.1:5432`,
 
 **Goal:** staff log in through auth-cheche; `/v1/auth/staff/me` works; refresh and logout behave as the starter defines.
 
+**Status (24 November 2026): built and tested with stand-ins; live check pending.**
+
+- **Built:**
+  - staff sign-in with mobile **or** email + password through auth-cheche, sending our `service_id`;
+  - one fixed refusal message, with auth-cheche's reason in the server log;
+  - 429 handling (`central_auth_rate_limited`);
+  - startup refuses a `CENTRAL_AUTH_API` ending in `/v1`;
+  - `pin` hidden in logs.
+- **Checks:**
+  - `npm run check` steps pass: typecheck, lint, OpenAPI snapshot, and 70 tests (67 passed, 3 database tests skipped).
+  - `TEST_DATABASE=1 npm test`: 66 of 66 passed before email sign-in was added; not yet re-run after it.
+- **Live check (step 8): pending the auth-cheche values.** It should answer:
+  - what the server log shows for a wrong password and for an unknown mobile;
+  - whether `platform: "web"` is accepted;
+  - whether logout returns `revoked: true`;
+  - whether refresh rotates the refresh cookie (test with `AUTH_CENTRAL_SESSION_TTL_SECONDS=0`);
+  - whether email sign-in works for an account with an email.
+
+  Also ask the auth-cheche team whether our server is exempt from their 5-requests-per-second-per-IP limit.
+
 The starter's auth flow (Central Auth login → local staff token → HttpOnly refresh cookie → `/me`) stays as it is. What changes is the Central Auth client and the login contract, because the current auth-cheche contract differs from what the starter was written against.
 
 ### Already done before Phase 1 (bookings_api updates)
@@ -267,7 +287,7 @@ The starter already contains the RBAC engine (modules, roles, role grants, assig
 
 2. **Provisioning service** `src/services/organization-provisioning.service.ts`, an aggregate service running in **one** `runTransaction`:
    - `provisionOrganizer({ name, slug?, ownerUserId }, actorId)`: creates the organization and its default `MAIN` branch (reuse the existing organization creation logic), creates the `OWNER` and `VIEWER` roles for that organization with their grants, and creates the owner's organization-wide assignment.
-   - `assignStaff({ organizationId, userId, roleCode, branchCode? }, actorId)`: creates an assignment, scoped to the branch when `branchCode` is given. Friendly errors for an unknown role or branch, a duplicate assignment, and a user already assigned in another organization (the database trigger stays as the backstop).
+   - `assignStaff({ organizationId, userId, roleCode, branchCode? }, actorId)`: creates an assignment, scoped to the branch when `branchCode` is given. Friendly errors for an unknown role or branch and a user already assigned in another organization, counting inactive assignments like the trigger does (the database trigger stays as the backstop). An identical active assignment is left unchanged; an identical inactive one is reactivated (decided 24 November 2026).
    - Add the repository methods these need (role create and find by organization and code, role grant bulk create, branch find by organization and code, assignment create), following the `branch` repository conventions.
 
 3. **Scripts** following the `bootstrap-super-admin.ts` template (preview by default, `--confirm` to write, JSON output):
@@ -296,13 +316,15 @@ The starter already contains the RBAC engine (modules, roles, role grants, assig
    | 11 | SELAM_OWNER | `POST /v1/organizations` (platform) | 403 |
    | 12 | SUPER | `POST /v1/organizations` | 201 |
    | 13 | SUPER | `GET /v1/organizations/{horn}/branches` | 200 |
-   | 14 | SELAM_VIEWER | `GET /v1/auth/staff/me` | `permissions.BRANCHES` = view only; the menu shows Administration › Branches and no Access Control |
+   | 14 | SELAM_VIEWER | `GET /v1/auth/staff/me` | `permissions.BRANCHES` = view only; the menu shows Administration › Organizations and Branches (VIEWER has `ORGANIZATIONS` view) and no Access Control |
    | 15 | SELAM_OWNER | `GET /v1/auth/staff/me` | `BRANCHES` view/create/update; Access Control visible |
    | 16 | SELAM_VIEWER + override `BRANCHES.can_create = true` | `POST …/branches` | 201 (override allows) |
    | 17 | SELAM_OWNER + override `BRANCHES.can_create = false` | `POST …/branches` | 403 (deny wins) |
    | 18 | — | `assignStaff` for HORN_OWNER into Selam | rejected (one person, one organization) |
 
    Also unit-test the provisioning service (transaction propagation, role and grant creation, errors) with the `transactionManager` and repository mocks, like `branch.service.test.ts`.
+
+   Test files run one at a time (`--test-concurrency=1` in `npm test`), because this file and `tests/integration/database.test.ts` both migrate `events_test` down and up.
 
 5. **Docs:** `docs/rbac-application-flow.md` gets the default roles and the scripts; `docs/database-foundation.md` is unchanged (no new tables).
 
