@@ -7,20 +7,38 @@
 #   ~/events/db.env       (secrets, created on the server, never in git)
 #   ~/events/api.env      (secrets, created on the server, never in git)
 #
-# Only nginx publishes a port (8080). Docker-published ports bypass ufw, so the database is never published.
+# Published ports (Docker-published ports bypass ufw):
+#   8080   nginx (website + /api)
+#   15432  Postgres, shared with the team's own local events-api and pgAdmin (one login: events, from
+#          db.env). Encrypted connections only (pg_hba.conf). Rules: README "Team database access".
 name: events-temp
 
 x-public-url: &public_url http://169.58.247.85:8080
 
 services:
   db:
-    image: postgres:17-alpine
+    # Debian image (not alpine): it ships the self-signed certificate used for SSL below. Do not switch
+    # images once the database exists: alpine and Debian sort text differently and indexes can break.
+    image: postgres:17
     restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+      - -c
+      - ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
     env_file: ../../../db.env # POSTGRES_USER, POSTGRES_PASSWORD
     environment:
       POSTGRES_DB: events
+    ports:
+      - "15432:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d events"]
       interval: 10s
@@ -42,7 +60,8 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_DATABASE: events
-      POSTGRES_SSL: disable
+      # pg_hba.conf accepts encrypted connections only; the certificate is self-signed, hence no-verify.
+      POSTGRES_SSL: no-verify
       CENTRAL_AUTH_API: https://auth.cheche.et/api
       CORS_ALLOWED_ORIGINS: *public_url
       AUTH_REFRESH_TRUSTED_ORIGINS: *public_url
