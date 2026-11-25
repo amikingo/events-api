@@ -17,7 +17,7 @@ export const roleGrantSchema = z.strictObject({
   export: z.boolean().optional(),
 });
 
-const grantsSchema = z
+export const grantsSchema = z
   .array(roleGrantSchema)
   .max(30)
   .superRefine((grants, ctx) => {

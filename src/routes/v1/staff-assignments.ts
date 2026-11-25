@@ -8,7 +8,9 @@ import {
   changeStaffAssignmentStatusRequest,
   createStaffAssignmentRequest,
   listStaffAssignmentsRequest,
+  listStaffOverridesRequest,
   lookUpStaffRequest,
+  replaceStaffOverridesRequest,
   updateStaffAssignmentRequest,
 } from "../../validators/staff-assignment.js";
 
@@ -57,4 +59,21 @@ staffAssignmentsRouter.patch(
   validate(changeStaffAssignmentStatusRequest),
   requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "update", scope: organizationScopeFromParams }),
   staffAssignmentController.changeStatus,
+);
+
+// Permission overrides (Phase 2d): one staff member's access, module by module, on top of their role.
+staffAssignmentsRouter.get(
+  "/staff-assignments/:assignmentId/overrides",
+  requireStaffAuthentication,
+  validate(listStaffOverridesRequest),
+  requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "view", scope: organizationScopeFromParams }),
+  staffAssignmentController.listOverrides,
+);
+
+staffAssignmentsRouter.put(
+  "/staff-assignments/:assignmentId/overrides",
+  requireStaffAuthentication,
+  validate(replaceStaffOverridesRequest),
+  requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "update", scope: organizationScopeFromParams }),
+  staffAssignmentController.replaceOverrides,
 );

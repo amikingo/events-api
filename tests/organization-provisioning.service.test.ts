@@ -10,6 +10,7 @@ import { branchRepository } from "../src/repositories/branch.repository.js";
 import { moduleRepository } from "../src/repositories/module.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { roleModuleAccessRepository } from "../src/repositories/role-module-access.repository.js";
+import { roleTemplateRepository } from "../src/repositories/role-template.repository.js";
 import { roleRepository } from "../src/repositories/role.repository.js";
 import { userRoleRepository } from "../src/repositories/user-role.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
@@ -51,6 +52,8 @@ function arrangeProvisioning(options: { slugTaken?: boolean; existingAssignments
   mock.method(organizationRepository, "findBySlug", async () => (options.slugTaken ? organizationRow() : null));
   mock.method(userRoleRepository, "listAllByUser", async () => options.existingAssignments ?? []);
   mock.method(moduleRepository, "listActiveOrdered", async () => MODULES);
+  // No OWNER template here, so new organizations use the code's DEFAULT_TENANT_ROLES (the templates' own fallback).
+  mock.method(roleTemplateRepository, "list", async () => []);
   return {
     createOrganization: mock.method(organizationRepository, "create", async () => NEW_ORG),
     createBranch: mock.method(branchRepository, "create", async () => branchRow({ organization_id: NEW_ORG.id })),

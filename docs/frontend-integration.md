@@ -294,7 +294,7 @@ The permission column shows what the signed-in role needs: module code and actio
 | `PUT /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | `multipart/form-data` with **one file in the field `file`** and nothing else (see *Cover images* below). Replaces the current cover. Replies with the event. |
 | `DELETE /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | No body. Removes the cover; the event comes back with `cover: null`. |
 
-**Roles and staff (Phase 2b): the *Access Control* screens.** The menu shows *Access Control › Roles* (`/access/roles`) and *Staff Assignments* (`/access/assignments`) to owners. Keep **Modules**, **Role Templates** and **Permission Overrides** hidden: they have no endpoints, by decision.
+**Roles and staff (Phase 2b): the *Access Control* screens.** The menu shows *Access Control › Roles* (`/access/roles`) and *Staff Assignments* (`/access/assignments`) to owners. Since Phase 2d, *Role Templates* (`/access/role-templates`) and *Modules* (`/access/modules`) are Super Admin screens, and permission overrides live on the staff assignment's page: keep the *Permission Overrides* menu item (`USER_MODULE_ACCESSES`) hidden. Endpoints and rules: `docs/rbac-application-flow.md` ("Permission overrides, role templates and modules").
 
 | Call | Permission | Body / query |
 |---|---|---|

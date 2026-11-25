@@ -520,3 +520,16 @@ Connect the staff and public screens to the API and run the full flow against Po
 - **Who builds what:** the API here; the screens by Antigravity from `docs/ui-brief-phase-6.md`.
 
 **Status: API done (25 November 2026).** `npm run check` passed, with the OpenAPI snapshot up to date. Migration `20261130000000-add-person-user-id-index` was applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 337 of 337 on the real database, none skipped, including matrix rows 66–70: sign-up and session, one account at two organizers, My Tickets, no linking by mobile, and the race for the linked profile. Rows 67–68 use Abay Pilot as the second organizer, because row 37 leaves Horn switched off. **Not verified yet:** auth-cheche's real replies (auth-cheche is stubbed in every test). The assumptions are in `docs/authentication.md` ("Guest accounts"); check them on the first real sign-up.
+
+### Phase 2d — Access control administration (25 November 2026)
+
+**Why:** the tables and the permission engine for overrides existed, but nothing could manage permission overrides, role templates or modules (the docs' "the scripts cover them" was wrong).
+
+**Decisions (25 November 2026):**
+- **Overrides:** Owners manage them for their own staff (Staff Assignments › update), with the same rules as roles; never on an Owner's assignment or your own. They stay when the role changes, and the reply warns.
+- **Role templates:** a platform library, copied. The OWNER template is locked; without it new organizations fall back to the code's defaults.
+- **Modules:** the Super Admin edits name, description, order and icon only.
+- **Shared rules:** `src/services/grant-rules.ts` (grantable and held), used by roles, overrides and templates.
+- **Who builds what:** the API here; the screens by Antigravity from `docs/ui-brief-phase-2d.md`.
+
+**Status: API done (25 November 2026).** `npm run check` passed, with the OpenAPI snapshot up to date. Migrations `20261201000000-create-role-template`, `…001-create-role-template-module-access` and `…002-seed-role-templates` were applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 359 of 359 on the real database, none skipped, including matrix rows 71–75: overrides allow and deny on the next request; the Owner, own-assignment, platform-module and escalation refusals; a template reaching new organizations only once marked; a role made from a template staying a copy; module names and order following in `/me`. The screens follow from `docs/ui-brief-phase-2d.md`.

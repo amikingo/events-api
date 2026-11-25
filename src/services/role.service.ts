@@ -1,23 +1,16 @@
 import type { Transaction } from "sequelize";
-import {
-  ConflictError,
-  GrantExceedsOwnAccessError,
-  RoleInUseError,
-  RoleLockedError,
-  ValidationAppError,
-} from "../errors/app-errors.js";
+import { ConflictError, RoleInUseError, RoleLockedError } from "../errors/app-errors.js";
 import { toRoleDto, type RoleDto } from "../mappers/staff.mapper.js";
 import type { RoleRow } from "../models/role.js";
-import { moduleRepository } from "../repositories/module.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { roleModuleAccessRepository } from "../repositories/role-module-access.repository.js";
 import { roleRepository } from "../repositories/role.repository.js";
 import { userRoleRepository } from "../repositories/user-role.repository.js";
 import { OWNER_ROLE_CODE } from "../utils/default-roles.js";
-import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, TENANT_GRANTABLE, type GrantableAction } from "../utils/rbac.js";
+import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, type GrantableAction } from "../utils/rbac.js";
 import type { RoleCreateInput, RoleGrantInput, RoleUpdateInput } from "../validators/role.js";
+import { grantRules, type GrantEntry } from "./grant-rules.js";
 import { ensureFound, runTransaction } from "./helpers.js";
-import { permissionResolutionService } from "./permission-resolution.service.js";
 
 /**
  * The organization's roles (Phase 2b read, Phase 2c write). Rules (decided 25 November 2026):
@@ -47,27 +40,15 @@ function keepExport(grants: RoleGrantInput[], current: Map<string, Set<Grantable
   return grants.map((grant) => (grant.export === undefined ? { ...grant, export: current.get(grant.module_code)?.has("export") ?? false } : grant));
 }
 
+/** A grant as the shared rules see it: the module and the actions it turns on. */
+const toEntry = (grant: RoleGrantInput): GrantEntry => ({ module_code: grant.module_code, actions: grantedActions(grant) });
+
 /**
  * Refuses anything a tenant role may not hold (400, naming the module or action) and returns the module ids.
  * Runs before the escalation check, so an impossible grant is always a 400, never a 403.
  */
 async function assertGrantable(grants: RoleGrantInput[], transaction: Transaction): Promise<Map<string, string>> {
-  const moduleIds = new Map((await moduleRepository.listActiveOrdered({ transaction })).filter((m) => m.is_permission).map((m) => [m.code, m.id]));
-  const issues: Array<{ path: string; message: string; code: string }> = [];
-  grants.forEach((grant, index) => {
-    const allowed = TENANT_GRANTABLE[grant.module_code];
-    if (!allowed || !moduleIds.has(grant.module_code)) {
-      issues.push({ path: `body.grants.${index}.module_code`, message: `${grant.module_code} can't be given to an organization's role`, code: "module_not_grantable" });
-      return;
-    }
-    for (const action of grantedActions(grant)) {
-      if (!allowed.includes(action)) {
-        issues.push({ path: `body.grants.${index}.${action}`, message: `${grant.module_code} can't be given "${action}" in an organization's role`, code: "action_not_grantable" });
-      }
-    }
-  });
-  if (issues.length > 0) throw new ValidationAppError("Request validation failed", { issues });
-  return moduleIds;
+  return grantRules.assertGrantable(grants.map(toEntry), "body.grants", transaction);
 }
 
 /** The rows for a role's grants; only view, create, update and export are ever stored as true. */
@@ -91,19 +72,11 @@ function grantRows(roleId: string, grants: RoleGrantInput[], moduleIds: Map<stri
 
 /** Nobody hands out access they don't have: every newly granted action must be one the editor holds here. */
 async function assertNoEscalation(organizationId: string, editor: RoleEditor, grants: RoleGrantInput[], current: Map<string, Set<GrantableAction>>) {
-  for (const grant of grants) {
-    for (const action of grantedActions(grant)) {
-      if (current.get(grant.module_code)?.has(action)) continue; // already granted: not a new grant
-      const resolution = await permissionResolutionService.resolvePermission({
-        userId: editor.userId,
-        assignmentId: editor.assignmentId,
-        scope: { level: "organization", organizationId, branchId: null },
-        moduleCode: grant.module_code,
-        action,
-      });
-      if (!resolution.allowed) throw new GrantExceedsOwnAccessError(undefined, { module_code: grant.module_code, action });
-    }
-  }
+  const added = grants.map((grant) => ({
+    module_code: grant.module_code,
+    actions: grantedActions(grant).filter((action) => !current.get(grant.module_code)?.has(action)), // kept: not a new grant
+  }));
+  await grantRules.assertHeld(organizationId, editor, added);
 }
 
 async function currentGrants(roleId: string, transaction: Transaction): Promise<Map<string, Set<GrantableAction>>> {

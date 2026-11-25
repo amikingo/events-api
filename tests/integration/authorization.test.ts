@@ -1670,3 +1670,142 @@ test("row 70: a new guest registering for two events of one organizer at the sam
   assert.equal(await PersonModel.count({ where: { organization_id: fixture.selamId, user_id: GUESTS.SARA.id } }), 1);
   assert.equal((await guestGet("/v1/customer/registrations", guestAccessToken("SARA"))).body.data.length, 2);
 });
+
+// --- Phase 2d: permission overrides, role templates and modules ---------------------------------------------
+
+const overridesOf = (assignmentId: string) => `${staffBase()}/staff-assignments/${assignmentId}/overrides`;
+
+async function assignmentIdOf(userId: string): Promise<string> {
+  const [assignment] = await userRoleRepository.listActiveAssignmentsByUser(userId);
+  assert.ok(assignment, `an active assignment for ${userId}`);
+  return assignment.id;
+}
+
+test("row 71: an override lets a Viewer export guests; a deny takes Guests away from a custom role holder; both apply on the next request", { skip }, async () => {
+  const viewerAssignment = await assignmentIdOf(PEOPLE.SELAM_VIEWER);
+  const exportPath = `${swapFixture.guestsPath}/export`;
+  assert.equal((await download(tokenOf("SELAM_VIEWER"), exportPath)).status, 403, "Viewers can't export");
+
+  const allow = await as("SELAM_OWNER", "PUT", overridesOf(viewerAssignment), { overrides: [{ module_code: "REGISTRATIONS", export: true }] });
+  assert.equal(allow.status, 200, JSON.stringify(allow.body));
+  const guests = allow.body.data.modules.find((module: { module_code: string }) => module.module_code === "REGISTRATIONS");
+  assert.deepEqual([guests.role.export, guests.override.export, guests.effective.export], [false, true, true]);
+  assert.equal((await download(tokenOf("SELAM_VIEWER"), exportPath)).status, 200, "same token, new access");
+
+  const door = await tokenFor(DOOR_ID);
+  assert.equal((await asToken(door, "GET", swapFixture.guestsPath)).status, 200);
+  const deny = await as("SELAM_OWNER", "PUT", overridesOf(roleFixture.doorAssignmentId), { overrides: [{ module_code: "REGISTRATIONS", view: false }] });
+  assert.equal(deny.status, 200, JSON.stringify(deny.body));
+  assert.equal((await asToken(door, "GET", swapFixture.guestsPath)).status, 403, "the deny wins over the role");
+  const me = await asToken(door, "GET", "/v1/auth/staff/me");
+  const navigation: Array<{ code: string; children: Array<{ code: string }> }> = me.body.data.navigation;
+  assert.ok(!navigation.some((node) => node.children.some((child) => child.code === "REGISTRATIONS")), "Guests leaves the menu");
+
+  const listed = await as("SELAM_OWNER", "GET", overridesOf(roleFixture.doorAssignmentId));
+  assert.equal(listed.body.data.modules.find((module: { module_code: string }) => module.module_code === "REGISTRATIONS").override.view, false);
+});
+
+test("row 72: overrides on an Owner or on yourself are 409; a platform module is 400; allowing what you don't hold is 403", { skip }, async () => {
+  const ownerAssignment = await assignmentIdOf(PEOPLE.SELAM_OWNER);
+  const onOwner = await as("SELAM_OWNER", "PUT", overridesOf(ownerAssignment), { overrides: [{ module_code: "EVENTS", view: false }] });
+  assert.deepEqual([onOwner.status, onOwner.body.error.code], [409, "owner_not_overridable"]);
+
+  const viewerAssignment = await assignmentIdOf(PEOPLE.SELAM_VIEWER);
+  const platform = await as("SELAM_OWNER", "PUT", overridesOf(viewerAssignment), { overrides: [{ module_code: "MODULES", view: true }] });
+  assert.deepEqual([platform.status, platform.body.error.details.issues[0].path], [400, "body.overrides.0.module_code"]);
+
+  // Door staff may now manage staff, but holds no Events › create and can't touch their own access.
+  const given = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.doorRoleId}`, {
+    grants: [{ ...grantOf("REGISTRATIONS", true, false, true), export: true }, grantOf("ROLES", true, false, true), grantOf("USER_ROLES", true, false, true)],
+  });
+  assert.equal(given.status, 200, JSON.stringify(given.body));
+  const door = await tokenFor(DOOR_ID);
+  const own = await asToken(door, "PUT", overridesOf(roleFixture.doorAssignmentId), { overrides: [] });
+  assert.deepEqual([own.status, own.body.error.code], [409, "own_assignment"]);
+  const escalate = await asToken(door, "PUT", overridesOf(viewerAssignment), { overrides: [{ module_code: "EVENTS", create: true }] });
+  assert.deepEqual([escalate.status, escalate.body.error.code, escalate.body.error.details], [403, "grant_exceeds_own_access", { module_code: "EVENTS", action: "create" }]);
+  const denyOnly = await asToken(door, "PUT", overridesOf(viewerAssignment), { overrides: [{ module_code: "EVENTS", view: false }] });
+  assert.equal(denyOnly.status, 200, "denying needs no access of your own");
+});
+
+const templateFixture = { doorTemplateId: "" };
+
+test("row 73: the Super Admin creates a template; new organizations get it only once it's marked for new organizations", { skip }, async () => {
+  const created = await as("SUPER", "POST", "/v1/role-templates", {
+    code: "door_helper",
+    name: "Door helper",
+    grants: [grantOf("REGISTRATIONS", true, false, true)],
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual([created.body.data.code, created.body.data.for_new_organizations, created.body.data.locked], ["DOOR_HELPER", false, false]);
+  templateFixture.doorTemplateId = created.body.data.id;
+
+  const before = await as("SUPER", "POST", "/v1/organizations", { organization: { name: "Template Org One" } });
+  assert.equal(before.status, 201, JSON.stringify(before.body));
+  const rolesBefore = (await Role.findAll({ where: { organization_id: before.body.data.organization.id }, raw: true })).map((role) => role.code).sort();
+  assert.deepEqual(rolesBefore, ["OWNER", "VIEWER"], "from the seeded templates");
+
+  const marked = await as("SUPER", "PATCH", `/v1/role-templates/${templateFixture.doorTemplateId}`, { for_new_organizations: true });
+  assert.equal(marked.status, 200, JSON.stringify(marked.body));
+  const after = await as("SUPER", "POST", "/v1/organizations", { organization: { name: "Template Org Two" } });
+  assert.equal(after.status, 201, JSON.stringify(after.body));
+  const rolesAfter = (await Role.findAll({ where: { organization_id: after.body.data.organization.id }, raw: true })).map((role) => role.code).sort();
+  assert.deepEqual(rolesAfter, ["DOOR_HELPER", "OWNER", "VIEWER"]);
+});
+
+test("row 74: an Owner starts a role from a template; editing the template later never changes it; the OWNER template is locked", { skip }, async () => {
+  const listed = await as("SELAM_OWNER", "GET", `${staffBase()}/role-templates`);
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  const doorTemplate = listed.body.data.find((template: { code: string }) => template.code === "DOOR_HELPER");
+  assert.ok(doorTemplate, "active templates are offered to Owners");
+
+  const fromTemplate = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, {
+    code: "door_helper",
+    name: "Door helper",
+    grants: doorTemplate.grants.map((grant: { module_code: string; view: boolean; create: boolean; update: boolean; export: boolean }) => ({
+      module_code: grant.module_code,
+      view: grant.view,
+      create: grant.create,
+      update: grant.update,
+      export: grant.export,
+    })),
+  });
+  assert.equal(fromTemplate.status, 201, JSON.stringify(fromTemplate.body));
+
+  const edited = await as("SUPER", "PATCH", `/v1/role-templates/${templateFixture.doorTemplateId}`, {
+    grants: [grantOf("REGISTRATIONS", true, false, true), grantOf("EVENTS", true, false, false)],
+  });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const role = await as("SELAM_OWNER", "GET", `${staffBase()}/roles/${fromTemplate.body.data.id}`);
+  assert.deepEqual(role.body.data.grants.map((grant: { module_code: string }) => grant.module_code), ["REGISTRATIONS"], "a copy, never a link");
+
+  const owner = (await as("SUPER", "GET", "/v1/role-templates")).body.data.find((template: { code: string }) => template.code === "OWNER");
+  assert.equal(owner.locked, true);
+  const lockedEdit = await as("SUPER", "PATCH", `/v1/role-templates/${owner.id}`, { name: "Boss" });
+  assert.deepEqual([lockedEdit.status, lockedEdit.body.error.code], [409, "role_locked"]);
+  assert.equal((await as("SUPER", "PATCH", `/v1/role-templates/${owner.id}/status`, { is_active: false })).status, 409);
+});
+
+test("row 75: the Super Admin renames and reorders a module and /me follows; Owners can't reach modules or the template library", { skip }, async () => {
+  const registrations = await moduleRepository.findActivePermissionByCode("REGISTRATIONS");
+  assert.ok(registrations);
+  const renamed = await as("SUPER", "PATCH", `/v1/modules/${registrations.id}`, { module_name: "Guest list", sno: 9 });
+  assert.deepEqual([renamed.status, renamed.body.data.module_name, renamed.body.data.code], [200, "Guest list", "REGISTRATIONS"]);
+  try {
+    const me = await as("SELAM_OWNER", "GET", "/v1/auth/staff/me");
+    const child = (me.body.data.navigation as Array<{ children: Array<{ code: string; module_name: string; sno: number }> }>)
+      .flatMap((node) => node.children)
+      .find((node) => node.code === "REGISTRATIONS");
+    assert.deepEqual([child?.module_name, child?.sno], ["Guest list", 9]);
+
+    const tree = await as("SUPER", "GET", "/v1/modules");
+    assert.ok((tree.body.data as Array<{ code: string }>).some((node) => node.code === "EVENT_MANAGEMENT"));
+    assert.equal((await as("SUPER", "PATCH", `/v1/modules/${registrations.id}`, { code: "GUESTS" })).status, 400, "the code can't change");
+
+    assert.equal((await as("SELAM_OWNER", "GET", "/v1/modules")).status, 403);
+    assert.equal((await as("SELAM_OWNER", "GET", "/v1/role-templates")).status, 403);
+    assert.equal((await as("SELAM_OWNER", "POST", "/v1/role-templates", { code: "X", name: "X", grants: [] })).status, 403);
+  } finally {
+    await as("SUPER", "PATCH", `/v1/modules/${registrations.id}`, { module_name: "Guests", sno: 3 });
+  }
+});

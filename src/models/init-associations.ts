@@ -8,6 +8,8 @@ import type { Person } from "./person.js";
 import type { Registration } from "./registration.js";
 import type { Role } from "./role.js";
 import type { RoleModuleAccess } from "./role-module-access.js";
+import type { RoleTemplate } from "./role-template.js";
+import type { RoleTemplateModuleAccess } from "./role-template-module-access.js";
 import type { StoredFile } from "./stored-file.js";
 import type { SubmissionKey } from "./submission-key.js";
 import type { TicketType } from "./ticket-type.js";
@@ -21,6 +23,8 @@ type Models = {
   AppModule: typeof AppModule;
   Role: typeof Role;
   RoleModuleAccess: typeof RoleModuleAccess;
+  RoleTemplate: typeof RoleTemplate;
+  RoleTemplateModuleAccess: typeof RoleTemplateModuleAccess;
   UserRole: typeof UserRole;
   UserModuleAccess: typeof UserModuleAccess;
   CustomerAccount: typeof CustomerAccount;
@@ -42,6 +46,8 @@ export function initAssociations(models: Models): void {
     AppModule,
     Role,
     RoleModuleAccess,
+    RoleTemplate,
+    RoleTemplateModuleAccess,
     UserRole,
     UserModuleAccess,
     CustomerAccount,
@@ -65,6 +71,9 @@ export function initAssociations(models: Models): void {
   Role.hasMany(RoleModuleAccess, { foreignKey: "role_id", as: "accesses" });
   RoleModuleAccess.belongsTo(Role, { foreignKey: "role_id", as: "role" });
   RoleModuleAccess.belongsTo(AppModule, { foreignKey: "module_id", as: "module" });
+  RoleTemplate.hasMany(RoleTemplateModuleAccess, { foreignKey: "role_template_id", as: "accesses" });
+  RoleTemplateModuleAccess.belongsTo(RoleTemplate, { foreignKey: "role_template_id", as: "template" });
+  RoleTemplateModuleAccess.belongsTo(AppModule, { foreignKey: "module_id", as: "module" });
 
   UserRole.belongsTo(Role, { foreignKey: "role_id", as: "role" });
   UserRole.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });

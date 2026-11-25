@@ -9,6 +9,8 @@ import { Person } from "./person.js";
 import { Registration } from "./registration.js";
 import { Role } from "./role.js";
 import { RoleModuleAccess } from "./role-module-access.js";
+import { RoleTemplate } from "./role-template.js";
+import { RoleTemplateModuleAccess } from "./role-template-module-access.js";
 import { StoredFile } from "./stored-file.js";
 import { SubmissionKey } from "./submission-key.js";
 import { TicketType } from "./ticket-type.js";
@@ -22,6 +24,8 @@ initAssociations({
   AppModule,
   Role,
   RoleModuleAccess,
+  RoleTemplate,
+  RoleTemplateModuleAccess,
   UserRole,
   UserModuleAccess,
   CustomerAccount,
@@ -46,6 +50,8 @@ export {
   Registration,
   Role,
   RoleModuleAccess,
+  RoleTemplate,
+  RoleTemplateModuleAccess,
   StoredFile,
   SubmissionKey,
   TicketType,

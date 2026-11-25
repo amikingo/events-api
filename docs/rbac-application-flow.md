@@ -63,16 +63,18 @@ are UX only — backend middleware is the authority.
 
 ## Default roles and provisioning (scripts)
 
-Every organization created by `provision:organizer` starts with two roles (`src/utils/default-roles.ts`):
+Every new organization (the app's `POST /v1/organizations` and `provision:organizer` alike) starts with roles copied
+from the active **role templates** marked for new organizations (Phase 2d; see below). At first those are OWNER and
+VIEWER, seeded from `src/utils/default-roles.ts`, which is also the fallback when no OWNER template exists:
 
 | Role | Grants |
 |---|---|
-| `OWNER` | `ORGANIZATIONS` view, update · `BRANCHES` view, create, update · `ROLES` view · `USER_ROLES` view · `EVENTS` view, create, update · `CUSTOMERS` view, create, update |
-| `VIEWER` | `ORGANIZATIONS` view · `BRANCHES` view · `EVENTS` view · `CUSTOMERS` view |
+| `OWNER` | `ORGANIZATIONS` view, update · `BRANCHES`, `ROLES`, `USER_ROLES`, `EVENTS`, `CUSTOMERS` view, create, update · `REGISTRATIONS` view, create, update, export |
+| `VIEWER` | `ORGANIZATIONS`, `BRANCHES`, `EVENTS`, `CUSTOMERS`, `REGISTRATIONS` view |
 
-Later phases add their modules to these templates and extend existing organizations through migrations (Phase 3:
-`20261125000003-grant-events-and-customers-to-default-roles`). A default role never gets a platform-only module
-(`MODULES`, `ROLE_TEMPLATES`).
+Existing organizations are extended through grant migrations (`20261125000003`, `20261126000004`, `20261127000000`,
+`20261128000000`, `20261129000000`); a future grant migration updates the OWNER template too. A default role never gets
+a platform-only module (`MODULES`, `ROLE_TEMPLATES`).
 
 Operational scripts. Each previews by default, writes only with `--confirm`, prints JSON, and loads `.env`, so the
 project owner runs it:
@@ -141,7 +143,7 @@ Organizations manage their own staff in the app. These endpoints all sit under `
   - one person, one organization;
   - an identical active assignment is unchanged, and an identical inactive one is reactivated;
   - the **last active Owner** can't be deactivated or moved to another role (409 `last_owner_assignment`). Owner changes in one organization are serialized by an advisory lock, so two Owners can't remove each other at the same moment.
-- **Not built:** endpoints for Modules, Role Templates and Permission Overrides. They're platform administration, and the scripts cover them.
+- **Modules, Role Templates and Permission Overrides** got endpoints in Phase 2d (below).
 - **Every organization gets the default roles** (fixed 25 November 2026): `POST /v1/organizations` and `provision:organizer` both create `OWNER` and `VIEWER` with their grants, in the same transaction (`src/services/default-roles.service.ts`). Before the fix, organizations made in the app had no roles. Migration `20261127000100-backfill-default-roles` gives the defaults, once, to every organization that has no role at all.
 - **The first Owner of an organization made in the app:** since Phase 2c, `POST /v1/organizations` takes an optional `owner_mobile` and adds that Owner in the same transaction. The Super Admin can still add one later through Staff Assignments. The script does it in one step (`--owner-user-id`).
 
@@ -191,4 +193,53 @@ All under `/v1/organizations/{organizationId}`, in `src/services/role.service.ts
 - **When changes apply:** at once. The permission engine reads grants from the database on every request; the menu follows on the next `/me`.
 - **Organizations:** `PATCH /v1/organizations/{id}` also edits `name` and `description` (`ORGANIZATIONS.update`); the slug never changes. `PATCH /v1/organizations/{id}/status` `{ is_active }` is **platform scope** (Super Admin only), so an Owner can't switch their own organization off. Switched off, the existing rules apply: staff get `organization_inactive` at sign-in, refresh and `/me`, every permission check denies, and its events leave the catalog (links answer 404). Switched on, everything returns; nothing is deleted.
 - **The first Owner at creation:** `owner_mobile` on `POST /v1/organizations` is looked up in auth-cheche *before* the transaction (no lock waits on the network). Inside it: the person's assignments are locked, `staffRules.assertNotStaffElsewhere` runs, then the organization, its default roles and the Owner assignment are created together. No account (`404`) or already staff (`409`) creates nothing.
-- **Not built:** deleting roles or organizations (they're switched off), editing a slug, and endpoints for Modules, Role Templates and Permission Overrides.
+- **Not built:** deleting roles or organizations (they're switched off) and editing a slug.
+
+## Permission overrides, role templates and modules (Phase 2d, 25 November 2026)
+
+Shared code: `src/services/grant-rules.ts` holds the two rules every grant follows (roles, overrides, templates):
+**grantable** (`TENANT_GRANTABLE`, 400 naming the module or action) and **held** (nobody hands out what they don't
+hold in their signed-in assignment, 403 `grant_exceeds_own_access`).
+
+**Permission overrides** give one staff member more or less than their role, module by module.
+
+| Call | Permission |
+|---|---|
+| `GET /v1/organizations/{organizationId}/staff-assignments/{assignmentId}/overrides` | `USER_ROLES.view` |
+| `PUT /v1/organizations/{organizationId}/staff-assignments/{assignmentId}/overrides` `{ overrides: [{ module_code, view?, create?, update?, export? }] }` | `USER_ROLES.update` |
+
+- Each box is `true` (allow), `false` (deny) or `null` / left out (follow the role). Saving replaces the whole set; a
+  module with every box null is removed (the table forbids an all-null row).
+- The reply lists, per grantable module, `actions` (the boxes it offers), `role`, `override` and `effective`.
+- Only `TENANT_GRANTABLE` modules and actions (400). Allowing needs the editor to hold the action (403); denying, or
+  keeping an existing allow, needs nothing.
+- Never on an Owner's assignment (409 `owner_not_overridable`): Owners always have full access, and an override can't
+  lock an organization out. Never on your own assignment (409 `own_assignment`).
+- They apply on the next request (the engine already reads them) and stay when the assignment's role changes. Then
+  the PATCH reply carries `override_count` and says "Role changed. This person still has N permission overrides:
+  review them."
+- The *Permission Overrides* menu item (`USER_MODULE_ACCESSES`) stays hidden: overrides live on the staff page.
+
+**Role templates** are a platform library (tables `role_template`, `role_template_module_access`).
+
+| Call | Permission |
+|---|---|
+| `GET /v1/role-templates`, `GET /v1/role-templates/{templateId}` | `ROLE_TEMPLATES.view`, platform |
+| `POST /v1/role-templates` `{ code, name, description?, for_new_organizations?, grants }` | `ROLE_TEMPLATES.create`, platform |
+| `PATCH /v1/role-templates/{templateId}` `{ name?, description?, for_new_organizations?, grants? }`, `PATCH …/status` `{ is_active }` | `ROLE_TEMPLATES.update`, platform |
+| `GET /v1/organizations/{organizationId}/role-templates` (active templates only) | `ROLES.create`, organization |
+
+- Grants follow `TENANT_GRANTABLE`, like roles. Codes are fixed and unique; names unique (ignoring case).
+- **OWNER is locked** (409 `role_locked`): no edits, never switched off, always for new organizations.
+- New organizations get roles copied from the active templates marked `for_new_organizations`; without an OWNER template
+  they fall back to `DEFAULT_TENANT_ROLES`. **Copies, never links:** editing a template never changes existing roles.
+- An Owner starts a role from a template in the role form, then saves it with the normal `POST /roles`, so the
+  escalation rule applies there.
+
+**Modules:** `GET /v1/modules` (`MODULES.view`, platform) returns every module as a tree; `PATCH /v1/modules/{moduleId}`
+(`MODULES.update`, platform) changes `module_name`, `description`, `sno` and `icon` only. Codes, routes, parents and
+on/off stay fixed: the code and the web app depend on them, and switching a module off would lock everyone out of it.
+`/me` follows on the next request.
+
+**Not built:** endpoints for platform roles and platform staff beyond the Super Admin; creating, deleting or switching
+off modules.

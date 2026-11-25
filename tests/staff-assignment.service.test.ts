@@ -16,6 +16,7 @@ import type { UserRoleRow } from "../src/models/user-role.js";
 import { branchRepository } from "../src/repositories/branch.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { roleRepository } from "../src/repositories/role.repository.js";
+import { userModuleAccessRepository } from "../src/repositories/user-module-access.repository.js";
 import { userRoleRepository } from "../src/repositories/user-role.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { staffAssignmentService } from "../src/services/staff-assignment.service.js";
@@ -61,6 +62,7 @@ function arrange(options: Arrange = {}) {
     current: mock.method(userRoleRepository, "findByOrganizationAndId", async () => current),
     owners: mock.method(userRoleRepository, "countActiveOwners", async () => options.owners ?? 2),
     updateRole: mock.method(userRoleRepository, "updateRoleAndBranch", async () => undefined),
+    overrideCount: mock.method(userModuleAccessRepository, "countActiveByUserRole", async () => 0),
     staff: mock.method(userRoleRepository, "findStaffByOrganizationAndId", async () => ({
       ...assignment({ id: "assignment-1", user_id: PERSON_ID }),
       role: VIEWER,
@@ -200,4 +202,17 @@ test("the staff list carries names from Central Auth, and still answers with pro
   });
   const unnamed = await staffAssignmentService.list(IDS.orgA, { page: 1, pageSize: 20, is_active: undefined });
   assert.deepEqual([unnamed.count, unnamed.rows[0]?.profile], [1, null], "assignments are never hidden because names failed");
+});
+
+// --- Phase 2d: overrides stay when the role changes, and the reply says how many --------------------------------
+
+test("changing the role reports how many permission overrides the person still has; changing only the branch doesn't count as a role change", async () => {
+  const fakes = arrange({ current: assignment({ id: "assignment-1", user_id: PERSON_ID, role_id: VIEWER.id }), roles: [VIEWER, OWNER] });
+  fakes.overrideCount.mock.mockImplementation(async () => 2);
+
+  const changed = await staffAssignmentService.update(IDS.orgA, "assignment-1", { role_id: OWNER.id, branch_id: undefined }, IDS.user);
+  assert.deepEqual([changed.role_changed, changed.override_count], [true, 2]);
+
+  const same = await staffAssignmentService.update(IDS.orgA, "assignment-1", { role_id: VIEWER.id, branch_id: undefined }, IDS.user);
+  assert.equal(same.role_changed, false);
 });

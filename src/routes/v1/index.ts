@@ -6,10 +6,12 @@ import { customerAccountsRouter } from "./customer-accounts.js";
 import { customerRouter } from "./customer.js";
 import { docsRouter } from "./docs.js";
 import { eventsRouter } from "./events.js";
+import { modulesRouter } from "./modules.js";
 import { organizationsRouter } from "./organizations.js";
 import { personsRouter } from "./persons.js";
 import { publicEventsRouter } from "./public-events.js";
 import { registrationsRouter } from "./registrations.js";
+import { organizationRoleTemplatesRouter, roleTemplatesRouter } from "./role-templates.js";
 import { rolesRouter } from "./roles.js";
 import { staffAssignmentsRouter } from "./staff-assignments.js";
 import { ticketTypesRouter } from "./ticket-types.js";
@@ -28,6 +30,9 @@ router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticket
 router.use("/organizations/:organizationId/events/:eventId/registrations", registrationsRouter);
 router.use("/organizations/:organizationId/persons", personsRouter);
 router.use("/organizations/:organizationId/roles", rolesRouter);
+router.use("/organizations/:organizationId/role-templates", organizationRoleTemplatesRouter);
+router.use("/role-templates", roleTemplatesRouter); // platform scope: the Super Admin's template library
+router.use("/modules", modulesRouter); // platform scope: the menu and permission list
 router.use("/organizations/:organizationId", staffAssignmentsRouter); // /staff-assignments, /staff-lookup
 router.use("/public", publicEventsRouter); // no login: catalog and event pages
 router.use("/customer", customerRouter); // a signed-in guest's own data (My Tickets)

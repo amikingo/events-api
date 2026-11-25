@@ -333,6 +333,20 @@ export class CentralAccountNotFoundError extends AppError {
   }
 }
 
+/** Phase 2d: an Owner's assignment gets no permission overrides; Owners always have full access. */
+export class OwnerNotOverridableError extends AppError {
+  constructor(message = "An Owner always has full access, so their access can't be overridden", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "owner_not_overridable", details, cause: options?.cause });
+  }
+}
+
+/** Phase 2d: nobody changes the permission overrides of their own assignment. */
+export class OwnAssignmentError extends AppError {
+  constructor(message = "You can't change your own access. Ask another Owner", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "own_assignment", details, cause: options?.cause });
+  }
+}
+
 /** The change would leave the organization without an active Owner. */
 export class LastOwnerAssignmentError extends AppError {
   constructor(message = "The organization must keep at least one active Owner", details?: unknown, options?: ErrorOptions) {

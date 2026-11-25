@@ -6,10 +6,12 @@ import {
   changeStaffAssignmentStatusRequest,
   createStaffAssignmentRequest,
   listStaffAssignmentsRequest,
+  listStaffOverridesRequest,
   lookUpStaffRequest,
+  replaceStaffOverridesRequest,
   updateStaffAssignmentRequest,
 } from "../validators/staff-assignment.js";
-import { getActorId } from "./helpers.js";
+import { getActorId, getStaffAuth } from "./helpers.js";
 
 async function lookUp(req: Request, res: Response): Promise<void> {
   const { query } = getValidated(req, lookUpStaffRequest);
@@ -33,9 +35,32 @@ async function assign(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 201, assignment, outcome === "REACTIVATED" ? "Staff assignment reactivated" : "Staff assignment created");
 }
 
+/** When the role changed and the person still has permission overrides, the message says so (Phase 2d). */
 async function update(req: Request, res: Response): Promise<void> {
   const { params, body } = getValidated(req, updateStaffAssignmentRequest);
-  sendSuccess(res, 200, await staffAssignmentService.update(params.organizationId, params.assignmentId, body, getActorId(req)), "Staff assignment updated");
+  const assignment = await staffAssignmentService.update(params.organizationId, params.assignmentId, body, getActorId(req));
+  const { override_count: count } = assignment;
+  const message =
+    assignment.role_changed && count > 0
+      ? `Role changed. This person still has ${count} permission override${count === 1 ? "" : "s"}: review them.`
+      : "Staff assignment updated";
+  sendSuccess(res, 200, assignment, message);
+}
+
+async function listOverrides(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, listStaffOverridesRequest);
+  sendSuccess(res, 200, await staffAssignmentService.listOverrides(params.organizationId, params.assignmentId), "Permission overrides retrieved");
+}
+
+/** Replaces the whole override set. The editor's signed-in assignment decides what they may allow. */
+async function replaceOverrides(req: Request, res: Response): Promise<void> {
+  const { params, body } = getValidated(req, replaceStaffOverridesRequest);
+  const auth = getStaffAuth(req);
+  const overrides = await staffAssignmentService.replaceOverrides(params.organizationId, params.assignmentId, body, {
+    userId: auth.userId,
+    assignmentId: auth.assignmentId,
+  });
+  sendSuccess(res, 200, overrides, "Permission overrides saved");
 }
 
 async function changeStatus(req: Request, res: Response): Promise<void> {
@@ -44,4 +69,4 @@ async function changeStatus(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, assignment, "Staff assignment status updated");
 }
 
-export const staffAssignmentController = { lookUp, list, assign, update, changeStatus };
+export const staffAssignmentController = { lookUp, list, assign, update, changeStatus, listOverrides, replaceOverrides };
