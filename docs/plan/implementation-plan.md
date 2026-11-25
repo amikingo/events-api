@@ -399,7 +399,7 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 - **Visitor fields:** the commissioning client, staff, internal ids and audit fields stay private.
 - **`registration_open`:** a PUBLISHED event that hasn't ended and is inside its window. The opening time is inclusive, the closing time exclusive, and an unset boundary adds no limit. Capacity joins in Phase 4.
 
-**3c status: built; awaiting the owner's `db:migrate` and `TEST_DATABASE=1 npm test`.**
+**3c status: done.** Migration `20261125000200-add-event-published-at` was applied to `events_dev`; `TEST_DATABASE=1 npm test` passed 153 of 153 on the real database, none skipped (including matrix rows 32–37 through the public endpoints).
 
 - **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
 - **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.
