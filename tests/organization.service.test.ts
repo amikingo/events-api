@@ -4,6 +4,7 @@ import type { Transaction } from "sequelize";
 import { ValidationAppError } from "../src/errors/app-errors.js";
 import { branchRepository } from "../src/repositories/branch.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
+import { defaultRolesService } from "../src/services/default-roles.service.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { organizationService } from "../src/services/organization.service.js";
 import { organizationCreateSchema } from "../src/validators/organization.js";
@@ -17,8 +18,18 @@ beforeEach(() => {
   mock.method(organizationRepository, "findBySlug", async () => null);
   mock.method(organizationRepository, "create", async () => organizationRow());
   mock.method(branchRepository, "create", async () => branchRow());
+  mock.method(defaultRolesService, "createDefaultRoles", async () => new Map());
 });
 afterEach(() => mock.restoreAll());
+
+test("a new organization gets the default OWNER and VIEWER roles in the same transaction, as the script makes them", async () => {
+  mock.method(organizationRepository, "create", async () => organizationRow({ id: IDS.orgB }));
+  const roles = mock.method(defaultRolesService, "createDefaultRoles", async (_organizationId: string, _actorId: string | null, _tx: Transaction) => new Map());
+
+  await organizationService.createOrganization({ organization: { name: "Pilot Org", description: undefined } }, IDS.user);
+
+  assert.deepEqual(roles.mock.calls[0]?.arguments, [IDS.orgB, IDS.user, FAKE_TX]);
+});
 
 test("has_branches defaults to false, and the hidden default branch is still created", async () => {
   const create = mock.method(organizationRepository, "create", async () => organizationRow());

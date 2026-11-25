@@ -11,6 +11,7 @@ import { PRIVACY_NOTICE_VERSION } from "../../src/config/privacy.js";
 import { sequelize } from "../../src/db.js";
 import { CentralAuthUnavailableError, ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
+import { up as backfillDefaultRoles } from "../../src/migrations/20261127000100-backfill-default-roles.js";
 import { migrator } from "../../src/migrator.js";
 import {
   AppEvent,
@@ -20,6 +21,8 @@ import {
   Organization,
   Person as PersonModel,
   Registration,
+  Role,
+  RoleModuleAccess,
   StoredFile,
   SubmissionKey,
   UserModuleAccess,
@@ -1117,4 +1120,41 @@ test("row 55: when Central Auth can't give names, the staff list still answers w
   } finally {
     mock.restoreAll();
   }
+});
+
+test("row 56: an organization created in the app gets OWNER and VIEWER; its first Owner is added by the Super Admin; the backfill repairs bare ones once", { skip }, async () => {
+  const FIRST_OWNER_ID = "c8888888-8888-4888-8888-888888888888";
+  mock.method(centralAuthClient, "findUserByMobile", async (mobile: string) =>
+    mobile === "+251933000004" ? { userId: FIRST_OWNER_ID, mobile, firstname: "Meseret", middlename: null, lastname: "Owner" } : null,
+  );
+  mock.method(centralAuthClient, "getUsersByIds", async () => []);
+  try {
+    const created = await as("SUPER", "POST", "/v1/organizations", { organization: { name: "Pilot Org" } });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const pilotId: string = created.body.data.organization.id;
+
+    const roles = await as("SUPER", "GET", `/v1/organizations/${pilotId}/roles`);
+    assert.deepEqual(roles.body.data.map((role: { code: string }) => role.code).sort(), ["OWNER", "VIEWER"]);
+    const ownerRole = roles.body.data.find((role: { code: string }) => role.code === "OWNER");
+
+    const firstOwner = await as("SUPER", "POST", `/v1/organizations/${pilotId}/staff-assignments`, { mobile: "0933000004", role_id: ownerRole.id });
+    assert.equal(firstOwner.status, 201, JSON.stringify(firstOwner.body));
+    const me = await asToken(await tokenFor(FIRST_OWNER_ID), "GET", "/v1/auth/staff/me");
+    assert.deepEqual([me.body.data.assignment.organization.id, me.body.data.assignment.role.code], [pilotId, "OWNER"]);
+  } finally {
+    mock.restoreAll();
+  }
+
+  // The backfill: a bare organization (as the app made them before the fix) gets the defaults, once; others are untouched.
+  const bare = await Organization.create({ name: "Bare Org", slug: "bare-org", description: null, created_by: null, updated_by: null });
+  const selamRolesBefore = await Role.count({ where: { organization_id: fixture.selamId } });
+  const queryInterface = sequelize.getQueryInterface();
+  await backfillDefaultRoles({ context: queryInterface, name: "backfill", path: "" });
+  await backfillDefaultRoles({ context: queryInterface, name: "backfill", path: "" });
+
+  const bareRoles = await Role.findAll({ where: { organization_id: bare.id }, attributes: ["id", "code"], raw: true });
+  assert.deepEqual(bareRoles.map((role) => role.code).sort(), ["OWNER", "VIEWER"], "once, even when run twice");
+  const ownerGrants = await RoleModuleAccess.count({ where: { role_id: bareRoles.find((role) => role.code === "OWNER")?.id ?? "" } });
+  assert.equal(ownerGrants, 7, "the OWNER grants of a new organization");
+  assert.equal(await Role.count({ where: { organization_id: fixture.selamId } }), selamRolesBefore, "an organization with roles is untouched");
 });

@@ -318,6 +318,8 @@ The permission column shows what the signed-in role needs: module code and actio
 
 A changed role applies on the person's next request; there's no need to sign out.
 
+**A new organization** (`POST /v1/organizations`) comes with the default **Owner** and **Viewer** roles, but with no staff yet. After creating one, the Super Admin opens its *Staff Assignments* and adds the first Owner by mobile. A good place for that is a "Next: add the owner" step right after the create form. Organizations created before this fix get the two roles from a one-off migration.
+
 **Event dates and times.** Send instants with an offset or `Z` (`2027-03-12T09:00:00+03:00`); the API answers in
 UTC (`…Z`). Show them in the event's own `timezone`. Show `display_status` for the badge: it is `LIVE` while a
 published event is running; a cancelled event shows `CANCELLED` even during its hours. `CLOSED` and `CANCELLED`

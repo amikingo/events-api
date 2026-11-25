@@ -1,4 +1,3 @@
-import type { Transaction } from "sequelize";
 import {
   BranchInactiveError,
   ConflictError,
@@ -6,15 +5,11 @@ import {
   OrganizationInactiveError,
   RoleInactiveError,
 } from "../errors/app-errors.js";
-import type { RoleRow } from "../models/role.js";
 import { branchRepository } from "../repositories/branch.repository.js";
-import { moduleRepository } from "../repositories/module.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
-import { roleModuleAccessRepository } from "../repositories/role-module-access.repository.js";
 import { roleRepository } from "../repositories/role.repository.js";
 import { userRoleRepository } from "../repositories/user-role.repository.js";
-import { DEFAULT_TENANT_ROLES, OWNER_ROLE_CODE } from "../utils/default-roles.js";
-import type { PermissionAction, PermissionField } from "../utils/rbac.js";
+import { OWNER_ROLE_CODE } from "../utils/default-roles.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 import { organizationService } from "./organization.service.js";
 import { staffRules } from "./staff-rules.js";
@@ -54,56 +49,6 @@ export type AssignStaffResult = {
 
 
 
-function permissionFlags(actions: readonly PermissionAction[]): Record<PermissionField, boolean> {
-  return {
-    can_view: actions.includes("view"),
-    can_create: actions.includes("create"),
-    can_update: actions.includes("update"),
-    can_delete: actions.includes("delete"),
-    can_import: actions.includes("import"),
-    can_export: actions.includes("export"),
-    can_notify: actions.includes("notify"),
-  };
-}
-
-/**
- * Mirrors fn_user_role_scope_guard: a person is platform staff or staff of exactly one organization, and
- * every assignment counts, active or not. `organizationId` null means "a brand-new organization".
- */
-
-async function createDefaultRoles(
-  organizationId: string,
-  actorId: string | null,
-  transaction: Transaction,
-): Promise<Map<string, RoleRow>> {
-  const modules = await moduleRepository.listActiveOrdered({ transaction });
-  const moduleIdByCode = new Map(modules.filter((row) => row.is_permission).map((row) => [row.code, row.id]));
-
-  const roles = new Map<string, RoleRow>();
-  for (const template of DEFAULT_TENANT_ROLES) {
-    const role = await roleRepository.create(
-      {
-        organization_id: organizationId,
-        code: template.code,
-        name: template.name,
-        description: template.description,
-        is_active: true,
-        created_by: actorId,
-        updated_by: actorId,
-      },
-      { transaction },
-    );
-    const grants = template.grants.map((grant) => {
-      const moduleId = moduleIdByCode.get(grant.moduleCode);
-      if (!moduleId) throw new Error(`Module ${grant.moduleCode} is not seeded; run the migrations first`);
-      return { role_id: role.id, module_id: moduleId, ...permissionFlags(grant.actions), created_by: actorId, updated_by: actorId };
-    });
-    await roleModuleAccessRepository.bulkCreate(grants, { transaction });
-    roles.set(template.code, role);
-  }
-  return roles;
-}
-
 /** Creates an organization, its MAIN branch, the default OWNER and VIEWER roles, and the owner's assignment. */
 async function provisionOrganizer(
   input: ProvisionOrganizerInput,
@@ -124,12 +69,12 @@ async function provisionOrganizer(
       return { applied: false, slug, hasBranches, organizationId: null, defaultBranchId: null, roleIds: {}, ownerAssignmentId: null };
     }
 
-    const { organization, branches } = await organizationService.createOrganizationInTransaction(
+    // Creates the organization, its default branch and its default roles (the same as POST /v1/organizations).
+    const { organization, branches, roles } = await organizationService.createOrganizationInTransaction(
       { name: input.name, slug, description: null, hasBranches },
       actorId,
       transaction,
     );
-    const roles = await createDefaultRoles(organization.id, actorId, transaction);
     const ownerRole = roles.get(OWNER_ROLE_CODE);
     if (!ownerRole) throw new Error(`Default role ${OWNER_ROLE_CODE} is missing from DEFAULT_TENANT_ROLES`);
 

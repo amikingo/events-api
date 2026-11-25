@@ -142,6 +142,8 @@ Organizations manage their own staff in the app. These endpoints all sit under `
   - an identical active assignment is unchanged, and an identical inactive one is reactivated;
   - the **last active Owner** can't be deactivated or moved to another role (409 `last_owner_assignment`). Owner changes in one organization are serialized by an advisory lock, so two Owners can't remove each other at the same moment.
 - **Not built:** endpoints for Modules, Role Templates and Permission Overrides. They're platform administration, and the scripts cover them.
+- **Every organization gets the default roles** (fixed 25 November 2026): `POST /v1/organizations` and `provision:organizer` both create `OWNER` and `VIEWER` with their grants, in the same transaction (`src/services/default-roles.service.ts`). Before the fix, organizations made in the app had no roles. Migration `20261127000100-backfill-default-roles` gives the defaults, once, to every organization that has no role at all.
+- **The first Owner of an organization made in the app:** the platform Super Admin opens its Staff Assignments, looks up the owner's mobile and gives them the `OWNER` role. Super Admin passes every permission check. The script still does it in one step (`--owner-user-id`).
 
 ### Rules for later role and access editing
 

@@ -8,6 +8,8 @@ import { buildPagination } from "../utils/pagination.js";
 import { pickDefined } from "../utils/patch.js";
 import { slugify } from "../utils/slug.js";
 import type { OrganizationCreateInput, OrganizationListQuery, OrganizationSettingsUpdateInput } from "../validators/organization.js";
+import type { RoleRow } from "../models/role.js";
+import { defaultRolesService } from "./default-roles.service.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 
 const MAIN_BRANCH = { code: "MAIN", name: "Main Branch" } as const;
@@ -61,7 +63,7 @@ async function createOrganizationInTransaction(
   draft: OrganizationDraft,
   actorId: string | null,
   transaction: Transaction,
-): Promise<{ organization: OrganizationRow; branches: BranchRow[] }> {
+): Promise<{ organization: OrganizationRow; branches: BranchRow[]; roles: Map<string, RoleRow> }> {
   if (await organizationRepository.findBySlug(draft.slug, { transaction })) {
     throw new ConflictError("Organization slug is already in use", { field: "slug" });
   }
@@ -95,7 +97,10 @@ async function createOrganizationInTransaction(
     { transaction },
   );
 
-  return { organization, branches: [defaultBranch] };
+  // Every organization starts with the default OWNER and VIEWER roles, however it is created (app or script).
+  const roles = await defaultRolesService.createDefaultRoles(organization.id, actorId, transaction);
+
+  return { organization, branches: [defaultBranch], roles };
 }
 
 /** The slug is resolved first, so an unusable name is refused before any transaction opens. */
@@ -113,7 +118,10 @@ async function createOrganization(
     defaultCurrency: input.organization.default_currency,
     defaultBranch: input.default_branch,
   };
-  return runTransaction((transaction) => createOrganizationInTransaction(draft, actorId, transaction));
+  return runTransaction(async (transaction) => {
+    const { organization, branches } = await createOrganizationInTransaction(draft, actorId, transaction);
+    return { organization, branches };
+  });
 }
 
 /**
