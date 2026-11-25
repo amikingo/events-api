@@ -112,13 +112,13 @@ function parseTokens(payload: unknown, { requireRefresh }: { requireRefresh: boo
 }
 
 /**
- * Shared by both sign-in calls. service_id (server-owned, from config) makes auth-cheche refuse accounts
- * that are not registered for this product; refusals get the fixed message; a refresh token is required.
- * No Authorization header is sent.
+ * Shared by both sign-in calls. No service_id is sent, like bookings_api (decided 25 November 2026): with it,
+ * auth-cheche refuses accounts not registered for that service ("403 User is not registered for this service"),
+ * and existing Cheche accounts usually aren't. Access is decided by this API's own user_role rows instead.
+ * Refusals get the fixed message; a refresh token is required. No Authorization header is sent.
  */
 async function signIn(path: string, body: PasswordLoginInput | EmailLoginInput): Promise<CentralTokens> {
-  const query = new URLSearchParams({ service_id: authConfig.centralAuthServiceId });
-  const payload = await call(`${path}?${query.toString()}`, { method: "POST", body, credentialsFlow: true });
+  const payload = await call(path, { method: "POST", body, credentialsFlow: true });
   return parseTokens(payload, { requireRefresh: true });
 }
 

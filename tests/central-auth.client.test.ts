@@ -66,14 +66,14 @@ const SIGNIN_REPLY = {
   session_id: "sess-123456",
 };
 
-test("password login posts to /v1/users/signin/password with our service_id and no Authorization header", async () => {
+test("password login posts to /v1/users/signin/password without a service_id and without an Authorization header", async () => {
   const calls = fakeFetch(200, JSON.stringify(SIGNIN_REPLY));
 
   const tokens = await centralAuthClient.passwordLogin(LOGIN);
 
   assert.deepEqual(tokens, { accessToken: "access-abc", refreshToken: "refresh-abc", refreshExpiresIn: null });
   const [{ url, init } = { url: "", init: undefined }] = calls;
-  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/signin/password?service_id=${authConfig.centralAuthServiceId}`);
+  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/signin/password`, "no ?service_id=: access is decided by user_role");
   assert.equal(init?.method, "POST");
   const body = init?.body;
   assert.ok(typeof body === "string", "the request body is a JSON string");
@@ -82,14 +82,14 @@ test("password login posts to /v1/users/signin/password with our service_id and 
   assert.ok(!headerNames.includes("authorization"));
 });
 
-test("email login posts to /v1/users/signin/email with our service_id and no Authorization header", async () => {
+test("email login posts to /v1/users/signin/email without a service_id and without an Authorization header", async () => {
   const calls = fakeFetch(200, JSON.stringify(SIGNIN_REPLY));
 
   const tokens = await centralAuthClient.emailLogin(EMAIL_LOGIN);
 
   assert.deepEqual(tokens, { accessToken: "access-abc", refreshToken: "refresh-abc", refreshExpiresIn: null });
   const [{ url, init } = { url: "", init: undefined }] = calls;
-  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/signin/email?service_id=${authConfig.centralAuthServiceId}`);
+  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/signin/email`);
   const body = init?.body;
   assert.ok(typeof body === "string", "the request body is a JSON string");
   assert.deepEqual(JSON.parse(body), EMAIL_LOGIN);

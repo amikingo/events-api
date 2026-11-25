@@ -22,7 +22,7 @@
 
 | Endpoint | Notes |
 |---|---|
-| `POST /v1/auth/staff/login` `{ mobile \| email, password, device_id?, device_name?, platform? }` | Exactly one of `mobile` or `email`. auth-cheche sign-in: `POST /v1/users/signin/password` (mobile) or `POST /v1/users/signin/email` (email; only for accounts that have an email in auth-cheche), both with `?service_id=<CENTRAL_AUTH_SERVICE_ID>`. PIN sign-in is legacy and a body with `pin` gets 400 → local token in JSON; refresh token **only** in the HttpOnly `events_staff_refresh` cookie (`Path=/v1/auth/staff`). Also sets the `events_staff_central_session` cookie (see below). Rejects upstream logins without a refresh token. Errors: see "Central Auth refusals" below. |
+| `POST /v1/auth/staff/login` `{ mobile \| email, password, device_id?, device_name?, platform? }` | Exactly one of `mobile` or `email`. auth-cheche sign-in: `POST /v1/users/signin/password` (mobile) or `POST /v1/users/signin/email` (email; only for accounts that have an email in auth-cheche), **without** `?service_id=`, like bookings_api (with it, auth-cheche answers `403 User is not registered for this service` for accounts not registered to that service; access is decided by this API's `user_role` rows instead). PIN sign-in is legacy and a body with `pin` gets 400 → local token in JSON; refresh token **only** in the HttpOnly `events_staff_refresh` cookie (`Path=/v1/auth/staff`). Also sets the `events_staff_central_session` cookie (see below). Rejects upstream logins without a refresh token. Errors: see "Central Auth refusals" below. |
 | `POST /v1/auth/staff/refresh` `{ assignment_id? }` | Reads the cookies only. Rate-limited, `Cache-Control: no-store`, Origin must be trusted. Skips Central Auth while the central-session cookie is valid (see below); assignments are re-read from the DB on every refresh. Requires `assignment_id` when several assignments are active (`409 staff_context_required`). auth-cheche rotates the refresh token on every Central refresh; the new one replaces the cookie. Session-ending failures clear both cookies. |
 | `POST /v1/auth/staff/logout` | Clears both cookies first, then revokes the Central Auth session with `POST /v1/auth/logout` `{ refresh_token }` (no Bearer: staff hold only this API's token). Best effort: a Central failure is logged without token values and never blocks logout. `data.revoked` is `true` only when Central confirmed; `false` when it failed or no cookie was sent. Same rate limit, Origin check and `no-store` as refresh. |
 | `GET /v1/auth/staff/me` | Revalidates the assignment from the DB; returns user, assignment, assignments, flat `permissions`, nested `navigation`. Never calls Central Auth. |
@@ -72,8 +72,8 @@ identity from body or query.
 ## Configuration
 
 Required: `CENTRAL_AUTH_API` (base URL **without** `/v1`, e.g. `https://auth.cheche.et/api`; the client adds
-`/v1/...` and startup refuses a trailing `/v1`), `APP_AUTH_TOKEN`, `CENTRAL_AUTH_SERVICE_ID` (sent on sign-in, so
-auth-cheche refuses accounts not registered for Events).
+`/v1/...` and startup refuses a trailing `/v1`), `APP_AUTH_TOKEN`, `CENTRAL_AUTH_SERVICE_ID` (not sent on sign-in
+since 25 November 2026; kept for creating accounts with `create-verified`, below).
 Optional: `APP_TOKEN_TTL_SECONDS`, `CENTRAL_AUTH_TIMEOUT_MS`, `AUTH_REFRESH_COOKIE_SECURE` (default: on in
 production), `AUTH_REFRESH_COOKIE_SAME_SITE`, `AUTH_REFRESH_COOKIE_DOMAIN`, `AUTH_REFRESH_TTL_SECONDS`,
 `AUTH_REFRESH_TRUSTED_ORIGINS` (required in production for browser refresh/logout),

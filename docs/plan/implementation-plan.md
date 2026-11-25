@@ -407,7 +407,9 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 - **Serving:** `express.static` at `/assets/uploads` with CORP `cross-origin`; `cover: { url }` on staff and public replies.
 - **Records:** one `file` row per upload (`EVENT_COVER`, the event as entity, `uploaded_by`); old files are cleaned up later.
 
-**3d status: built, checks pending.** Migration `20261125000300-add-file-entity-uploader-provider` is written and not applied yet; matrix rows 38–40 are added.
+**3d status: done.** Migration `20261125000300-add-file-entity-uploader-provider` was applied to `events_dev`; `TEST_DATABASE=1 npm test` passed 174 of 174 on the real database, none skipped (including matrix rows 38–40 through the cover endpoints and the static `/assets/uploads` folder). `npm run check` passed beforehand, with the OpenAPI snapshot up to date.
+
+**Sign-in change (25 November 2026):** staff sign-in no longer sends `?service_id=` to auth-cheche, like bookings_api. With it, auth-cheche answered `403 User is not registered for this service` for accounts not registered to that service. Access is decided by this API's own `user_role` rows. Verified by signing in from events-web.
 
 - **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
 - **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.
