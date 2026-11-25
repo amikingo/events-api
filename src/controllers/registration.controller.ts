@@ -4,7 +4,9 @@ import { registrationService } from "../services/registration.service.js";
 import { sendList, sendSuccess } from "../utils/http.js";
 import {
   changeRegistrationStatusRequest,
+  changeRegistrationTicketTypeRequest,
   createRegistrationRequest,
+  exportRegistrationsRequest,
   getRegistrationRequest,
   getRegistrationSummaryRequest,
   listRegistrationsRequest,
@@ -65,4 +67,39 @@ async function changeRegistrationStatus(req: Request, res: Response): Promise<vo
   sendSuccess(res, 200, registration, "Registration status updated");
 }
 
-export const registrationController = { registerGuest, listRegistrations, getRegistrationSummary, getRegistration, changeRegistrationStatus };
+/** Move a confirmed guest to another ticket type; 200 either way, the message says whether anything changed. */
+async function changeRegistrationTicketType(req: Request, res: Response): Promise<void> {
+  const { params, body } = getValidated(req, changeRegistrationTicketTypeRequest);
+  const { registration, changed } = await registrationService.changeRegistrationTicketType(
+    params.organizationId,
+    params.eventId,
+    params.registrationId,
+    body.ticket_type_id,
+    getActorId(req),
+  );
+  sendSuccess(res, 200, registration, changed ? "Ticket type changed" : "Ticket type unchanged");
+}
+
+/** The guest list as a CSV download: the only non-JSON reply (errors still use the JSON envelope). */
+async function exportRegistrations(req: Request, res: Response): Promise<void> {
+  const { params, query } = getValidated(req, exportRegistrationsRequest);
+  const { filename, csv } = await registrationService.exportRegistrations(params.organizationId, params.eventId, query);
+  res
+    .status(200)
+    .set({
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+    })
+    .send(csv);
+}
+
+export const registrationController = {
+  registerGuest,
+  listRegistrations,
+  getRegistrationSummary,
+  getRegistration,
+  changeRegistrationStatus,
+  changeRegistrationTicketType,
+  exportRegistrations,
+};

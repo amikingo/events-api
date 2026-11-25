@@ -8,6 +8,7 @@ import {
   InvalidEventStateError,
   NotFoundError,
   PersonInactiveError,
+  RegistrationCancelledError,
   RegistrationClosedError,
   TicketTypeInactiveError,
   TicketTypeRequiredError,
@@ -464,4 +465,113 @@ test("staff replies show the latest confirmation SMS of the registration", async
   const { registration } = await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
   assert.deepEqual(registration.confirmation, { status: "PENDING", sent_at: null });
   assert.deepEqual(calls.latest.mock.calls[0]?.arguments, [IDS.orgA, [IDS.registration], { transaction: FAKE_TX }], "read inside the transaction that queued it");
+});
+
+// --- Changing a ticket type (Phase 4d) -----------------------------------------------------------
+
+/** Sorts before IDS.ticketType, so a fixed lock order shows up as VIP first. */
+const VIP_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb0";
+const vip = (overrides: Partial<TicketTypeRow> = {}) => ticketTypeRow({ id: VIP_ID, code: "VIP", name: "VIP", capacity: 10, ...overrides });
+
+function arrangeMove(options: Arrange & { registration?: RegistrationRow; vipRow?: TicketTypeRow | null } = {}) {
+  const vipRow = options.vipRow === undefined ? vip() : options.vipRow;
+  const calls = arrange({ ...options, ticketTypes: options.ticketTypes ?? [ticketTypeRow(), ...(vipRow ? [vipRow] : [])] });
+  const registration = options.registration ?? registrationRow();
+  const findRegistration = mock.method(
+    registrationRepository,
+    "findByEventAndId",
+    async (_o: string, _e: string, _id: string, repoOptions?: { lock?: boolean }) => {
+      calls.calls.push(repoOptions?.lock ? "registration:lock" : "registration");
+      return registration;
+    },
+  );
+  return { ...calls, findRegistration };
+}
+
+test("moving a guest keeps the row and its code, writes only the ticket type, queues no SMS, and locks event, both ticket types (by id), then the registration", async () => {
+  const calls = arrangeMove({ event: eventRow({ ...PUBLISHED, capacity: 1 }), eventTaken: 1 });
+
+  const { registration, changed } = await registrationService.changeRegistrationTicketType(IDS.orgA, IDS.event, IDS.registration, VIP_ID, IDS.user);
+
+  assert.equal(changed, true);
+  assert.equal(registration.code, "K7M2Q9XP");
+  assert.deepEqual(calls.calls, ["event:lock", "registration", "ticket_type:lock", "ticket_type:lock", "registration:lock"]);
+  assert.deepEqual(
+    calls.findTicketType.mock.calls.map((call) => call.arguments[2]),
+    [VIP_ID, IDS.ticketType],
+    "ticket types locked in id order",
+  );
+  const [org, event, id, values, options] = calls.update.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([org, event, id, values, options], [IDS.orgA, IDS.event, IDS.registration, { ticket_type_id: VIP_ID, updated_by: IDS.user }, { transaction: FAKE_TX }]);
+  assert.equal(calls.queue.mock.callCount(), 0, "no SMS");
+  assert.equal(calls.countEvent.mock.callCount(), 0, "a full event doesn't matter: its total doesn't change");
+  assert.deepEqual(calls.countTicketType.mock.calls[0]?.arguments.slice(0, 3), [IDS.orgA, IDS.event, VIP_ID]);
+});
+
+test("the ticket type the guest already has changes nothing", async () => {
+  const calls = arrangeMove();
+  const { changed } = await registrationService.changeRegistrationTicketType(IDS.orgA, IDS.event, IDS.registration, IDS.ticketType, IDS.user);
+  assert.equal(changed, false);
+  assert.equal(calls.update.mock.callCount(), 0);
+  assert.equal(calls.findTicketType.mock.callCount(), 1, "one ticket type, locked once");
+});
+
+test("a move is refused for a cancelled guest, an inactive, full or unknown ticket type, and any event that isn't PUBLISHED", async () => {
+  const cases: Array<[string, Parameters<typeof arrangeMove>[0], (error: unknown) => boolean]> = [
+    ["cancelled guest", { registration: registrationRow({ status: "CANCELLED", cancelled_at: new Date() }) }, (e) => e instanceof RegistrationCancelledError],
+    ["inactive ticket type", { vipRow: vip({ is_active: false }) }, (e) => e instanceof TicketTypeInactiveError],
+    [
+      "full ticket type",
+      { vipRow: vip({ capacity: 10 }), ticketTypeTaken: 10 },
+      (e) => e instanceof CapacityReachedError && (e.details as { scope: string }).scope === "TICKET_TYPE",
+    ],
+    ["ticket type of another event", { vipRow: null }, (e) => e instanceof NotFoundError],
+    ...(["DRAFT", "CLOSED", "CANCELLED"] as const).map(
+      (status): [string, Parameters<typeof arrangeMove>[0], (error: unknown) => boolean] => [
+        `${status} event`,
+        { event: eventRow({ ...PUBLISHED, status }) },
+        (e) => e instanceof InvalidEventStateError && (e.details as { status: string }).status === status,
+      ],
+    ),
+  ];
+  for (const [label, options, check] of cases) {
+    const calls = arrangeMove(options);
+    await assert.rejects(registrationService.changeRegistrationTicketType(IDS.orgA, IDS.event, IDS.registration, VIP_ID, IDS.user), check, label);
+    assert.equal(calls.update.mock.callCount(), 0, label);
+    resetTransaction();
+  }
+});
+
+test("a PUBLISHED event that has ended or closed sign-ups still allows a move (at the door)", async () => {
+  const ended = { starts_at: new Date("2026-01-01T06:00:00Z"), ends_at: new Date("2026-01-01T14:00:00Z"), registration_closes_at: new Date("2025-12-31T00:00:00Z") };
+  const calls = arrangeMove({ event: eventRow({ ...PUBLISHED, ...ended }) });
+  const { changed } = await registrationService.changeRegistrationTicketType(IDS.orgA, IDS.event, IDS.registration, VIP_ID, IDS.user);
+  assert.equal(changed, true);
+  assert.equal(calls.update.mock.callCount(), 1);
+});
+
+// --- Export (Phase 4d) ----------------------------------------------------------------------------
+
+test("the export uses the list's filters without paging, names the file after the event slug, and reads SMS statuses 1,000 ids at a time", async () => {
+  arrange({ event: eventRow({ slug: "banking-forum", timezone: "Africa/Addis_Ababa" }) });
+  const rows = Array.from({ length: 2001 }, (_unused, index) => ({
+    ...registrationRow({ id: `reg-${index}`, code: `CODE${index}` }),
+    person: personRow(),
+    ticketType: ticketTypeRow(),
+  }));
+  const listAll = mock.method(registrationRepository, "listAllByEvent", async () => rows);
+  const latest = mock.method(messageOutboxRepository, "latestByRegistrations", async (_o: string, ids: string[]) => new Map(ids.map((id) => [id, { status: "SENT" as const, sent_at: null }])));
+
+  const { filename, csv } = await registrationService.exportRegistrations(IDS.orgA, IDS.event, { status: "CONFIRMED", ticket_type_id: IDS.ticketType, q: "0911234567" });
+
+  assert.equal(filename, "banking-forum-guests.csv");
+  assert.deepEqual(listAll.mock.calls[0]?.arguments, [
+    IDS.orgA,
+    IDS.event,
+    { status: "CONFIRMED", ticketTypeId: IDS.ticketType, q: "0911234567", phoneVariant: "+251911234567" },
+  ]);
+  assert.deepEqual(latest.mock.calls.map((call) => call.arguments[1].length), [1000, 1000, 1]);
+  const lines = csv.trimEnd().split("\r\n");
+  assert.equal(lines.length, 2002, "header plus every guest");
+  assert.match(lines[1] ?? "", /^CODE0,Confirmed,Hana,/);
 });

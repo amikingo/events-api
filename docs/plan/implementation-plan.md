@@ -490,6 +490,15 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 
 **Phase 4 status: done (25 November 2026).** Staff entry, public registration with retry keys, and confirmation SMS work through one registration service. The outline's three proofs pass on PostgreSQL: the race for the last place (row 42), the retried submission (row 47), and cancelling to free a place (row 43). Not verified yet: a real AfroMessage send, which needs your token. Do that by hand with your own number.
 
+**4d: changing a ticket type and exporting the guest list (25 November 2026).** The last two "not built" items from the gap review. Details in `docs/registrations.md` (4d).
+- **Changing a ticket type:** `PATCH …/registrations/{id}/ticket-type`, `REGISTRATIONS.update`. The same row and code, no SMS. PUBLISHED events at any time; only CONFIRMED guests; the new ticket type must be active with room under its own limit. Lock order: the event, both ticket types by id, the registration.
+- **Export:** `GET …/registrations/export`, its own right `REGISTRATIONS.export` (Owners yes, Viewers no). CSV with a byte-order mark, the list's filters, Ethiopian then Gregorian 12-hour dates in the event's time zone, formula cells neutralised, Ethiopian mobiles as `0911 234 567`.
+- **The Export right:** `export` is grantable on Guests only; left out on a role edit, the role keeps it. Migration `20261129000000-grant-guest-export-to-owners` (data only) gives it to existing Owners.
+- **Who builds what:** the API here; the screens by Antigravity from `docs/ui-brief-phase-4d.md`.
+- **Proof:** matrix rows 63–65.
+
+**4d status: done (API, 25 November 2026).** `npm run check` passed, with the OpenAPI snapshot up to date. Migration `20261129000000-grant-guest-export-to-owners` was applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 309 of 309 on the real database, none skipped. That includes matrix rows 63–65: two moves racing for the last VIP place leave exactly one winner, the CSV keeps Amharic names and neutralises formulas, and existing Owners gain Export through the migration. The screens follow from `docs/ui-brief-phase-4d.md`. Not checked yet: opening a downloaded file in Excel by hand.
+
 ### Phase 5 — Pilot walkthrough
 
 Connect the staff and public screens to the API and run the full flow against PostgreSQL: a guest discovers an event, registers, receives a code, and appears once on the staff guest list.

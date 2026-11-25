@@ -273,6 +273,13 @@ export class TicketTypeInactiveError extends AppError {
   }
 }
 
+/** The registration is cancelled, so its ticket type can't be changed: bring the guest back first (Phase 4d). */
+export class RegistrationCancelledError extends AppError {
+  constructor(message = "This registration is cancelled: bring the guest back first", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "registration_cancelled", details, cause: options?.cause });
+  }
+}
+
 /** The guest profile is deactivated, so it can't be registered. */
 export class PersonInactiveError extends AppError {
   constructor(message = "This guest profile is deactivated", details?: unknown, options?: ErrorOptions) {

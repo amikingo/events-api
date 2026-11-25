@@ -5,6 +5,7 @@ import {
   IdempotencyKeyReusedError,
   InvalidEventStateError,
   PersonInactiveError,
+  RegistrationCancelledError,
   RegistrationClosedError,
   TicketTypeInactiveError,
   TicketTypeRequiredError,
@@ -30,10 +31,16 @@ import { submissionKeyRepository } from "../repositories/submission-key.reposito
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { normalizeEthiopianMobile } from "../utils/mobile.js";
 import { buildPagination } from "../utils/pagination.js";
+import { guestListCsv } from "../utils/guest-csv.js";
 import { generateRegistrationCode } from "../utils/registration-code.js";
 import { requestHash } from "../utils/request-hash.js";
 import type { PersonInput } from "../validators/person.js";
-import type { RegistrationCreateInput, RegistrationListQuery, RegistrationTargetStatus } from "../validators/registration.js";
+import type {
+  RegistrationCreateInput,
+  RegistrationExportQuery,
+  RegistrationListQuery,
+  RegistrationTargetStatus,
+} from "../validators/registration.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 
 /**
@@ -134,6 +141,11 @@ async function assertPlaceAvailable(event: EventRow, ticketType: TicketTypeRow, 
     const taken = await registrationRepository.countConfirmedByEvent(event.organization_id, event.id, { transaction });
     if (taken >= event.capacity) throw new CapacityReachedError("This event is full", { scope: "EVENT", capacity: event.capacity });
   }
+  await assertTicketTypeHasRoom(event, ticketType, transaction);
+}
+
+/** The ticket type's own limit only (null means no limit). Moving a guest between ticket types uses just this. */
+async function assertTicketTypeHasRoom(event: EventRow, ticketType: TicketTypeRow, transaction: Transaction): Promise<void> {
   if (ticketType.capacity !== null) {
     const taken = await registrationRepository.countConfirmedByTicketType(event.organization_id, event.id, ticketType.id, { transaction });
     if (taken >= ticketType.capacity) {
@@ -374,6 +386,80 @@ async function changeRegistrationStatus(
   });
 }
 
+/**
+ * Move a confirmed guest to another ticket type of the same event (Phase 4d, decided 25 November 2026): the same row,
+ * code and registered_at; no SMS (the confirmation doesn't name the ticket type). PUBLISHED events only, at any time
+ * (also after sign-ups close or the event ended). The new ticket type must be active and have room under its own
+ * limit; the event's total doesn't change, so its capacity isn't checked. Lock order: the event, then both ticket
+ * types (by id), then the registration.
+ */
+async function changeRegistrationTicketType(
+  organizationId: string,
+  eventId: string,
+  registrationId: string,
+  ticketTypeId: string,
+  actorId: string | null,
+): Promise<{ registration: RegistrationDto; changed: boolean }> {
+  return runTransaction(async (transaction) => {
+    const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
+    if (event.status !== "PUBLISHED") {
+      throw new InvalidEventStateError(`The ticket type of a guest at a ${event.status} event can't be changed`, { status: event.status });
+    }
+    const current = ensureFound(await registrationRepository.findByEventAndId(organizationId, eventId, registrationId, { transaction }), "Registration not found");
+
+    const ids = [...new Set([current.ticket_type_id, ticketTypeId])].sort();
+    const locked = new Map<string, TicketTypeRow | null>();
+    for (const id of ids) {
+      locked.set(id, await ticketTypeRepository.findByEventAndId(organizationId, eventId, id, { transaction, lock: true }));
+    }
+    const target = ensureFound(locked.get(ticketTypeId) ?? null, "Ticket type not found");
+
+    const registration = ensureFound(
+      await registrationRepository.findByEventAndId(organizationId, eventId, registrationId, { transaction, lock: true }),
+      "Registration not found",
+    );
+    if (registration.status !== "CONFIRMED") throw new RegistrationCancelledError(undefined, { registration_id: registration.id });
+    if (registration.ticket_type_id === target.id) {
+      return { registration: await toDto(organizationId, eventId, registrationId, transaction), changed: false };
+    }
+    if (!target.is_active) throw new TicketTypeInactiveError(undefined, { ticket_type_code: target.code });
+    await assertTicketTypeHasRoom(event, target, transaction);
+
+    await registrationRepository.updateByEventAndId(
+      organizationId,
+      eventId,
+      registrationId,
+      { ticket_type_id: target.id, updated_by: actorId },
+      { transaction },
+    );
+    return { registration: await toDto(organizationId, eventId, registrationId, transaction), changed: true };
+  });
+}
+
+/** How many registration ids go into one SMS-status query of the export. */
+const EXPORT_STATUS_BATCH = 1000;
+
+/**
+ * The guest list as a CSV file (Phase 4d): the list's filters and order, every matching guest, dates in the event's
+ * time zone. The file is named after the event's slug.
+ */
+async function exportRegistrations(organizationId: string, eventId: string, query: RegistrationExportQuery): Promise<{ filename: string; csv: string }> {
+  const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId), "Event not found");
+  const rows = await registrationRepository.listAllByEvent(organizationId, eventId, {
+    status: query.status,
+    ticketTypeId: query.ticket_type_id,
+    q: query.q,
+    phoneVariant: query.q === undefined ? null : normalizeEthiopianMobile(query.q),
+  });
+  const confirmations = new Map<string, NonNullable<RegistrationDto["confirmation"]>>();
+  for (let start = 0; start < rows.length; start += EXPORT_STATUS_BATCH) {
+    const batch = rows.slice(start, start + EXPORT_STATUS_BATCH).map((row) => row.id);
+    for (const [id, confirmation] of await messageOutboxRepository.latestByRegistrations(organizationId, batch)) confirmations.set(id, confirmation);
+  }
+  const dtos = rows.map((row) => toRegistrationDto(row, confirmations.get(row.id) ?? null));
+  return { filename: `${event.slug}-guests.csv`, csv: guestListCsv(dtos, event.timezone) };
+}
+
 /** The guest list, newest first; `q` searches the guest's names, email and phone. */
 async function listRegistrations(organizationId: string, eventId: string, query: RegistrationListQuery): Promise<{ rows: RegistrationDto[]; count: number }> {
   ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId), "Event not found");
@@ -410,7 +496,9 @@ export const registrationService = {
   registerOnce,
   registerGuest,
   changeRegistrationStatus,
+  changeRegistrationTicketType,
   listRegistrations,
+  exportRegistrations,
   getRegistration,
   getRegistrationSummary,
 };

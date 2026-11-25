@@ -94,7 +94,8 @@ test("provisionOrganizer writes the organization, MAIN branch, default roles wit
   );
   assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-events")), [true, true, true, false, false, false, false]);
   assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-customers")), [true, true, true, false, false, false, false]);
-  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-registrations")), [true, true, true, false, false, false, false]);
+  // Phase 4d: Owners also export the guest list (flags: view, create, update, delete, import, export, notify).
+  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-registrations")), [true, true, true, false, false, true, false]);
   assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-branches")), [true, true, true, false, false, false, false]);
   assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-organizations")), [true, false, true, false, false, false, false]);
   const [viewerGrants = []] = calls.bulkCreate.mock.calls[1]?.arguments ?? [];

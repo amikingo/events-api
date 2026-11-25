@@ -170,7 +170,7 @@ All under `/v1/organizations/{organizationId}`, in `src/services/role.service.ts
 
 | Call | Permission |
 |---|---|
-| `POST /roles` `{ code, name, description?, grants: [{ module_code, view, create, update }] }` | `ROLES.create` |
+| `POST /roles` `{ code, name, description?, grants: [{ module_code, view, create, update, export? }] }` | `ROLES.create` |
 | `PATCH /roles/{roleId}` `{ name?, description?, grants? }` (`grants` replaces the whole set) | `ROLES.update` |
 | `PATCH /roles/{roleId}/status` `{ is_active }` | `ROLES.update` |
 
@@ -179,10 +179,12 @@ All under `/v1/organizations/{organizationId}`, in `src/services/role.service.ts
   | Module | Actions |
   |---|---|
   | `ORGANIZATIONS` | view, update (never create: creating tenants is platform work) |
-  | `BRANCHES`, `ROLES`, `USER_ROLES`, `EVENTS`, `CUSTOMERS`, `REGISTRATIONS` | view, create, update |
+  | `BRANCHES`, `ROLES`, `USER_ROLES`, `EVENTS`, `CUSTOMERS` | view, create, update |
+  | `REGISTRATIONS` | view, create, update, export (Phase 4d: the guest list as CSV) |
   | `MODULES`, `ROLE_TEMPLATES`, `USER_MODULE_ACCESSES` | nothing |
 
-  Anything else is `400 validation_error`, naming the module and action in `issues[].path`. Delete, import, export and notify are never stored as true: the API uses none of them.
+  Anything else is `400 validation_error`, naming the module and action in `issues[].path`. Delete, import and notify are never stored as true: the API uses none of them. Export is stored only on `REGISTRATIONS`.
+- **Export (Phase 4d):** `export` is optional in a grant. Left out on create, it means no. Left out on update, the role keeps the Export it has, so a client that doesn't know the box can't wipe it. New Owners get it from `default-roles.ts`; existing Owners from migration `20261129000000`. Viewers and custom roles get it only when someone with Export gives it to them.
 - **No privilege escalation:** every action a request *adds* to a role is checked with `resolvePermission` for the editor's signed-in assignment, at organization scope. Actions the role already had need no check, so an editor can keep what's there. A refusal is `403 grant_exceeds_own_access` with `details.module_code` and `action`. An Owner holds every grantable action, and the Super Admin passes through the engine's bypass, so in practice this limits custom roles given *Roles › update*.
 - **Built-in roles:** `OWNER` is locked (`409 role_locked`: no rename, re-grant or switch-off), so an organization can never lose its full-access role. `VIEWER` is editable like any created role. **Codes never change** after creation; names (unique per organization, ignoring case) and descriptions may.
 - **Switching a role off** while active assignments hold it is `409 role_in_use` with `details.active_assignments`. Switching it on is always allowed. A role being edited or switched is row-locked, and so is the role an assignment is being given, so a role can't be switched off while someone is being given it.

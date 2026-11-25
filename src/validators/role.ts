@@ -5,14 +5,16 @@ import { codeSchema, nullableText, organizationIdParamsSchema, statusChangeSchem
 export const roleParamsSchema = organizationIdParamsSchema.extend({ roleId: uuidSchema });
 
 /**
- * One module's access in a role. Only view, create and update exist in the app; which modules and actions a tenant
- * role may get is checked by the service (utils/rbac.ts TENANT_GRANTABLE).
+ * One module's access in a role: view, create and update, plus export (Guests only). Which modules and actions a
+ * tenant role may get is checked by the service (utils/rbac.ts TENANT_GRANTABLE). `export` may be left out: on create
+ * it means no; on update the role keeps the value it has, so a client that doesn't know the box can't wipe it.
  */
 export const roleGrantSchema = z.strictObject({
   module_code: codeSchema,
   view: z.boolean(),
   create: z.boolean(),
   update: z.boolean(),
+  export: z.boolean().optional(),
 });
 
 const grantsSchema = z

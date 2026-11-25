@@ -30,14 +30,23 @@ export const registrationStatusChangeSchema = z.strictObject({ status: statusSch
 
 export const registrationParamsSchema = eventParamsSchema.extend({ registrationId: uuidSchema });
 
-export const registrationListQuerySchema = paginationQuerySchema.extend({
+const guestListFilters = {
   status: statusSchema.optional(),
   ticket_type_id: uuidSchema.optional(),
   q: searchTextSchema,
-});
+};
+
+export const registrationListQuerySchema = paginationQuerySchema.extend(guestListFilters);
+
+/** The export takes the list's filters but no paging: every matching guest goes in one file. */
+export const registrationExportQuerySchema = z.strictObject(guestListFilters);
+
+/** Move a confirmed guest to another ticket type of the same event (Phase 4d); the code stays the same. */
+export const registrationTicketTypeChangeSchema = z.strictObject({ ticket_type_id: uuidSchema });
 
 export type RegistrationCreateInput = z.output<typeof registrationCreateSchema>;
 export type RegistrationListQuery = z.output<typeof registrationListQuerySchema>;
+export type RegistrationExportQuery = z.output<typeof registrationExportQuerySchema>;
 export type RegistrationTargetStatus = z.output<typeof statusSchema>;
 
 /** Optional for staff: a key makes a double-clicked "create guest and register" safe (same request, same result). */
@@ -59,4 +68,11 @@ export const getRegistrationRequest = { params: registrationParamsSchema } satis
 export const changeRegistrationStatusRequest = {
   params: registrationParamsSchema,
   body: registrationStatusChangeSchema,
+} satisfies RequestContract;
+
+export const exportRegistrationsRequest = { params: eventParamsSchema, query: registrationExportQuerySchema } satisfies RequestContract;
+
+export const changeRegistrationTicketTypeRequest = {
+  params: registrationParamsSchema,
+  body: registrationTicketTypeChangeSchema,
 } satisfies RequestContract;

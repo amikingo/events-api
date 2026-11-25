@@ -12,6 +12,7 @@ import { sequelize } from "../../src/db.js";
 import { CentralAuthUnavailableError, ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
 import { up as backfillDefaultRoles } from "../../src/migrations/20261127000100-backfill-default-roles.js";
+import { up as grantGuestExportToOwners } from "../../src/migrations/20261129000000-grant-guest-export-to-owners.js";
 import { migrator } from "../../src/migrator.js";
 import {
   AppEvent,
@@ -1321,6 +1322,162 @@ test("row 62: the Super Admin creates an organization with its first Owner in on
     const me = await asToken(await tokenFor(ABAY_OWNER_ID), "GET", "/v1/auth/staff/me");
     assert.deepEqual([me.status, me.body.data.assignment.organization.id, me.body.data.assignment.role.code], [200, created.body.data.organization.id, "OWNER"]);
     assert.equal(me.body.data.permissions.ROLES.create, true, "a new Owner manages roles");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+// --- Phase 4d: changing a guest's ticket type and exporting the guest list ---------------------------------
+
+const swapFixture = { eventId: "", eventPath: "", guestsPath: "", gaId: "", vipId: "", vip2Id: "", oldId: "", hanaId: "", hanaCode: "", amharicId: "", formulaId: "" };
+
+/** A raw download (the export is a file, not the JSON envelope). */
+async function download(token: string, path: string): Promise<{ status: number; headers: Headers; bytes: Buffer }> {
+  return withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+    return { status: response.status, headers: response.headers, bytes: Buffer.from(await response.arrayBuffer()) };
+  });
+}
+
+const tokenOf = (person: Person): string => {
+  const token = tokens.get(person);
+  assert.ok(token, `no token for ${person}`);
+  return token;
+};
+
+test("row 63: the owner moves a guest to VIP (same code, no SMS, event total unchanged); full, inactive, cancelled and CLOSED are refused; two moves race for the last VIP place and one wins", { skip }, async () => {
+  const swap = await createAndPublish("SELAM_OWNER", fixture.selamId, {
+    name: "Seat Swap Gala",
+    starts_at: "2027-11-20T18:00:00+03:00",
+    ends_at: "2027-11-20T22:00:00+03:00",
+    capacity: 10,
+  });
+  swapFixture.eventId = swap.id;
+  swapFixture.eventPath = `/v1/organizations/${fixture.selamId}/events/${swap.id}`;
+  swapFixture.guestsPath = `${swapFixture.eventPath}/registrations`;
+  swapFixture.gaId = (await as("SELAM_OWNER", "GET", `${swapFixture.eventPath}/ticket-types`)).body.data[0].id;
+  for (const [key, code, capacity] of [["vipId", "vip", 1], ["vip2Id", "vip2", 1], ["oldId", "old", null]] as const) {
+    const created = await as("SELAM_OWNER", "POST", `${swapFixture.eventPath}/ticket-types`, { code, name: code.toUpperCase(), capacity });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    swapFixture[key] = created.body.data.id;
+  }
+
+  const guests: Array<[string, string, "hanaId" | "amharicId" | "formulaId"]> = [
+    ["Hana", "+251922000001", "hanaId"],
+    ["ሰላም", "+251922000002", "amharicId"],
+    ["=SUM(1)", "+251922000003", "formulaId"],
+  ];
+  for (const [first_name, phone, key] of guests) {
+    const registered = await as("SELAM_OWNER", "POST", swapFixture.guestsPath, { person: { first_name, last_name: "Swap", phone }, ticket_type_id: swapFixture.gaId });
+    assert.equal(registered.status, 201, JSON.stringify(registered.body));
+    swapFixture[key] = registered.body.data.id;
+    if (key === "hanaId") swapFixture.hanaCode = registered.body.data.code;
+  }
+  const move = (registrationId: string, ticketTypeId: string, person: Person = "SELAM_OWNER") =>
+    as(person, "PATCH", `${swapFixture.guestsPath}/${registrationId}/ticket-type`, { ticket_type_id: ticketTypeId });
+
+  const smsBefore = await MessageOutbox.count({ where: { registration_id: swapFixture.hanaId } });
+  const moved = await move(swapFixture.hanaId, swapFixture.vipId);
+  assert.deepEqual([moved.status, moved.body.message], [200, "Ticket type changed"], JSON.stringify(moved.body));
+  assert.deepEqual([moved.body.data.id, moved.body.data.code, moved.body.data.ticket_type.code], [swapFixture.hanaId, swapFixture.hanaCode, "VIP"]);
+  assert.equal(await MessageOutbox.count({ where: { registration_id: swapFixture.hanaId } }), smsBefore, "no new SMS");
+  const summary = (await as("SELAM_OWNER", "GET", `${swapFixture.guestsPath}/summary`)).body.data;
+  assert.equal(summary.confirmed, 3, "the event's total doesn't change");
+  assert.equal(summary.ticket_types.find((row: { code: string }) => row.code === "VIP").confirmed, 1);
+  assert.deepEqual([(await move(swapFixture.hanaId, swapFixture.vipId)).body.message], ["Ticket type unchanged"]);
+
+  const full = await move(swapFixture.amharicId, swapFixture.vipId);
+  assert.deepEqual([full.status, full.body.error.code, full.body.error.details.scope], [409, "capacity_reached", "TICKET_TYPE"]);
+
+  const raced = await Promise.all([move(swapFixture.amharicId, swapFixture.vip2Id), move(swapFixture.formulaId, swapFixture.vip2Id)]);
+  assert.deepEqual(raced.map((response) => response.status).sort(), [200, 409], JSON.stringify(raced.map((response) => response.body)));
+  assert.equal(await Registration.count({ where: { event_id: swap.id, ticket_type_id: swapFixture.vip2Id, status: "CONFIRMED" } }), 1, "never overfilled");
+  const loserId = raced[0]?.status === 409 ? swapFixture.amharicId : swapFixture.formulaId;
+
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${swapFixture.eventPath}/ticket-types/${swapFixture.oldId}/status`, { is_active: false })).status, 200);
+  const inactive = await move(swapFixture.hanaId, swapFixture.oldId);
+  assert.deepEqual([inactive.status, inactive.body.error.code], [409, "ticket_type_inactive"]);
+
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${swapFixture.guestsPath}/${loserId}/status`, { status: "CANCELLED" })).status, 200);
+  const cancelled = await move(loserId, swapFixture.gaId);
+  assert.deepEqual([cancelled.status, cancelled.body.error.code], [409, "registration_cancelled"]);
+
+  assert.equal((await move(swapFixture.hanaId, swapFixture.gaId, "SELAM_VIEWER")).status, 403, "a viewer can't move guests");
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${swapFixture.eventPath}/status`, { status: "CLOSED" })).status, 200);
+  const closed = await move(swapFixture.hanaId, swapFixture.gaId);
+  assert.deepEqual([closed.status, closed.body.error.code, closed.body.error.details.status], [409, "invalid_event_state", "CLOSED"]);
+  assert.equal((await Registration.findByPk(swapFixture.hanaId, { raw: true }))?.ticket_type_id, swapFixture.vipId, "nothing changed");
+});
+
+test("row 64: the owner downloads the guest list as CSV (BOM, filters, Amharic intact, formulas neutralised, Ethiopian then Gregorian dates); a viewer reads the list but can't export", { skip }, async () => {
+  const exportPath = `${swapFixture.guestsPath}/export`;
+  const all = await download(tokenOf("SELAM_OWNER"), exportPath);
+  assert.equal(all.status, 200, all.bytes.toString("utf8"));
+  assert.equal(all.headers.get("content-type"), "text/csv; charset=utf-8");
+  assert.equal(all.headers.get("content-disposition"), 'attachment; filename="seat-swap-gala-guests.csv"');
+  assert.equal(all.bytes.subarray(0, 3).toString("hex"), "efbbbf", "byte-order mark");
+
+  const lines = all.bytes.toString("utf8").replace(/^\uFEFF/, "").trimEnd().split("\r\n");
+  assert.match(lines[0] ?? "", /^Code,Status,First name,Last name,Mobile,/);
+  assert.equal(lines.length, 4, "header plus all three guests");
+  const hana = lines.find((line) => line.startsWith(swapFixture.hanaCode)) ?? "";
+  assert.match(hana, /,Confirmed,Hana,Swap,0922 000 001,,,VIP,Added by staff,/);
+  assert.match(hana, /"[A-Z][a-z]+ \d{1,2}, \d{4} at \d{1,2}:\d{2} (in the morning|in the afternoon|in the evening|at night)","[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2} (AM|PM)",,$/);
+  assert.ok(lines.some((line) => line.includes(",ሰላም,Swap,")), "Amharic kept");
+  assert.ok(lines.some((line) => line.includes(",'=SUM(1),Swap,")), "the formula can't run");
+
+  const confirmed = await download(tokenOf("SELAM_OWNER"), `${exportPath}?status=CONFIRMED`);
+  assert.equal(confirmed.bytes.toString("utf8").trimEnd().split("\r\n").length, 3, "the cancelled guest is filtered out");
+  const searched = await download(tokenOf("SELAM_OWNER"), `${exportPath}?q=0922000001`);
+  assert.equal(searched.bytes.toString("utf8").trimEnd().split("\r\n").length, 2, "search by local mobile");
+
+  assert.equal((await as("SELAM_VIEWER", "GET", swapFixture.guestsPath)).status, 200);
+  const viewer = await download(tokenOf("SELAM_VIEWER"), exportPath);
+  assert.equal(viewer.status, 403);
+  assert.equal(JSON.parse(viewer.bytes.toString("utf8")).error.code, "permission_denied");
+  assert.equal((await download(tokenOf("HORN_OWNER"), exportPath)).status, 403, "another tenant");
+});
+
+test("row 65: the migration gives existing Owners Export; a role holder gets it only when given it; Export on Events is 400; nobody grants Export without holding it", { skip }, async () => {
+  const registrations = await moduleRepository.findActivePermissionByCode("REGISTRATIONS");
+  assert.ok(registrations);
+  const hornOwner = await Role.findOne({ where: { organization_id: fixture.hornId, code: "OWNER" }, raw: true });
+  assert.ok(hornOwner);
+  await RoleModuleAccess.update({ can_export: false }, { where: { role_id: hornOwner.id, module_id: registrations.id } });
+  await grantGuestExportToOwners({ context: sequelize.getQueryInterface(), name: "guest-export", path: "" });
+  assert.equal((await RoleModuleAccess.findOne({ where: { role_id: hornOwner.id, module_id: registrations.id }, raw: true }))?.can_export, true);
+  const selamViewer = await Role.findOne({ where: { organization_id: fixture.selamId, code: "VIEWER" }, raw: true });
+  assert.ok(selamViewer);
+  assert.equal((await RoleModuleAccess.findOne({ where: { role_id: selamViewer.id, module_id: registrations.id }, raw: true }))?.can_export, false, "Viewers don't get it");
+
+  stubPhase2cUsers();
+  try {
+    const back = await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${roleFixture.doorAssignmentId}`, { role_id: roleFixture.doorRoleId });
+    assert.equal(back.status, 200, JSON.stringify(back.body));
+    const door = await tokenFor(DOOR_ID);
+    const exportPath = `${swapFixture.guestsPath}/export`;
+    assert.equal((await download(door, exportPath)).status, 403, "Door staff can't export yet");
+
+    const escalate = await asToken(door, "PATCH", `${staffBase()}/roles/${roleFixture.helpersRoleId}`, {
+      grants: [{ ...grantOf("REGISTRATIONS", true, false, false), export: true }],
+    });
+    assert.deepEqual([escalate.status, escalate.body.error.code, escalate.body.error.details], [403, "grant_exceeds_own_access", { module_code: "REGISTRATIONS", action: "export" }]);
+
+    const given = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.doorRoleId}`, {
+      grants: [{ ...grantOf("REGISTRATIONS", true, false, true), export: true }, grantOf("ROLES", true, false, true)],
+    });
+    assert.equal(given.status, 200, JSON.stringify(given.body));
+    assert.equal((await download(door, exportPath)).status, 200, "same token, new right");
+    assert.equal((await asToken(door, "GET", "/v1/auth/staff/me")).body.data.permissions.REGISTRATIONS.export, true);
+
+    const oldScreen = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.doorRoleId}`, {
+      grants: [grantOf("REGISTRATIONS", true, false, true), grantOf("ROLES", true, false, true)],
+    });
+    const kept = oldScreen.body.data.grants.find((row: { module_code: string }) => row.module_code === "REGISTRATIONS");
+    assert.equal(kept.export, true, "a save that doesn't send export keeps it");
+
+    const onEvents = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "EXPORTER", name: "Exporter", grants: [{ ...grantOf("EVENTS", true, false, false), export: true }] });
+    assert.deepEqual([onEvents.status, onEvents.body.error.details.issues[0].path], [400, "body.grants.0.export"]);
   } finally {
     mock.restoreAll();
   }

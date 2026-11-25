@@ -6,7 +6,9 @@ import { validate } from "../../middleware/validate.js";
 import { MODULE_CODES } from "../../utils/module-codes.js";
 import {
   changeRegistrationStatusRequest,
+  changeRegistrationTicketTypeRequest,
   createRegistrationRequest,
+  exportRegistrationsRequest,
   getRegistrationRequest,
   getRegistrationSummaryRequest,
   listRegistrationsRequest,
@@ -44,6 +46,15 @@ registrationsRouter.get(
   registrationController.getRegistrationSummary,
 );
 
+// The guest list as CSV: its own right (Guests › export), since the file holds every guest's mobile. Before /:registrationId.
+registrationsRouter.get(
+  "/export",
+  requireStaffAuthentication,
+  validate(exportRegistrationsRequest),
+  requirePermission({ moduleCode: MODULE_CODES.REGISTRATIONS, action: "export", scope: organizationScopeFromParams }),
+  registrationController.exportRegistrations,
+);
+
 registrationsRouter.get(
   "/:registrationId",
   requireStaffAuthentication,
@@ -59,4 +70,13 @@ registrationsRouter.patch(
   validate(changeRegistrationStatusRequest),
   requirePermission({ moduleCode: MODULE_CODES.REGISTRATIONS, action: "update", scope: organizationScopeFromParams }),
   registrationController.changeRegistrationStatus,
+);
+
+// Move a confirmed guest to another ticket type (same code, no SMS).
+registrationsRouter.patch(
+  "/:registrationId/ticket-type",
+  requireStaffAuthentication,
+  validate(changeRegistrationTicketTypeRequest),
+  requirePermission({ moduleCode: MODULE_CODES.REGISTRATIONS, action: "update", scope: organizationScopeFromParams }),
+  registrationController.changeRegistrationTicketType,
 );

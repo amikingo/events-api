@@ -2007,7 +2007,7 @@
         }
       },
       "post": {
-        "summary": "Create a role with its grants (view, create, update per module). The code is fixed afterwards",
+        "summary": "Create a role with its grants (view, create, update per module, plus export on REGISTRATIONS; a left-out export means no). The code is fixed afterwards",
         "description": "Errors: 400 validation_error (a module or action a tenant role may not hold, named in issues[].path); 403 grant_exceeds_own_access (details.module_code and action: you can't grant what you don't hold); 409 conflict (field code or name).",
         "tags": [
           "Access control"
@@ -2106,7 +2106,7 @@
         }
       },
       "patch": {
-        "summary": "Edit a role's name, description or grants (grants replaces the whole set). Applies on the next request",
+        "summary": "Edit a role's name, description or grants (grants replaces the whole set; a grant that leaves export out keeps the role's current export). Applies on the next request",
         "description": "Errors: as for creating, plus 409 role_locked for the built-in OWNER.",
         "tags": [
           "Access control"
@@ -3047,6 +3047,96 @@
         }
       }
     },
+    "/v1/organizations/{organizationId}/events/{eventId}/registrations/export": {
+      "get": {
+        "summary": "Download the guest list as CSV (needs REGISTRATIONS export): the list's filters and order, every matching guest in one file named {event-slug}-guests.csv",
+        "description": "UTF-8 with a byte-order mark. Dates in the event's time zone, Ethiopian first, then Gregorian with a 12-hour time. Cells that start like a formula get a leading apostrophe; Ethiopian mobiles are written as 0911 234 567. Errors (JSON): 400 validation_error (paging isn't accepted), 403 permission_denied, 404 unknown event.",
+        "tags": [
+          "Registrations"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CONFIRMED",
+                "CANCELLED"
+              ]
+            }
+          },
+          {
+            "name": "ticket_type_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}": {
       "get": {
         "summary": "Read a registration",
@@ -3156,6 +3246,77 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RegistrationStatusChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}/ticket-type": {
+      "patch": {
+        "summary": "Move a confirmed guest to another ticket type of the event: same code, no SMS; the same ticket type again changes nothing",
+        "description": "PUBLISHED events only, at any time (also after sign-ups close). The new ticket type must be active and have room under its own limit; the event's total doesn't change. Errors: 404 unknown ticket type, 409 invalid_event_state (details.status), 409 registration_cancelled (bring the guest back first), 409 ticket_type_inactive, 409 capacity_reached (details.scope TICKET_TYPE).",
+        "tags": [
+          "Registrations"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "registrationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationTicketTypeChangeRequest"
               }
             }
           }
@@ -4164,6 +4325,9 @@
                 },
                 "update": {
                   "type": "boolean"
+                },
+                "export": {
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -4214,6 +4378,9 @@
                   "type": "boolean"
                 },
                 "update": {
+                  "type": "boolean"
+                },
+                "export": {
                   "type": "boolean"
                 }
               },
@@ -4489,6 +4656,20 @@
         },
         "required": [
           "status"
+        ],
+        "additionalProperties": false
+      },
+      "RegistrationTicketTypeChangeRequest": {
+        "type": "object",
+        "properties": {
+          "ticket_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "ticket_type_id"
         ],
         "additionalProperties": false
       },

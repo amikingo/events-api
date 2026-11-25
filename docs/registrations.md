@@ -221,3 +221,28 @@ The test runs with the log sender on the real database:
 - A message still leased by "another worker" is left alone.
 - A second run sends nothing.
 - Staff see `confirmation.status = SENT`.
+
+## 4d: changing a ticket type and exporting the guest list
+
+Decided 25 November 2026. Proof: matrix rows 63–65.
+
+### Changing a guest's ticket type
+
+`PATCH /v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}/ticket-type` with `{ ticket_type_id }`, needing `REGISTRATIONS.update`. The reply is 200 with the registration, and the message "Ticket type changed" or "Ticket type unchanged".
+
+- **The same row:** the guest keeps their code and `registered_at`. No SMS goes out, because the confirmation doesn't mention the ticket type.
+- **When:** PUBLISHED events only, at any time (also after sign-ups close or the event ended, at the door). Other events give `409 invalid_event_state` with `details.status`.
+- **Only a CONFIRMED registration moves.** A cancelled one gives `409 registration_cancelled`: bring the guest back first.
+- **The new ticket type** must belong to the event (404), be active (`409 ticket_type_inactive`) and have room under its own limit (`409 capacity_reached`, `scope: TICKET_TYPE`). The event's total doesn't change, so the event's capacity isn't checked. The ticket type the guest already has changes nothing.
+- **Lock order:** the event, then both ticket types (sorted by id), then the registration. The event lock serializes every change to the event's places, so two staff can't overfill a ticket type (row 63 races two moves for the last place).
+
+### Exporting the guest list as CSV
+
+`GET …/events/{eventId}/registrations/export?status&ticket_type_id&q`, needing **`REGISTRATIONS.export`**: its own right, because the file holds every guest's mobile. Owners have it; Viewers and custom roles only when given it.
+
+- **Contents:** the list's filters and order (newest first), every matching guest in one file. Paging isn't accepted (400).
+- **File:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark (so Excel shows Amharic names), CRLF line ends, `Content-Disposition: attachment; filename="{event-slug}-guests.csv"`, `Cache-Control: no-store`. Errors stay JSON.
+- **Columns:** Code, Status, First name, Last name, Mobile, Email, Organization, Ticket type, Signed up (Online or Added by staff), Confirmation SMS (Waiting to send, Sent, Failed, Not sent, or No mobile), then Registered (Ethiopian), Registered (Gregorian), Cancelled (Ethiopian) and Cancelled (Gregorian).
+- **Dates:** in the event's time zone, Ethiopian first ("Hidar 16, 2019 at 4:30 in the morning"), then Gregorian with a 12-hour time ("Nov 25, 2026, 10:30 AM"). Never 24-hour. No date is an empty cell.
+- **Safety:** a cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet can't run it as a formula. An Ethiopian mobile is written as `0911 234 567` (text in Excel, with its leading zero); other numbers go through the safety rule.
+- **Code:** `src/utils/guest-csv.ts` (pure), `registrationService.exportRegistrations`, `registrationRepository.listAllByEvent` (shares its filter with the paged list).

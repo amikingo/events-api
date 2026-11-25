@@ -26,14 +26,15 @@ const MODULES = ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "
   (code) => moduleRow({ id: `module-${code}`, code, module_name: code }),
 );
 
-const grant = (module_code: string, actions: Partial<Record<"view" | "create" | "update", boolean>>): RoleGrantInput => ({
+const grant = (module_code: string, actions: Partial<Record<"view" | "create" | "update" | "export", boolean>>): RoleGrantInput => ({
   module_code,
   view: actions.view ?? false,
   create: actions.create ?? false,
   update: actions.update ?? false,
+  ...(actions.export === undefined ? {} : { export: actions.export }),
 });
 
-function storedGrant(roleId: string, moduleCode: string, flags: { view?: boolean; create?: boolean; update?: boolean }): RoleGrantRow {
+function storedGrant(roleId: string, moduleCode: string, flags: { view?: boolean; create?: boolean; update?: boolean; export?: boolean }): RoleGrantRow {
   return {
     role_id: roleId,
     module_id: `module-${moduleCode}`,
@@ -42,7 +43,7 @@ function storedGrant(roleId: string, moduleCode: string, flags: { view?: boolean
     can_update: flags.update ?? false,
     can_delete: false,
     can_import: false,
-    can_export: false,
+    can_export: flags.export ?? false,
     can_notify: false,
     module: { code: moduleCode, module_name: moduleCode, sno: 1 },
   } as unknown as RoleGrantRow;
@@ -98,7 +99,7 @@ beforeEach(() => {
 });
 afterEach(() => mock.restoreAll());
 
-test("creating a role stores it with its grants in one transaction; delete, import, export and notify are never granted", async () => {
+test("creating a role stores it with its grants in one transaction; delete, import and notify are never granted, export only when asked", async () => {
   const fakes = arrange();
   await roleService.createRole(
     IDS.orgA,
@@ -286,4 +287,57 @@ test("TENANT_GRANTABLE never offers platform modules or ORGANIZATIONS create, an
   }
   const owner = DEFAULT_TENANT_ROLES.find((role) => role.code === "OWNER");
   assert.deepEqual(owner?.grants.find((entry) => entry.moduleCode === "ROLES")?.actions, ["view", "create", "update"], "Owners manage roles");
+});
+
+// --- The Export right (Phase 4d) ---------------------------------------------------------------
+
+test("export is grantable on Guests only: on any other module it is a 400 naming the box", async () => {
+  const fakes = arrange();
+  await roleService.createRole(
+    IDS.orgA,
+    { code: "LISTS", name: "Lists", description: undefined, grants: [grant("REGISTRATIONS", { view: true, export: true })] },
+    EDITOR,
+  );
+  const [, rows] = fakes.replace.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual((rows as Array<{ can_view: boolean; can_export: boolean }>).map((row) => [row.can_view, row.can_export]), [[true, true]]);
+
+  await assert.rejects(
+    roleService.createRole(IDS.orgA, { code: "BAD", name: "Bad", description: undefined, grants: [grant("EVENTS", { view: true, export: true })] }, EDITOR),
+    (error: unknown) => {
+      assert.ok(error instanceof ValidationAppError);
+      const issues = (error.details as { issues: Array<{ path: string; code: string }> }).issues;
+      assert.deepEqual(issues.map((issue) => [issue.path, issue.code]), [["body.grants.0.export", "action_not_grantable"]]);
+      return true;
+    },
+  );
+});
+
+test("a grant that leaves export out: no on create; on update the role keeps the Export it has, with no escalation check for it", async () => {
+  const created = arrange();
+  await roleService.createRole(IDS.orgA, { code: "GATE", name: "Gate", description: undefined, grants: [grant("REGISTRATIONS", { view: true })] }, EDITOR);
+  assert.equal((created.replace.mock.calls[0]?.arguments[1] as Array<{ can_export: boolean }>)[0]?.can_export, false);
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  const fakes = arrange({ stored: [storedGrant(DOOR.id, "REGISTRATIONS", { view: true, export: true })], allowed: () => false });
+  await roleService.updateRole(IDS.orgA, DOOR.id, { grants: [grant("REGISTRATIONS", { view: true })], description: undefined }, EDITOR);
+  assert.equal((fakes.replace.mock.calls[0]?.arguments[1] as Array<{ can_export: boolean }>)[0]?.can_export, true, "kept, not wiped");
+  assert.equal(fakes.permission.mock.callCount(), 0, "keeping what the role has needs no access of your own");
+
+  await roleService.updateRole(IDS.orgA, DOOR.id, { grants: [grant("REGISTRATIONS", { view: true, export: false })], description: undefined }, EDITOR);
+  assert.equal((fakes.replace.mock.calls[1]?.arguments[1] as Array<{ can_export: boolean }>)[0]?.can_export, false, "an explicit false removes it");
+});
+
+test("nobody grants Export without holding it (403 grant_exceeds_own_access)", async () => {
+  arrange({ allowed: (moduleCode, action) => !(moduleCode === "REGISTRATIONS" && action === "export") });
+  await assert.rejects(
+    roleService.createRole(IDS.orgA, { code: "LISTS", name: "Lists", description: undefined, grants: [grant("REGISTRATIONS", { view: true, export: true })] }, EDITOR),
+    (error: unknown) => error instanceof GrantExceedsOwnAccessError && JSON.stringify(error.details) === JSON.stringify({ module_code: "REGISTRATIONS", action: "export" }),
+  );
+});
+
+test("Owners export the guest list by default; Viewers don't", () => {
+  const actionsOf = (code: string) => DEFAULT_TENANT_ROLES.find((role) => role.code === code)?.grants.find((entry) => entry.moduleCode === "REGISTRATIONS")?.actions;
+  assert.deepEqual(actionsOf("OWNER"), ["view", "create", "update", "export"]);
+  assert.deepEqual(actionsOf("VIEWER"), ["view"]);
 });

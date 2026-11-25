@@ -40,7 +40,12 @@ async function getRole(organizationId: string, roleId: string): Promise<RoleDto>
   return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id]));
 }
 
-const grantedActions = (grant: RoleGrantInput): GrantableAction[] => GRANTABLE_ACTIONS.filter((action) => grant[action]);
+const grantedActions = (grant: RoleGrantInput): GrantableAction[] => GRANTABLE_ACTIONS.filter((action) => grant[action] === true);
+
+/** On update, a grant that leaves `export` out keeps the role's current Export value for that module. */
+function keepExport(grants: RoleGrantInput[], current: Map<string, Set<GrantableAction>>): RoleGrantInput[] {
+  return grants.map((grant) => (grant.export === undefined ? { ...grant, export: current.get(grant.module_code)?.has("export") ?? false } : grant));
+}
 
 /**
  * Refuses anything a tenant role may not hold (400, naming the module or action) and returns the module ids.
@@ -65,7 +70,7 @@ async function assertGrantable(grants: RoleGrantInput[], transaction: Transactio
   return moduleIds;
 }
 
-/** The rows for a role's grants; only view, create and update are ever stored as true. */
+/** The rows for a role's grants; only view, create, update and export are ever stored as true. */
 function grantRows(roleId: string, grants: RoleGrantInput[], moduleIds: Map<string, string>, actorId: string | null) {
   return grants
     .filter((grant) => grantedActions(grant).length > 0)
@@ -77,7 +82,7 @@ function grantRows(roleId: string, grants: RoleGrantInput[], moduleIds: Map<stri
       can_update: grant.update,
       can_delete: false,
       can_import: false,
-      can_export: false,
+      can_export: grant.export === true,
       can_notify: false,
       created_by: actorId,
       updated_by: actorId,
@@ -157,9 +162,11 @@ async function updateRole(organizationId: string, roleId: string, input: RoleUpd
     assertUnlocked(role);
     if (input.name !== undefined) await assertNameFree(organizationId, input.name, transaction, role.id);
     if (input.grants !== undefined) {
-      const moduleIds = await assertGrantable(input.grants, transaction);
-      await assertNoEscalation(organizationId, editor, input.grants, await currentGrants(role.id, transaction));
-      await roleModuleAccessRepository.replaceForRole(role.id, grantRows(role.id, input.grants, moduleIds, editor.userId), { transaction });
+      const current = await currentGrants(role.id, transaction);
+      const grants = keepExport(input.grants, current);
+      const moduleIds = await assertGrantable(grants, transaction);
+      await assertNoEscalation(organizationId, editor, grants, current);
+      await roleModuleAccessRepository.replaceForRole(role.id, grantRows(role.id, grants, moduleIds, editor.userId), { transaction });
     }
     await roleRepository.updateByOrganizationAndId(
       organizationId,

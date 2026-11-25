@@ -141,21 +141,16 @@ async function countConfirmedPerTicketType(organizationId: string, eventId: stri
   return new Map(rows.map((row) => [row.ticket_type_id, Number(row.confirmed)]));
 }
 
-/** The guest list, newest first. `q` searches the guest's names, email and phone. */
-async function listByEvent(
-  organizationId: string,
-  eventId: string,
-  filters: {
-    status?: RegistrationStatus | undefined;
-    ticketTypeId?: string | undefined;
-    q?: string | undefined;
-    phoneVariant?: string | null;
-    limit: number;
-    offset: number;
-  },
-  options: RepoOptions = {},
-): Promise<{ rows: RegistrationWithDetails[]; count: number }> {
-  const { rows, count } = await Registration.findAndCountAll({
+export type RegistrationListFilters = {
+  status?: RegistrationStatus | undefined;
+  ticketTypeId?: string | undefined;
+  q?: string | undefined;
+  phoneVariant?: string | null;
+};
+
+/** The guest list's filters and order, shared by the paged list and the export so both always match. */
+function guestListQuery(organizationId: string, eventId: string, filters: RegistrationListFilters) {
+  return {
     where: {
       organization_id: organizationId,
       event_id: eventId,
@@ -176,12 +171,35 @@ async function listByEvent(
     order: [
       ["registered_at", "DESC"],
       ["id", "ASC"],
-    ],
+    ] as Array<[string, string]>,
+  };
+}
+
+/** The guest list, newest first. `q` searches the guest's names, email and phone. */
+async function listByEvent(
+  organizationId: string,
+  eventId: string,
+  filters: RegistrationListFilters & { limit: number; offset: number },
+  options: RepoOptions = {},
+): Promise<{ rows: RegistrationWithDetails[]; count: number }> {
+  const { rows, count } = await Registration.findAndCountAll({
+    ...guestListQuery(organizationId, eventId, filters),
     limit: filters.limit,
     offset: filters.offset,
     ...txOptions(options),
   });
   return { rows: toPlainList<RegistrationWithDetails>(rows), count };
+}
+
+/** Every registration matching the guest-list filters, in the list's order, without paging (the CSV export). */
+async function listAllByEvent(
+  organizationId: string,
+  eventId: string,
+  filters: RegistrationListFilters,
+  options: RepoOptions = {},
+): Promise<RegistrationWithDetails[]> {
+  const rows = await Registration.findAll({ ...guestListQuery(organizationId, eventId, filters), ...txOptions(options) });
+  return toPlainList<RegistrationWithDetails>(rows);
 }
 
 /** A person's registrations in their organization, most recent event first. */
@@ -224,6 +242,7 @@ export const registrationRepository = {
   countConfirmedByTicketType,
   countConfirmedPerTicketType,
   listByEvent,
+  listAllByEvent,
   listByPerson,
   updateByEventAndId,
 };

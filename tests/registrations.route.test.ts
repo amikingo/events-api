@@ -174,3 +174,79 @@ test("staff may send an Idempotency-Key: it reaches the service, a malformed one
   assert.equal(register.mock.callCount(), 1);
   assert.equal(register.mock.calls[0]?.arguments[4], "staff-key-0001");
 });
+
+// --- Phase 4d: changing a ticket type and exporting -------------------------------------------
+
+test("the export needs REGISTRATIONS export and a ticket type change REGISTRATIONS update, in the path's organization; 'export' is never read as an id", async () => {
+  const permission = allowPermissions(false);
+  const getOne = mock.method(registrationService, "getRegistration", async () => dto);
+
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    assert.equal((await call(baseUrl, "GET", `${registrationsPath}/export`)).status, 401, "no token");
+    const denied = await call(baseUrl, "GET", `${registrationsPath}/export`, { token });
+    assert.deepEqual([denied.status, denied.body.error.code], [403, "permission_denied"]);
+    const moveDenied = await call(baseUrl, "PATCH", `${registrationsPath}/${IDS.registration}/ticket-type`, { token, body: { ticket_type_id: IDS.ticketType } });
+    assert.equal(moveDenied.status, 403);
+  });
+
+  const requested = permission.mock.calls.map((entry) => entry.arguments[0] as { moduleCode: string; action: string; scope: PermissionScope });
+  assert.deepEqual(
+    requested.map((input) => [input.moduleCode, input.action]),
+    [
+      ["REGISTRATIONS", "export"],
+      ["REGISTRATIONS", "update"],
+    ],
+  );
+  for (const input of requested) assert.deepEqual(input.scope, { level: "organization", organizationId: IDS.orgA, branchId: null });
+  assert.equal(getOne.mock.callCount(), 0);
+});
+
+test("the export answers a CSV attachment named by the service, passes the filters, and refuses paging", async () => {
+  allowPermissions(true);
+  const exportCsv = mock.method(registrationService, "exportRegistrations", async (_organizationId: string, _eventId: string, _query: unknown) => ({
+    filename: "banking-forum-guests.csv",
+    csv: "\uFEFFCode\r\n",
+  }));
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${registrationsPath}/export?status=CONFIRMED&q=Hana`, { headers: { Authorization: `Bearer ${staffToken()}` } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/csv; charset=utf-8");
+    assert.equal(response.headers.get("content-disposition"), 'attachment; filename="banking-forum-guests.csv"');
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(Buffer.from(await response.arrayBuffer()).subarray(0, 3).toString("hex"), "efbbbf", "the byte-order mark reaches the client");
+
+    const paged = await call(baseUrl, "GET", `${registrationsPath}/export?page=2`, { token: staffToken() });
+    assert.deepEqual([paged.status, paged.body.error.code], [400, "validation_error"]);
+  });
+
+  assert.equal(exportCsv.mock.callCount(), 1);
+  const [organizationId, eventId, query] = exportCsv.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([organizationId, eventId, query], [IDS.orgA, IDS.event, { status: "CONFIRMED", q: "Hana" }]);
+});
+
+test("a ticket type change takes one ticket_type_id and says whether anything changed", async () => {
+  allowPermissions(true);
+  const results = [true, false];
+  let index = 0;
+  const move = mock.method(
+    registrationService,
+    "changeRegistrationTicketType",
+    async (_o: string, _e: string, _r: string, _t: string, _a: string | null) => ({ registration: dto, changed: results[index++] ?? false }),
+  );
+  const path = `${registrationsPath}/${IDS.registration}/ticket-type`;
+
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    for (const body of [{}, { ticket_type_id: "not-a-uuid" }, { ticket_type_id: IDS.ticketType, status: "CONFIRMED" }]) {
+      assert.equal((await call(baseUrl, "PATCH", path, { token, body })).status, 400, JSON.stringify(body));
+    }
+    const changed = await call(baseUrl, "PATCH", path, { token, body: { ticket_type_id: IDS.ticketType } });
+    assert.deepEqual([changed.status, changed.body.message], [200, "Ticket type changed"]);
+    const unchanged = await call(baseUrl, "PATCH", path, { token, body: { ticket_type_id: IDS.ticketType } });
+    assert.deepEqual([unchanged.status, unchanged.body.message], [200, "Ticket type unchanged"]);
+  });
+
+  assert.deepEqual(move.mock.calls[0]?.arguments, [IDS.orgA, IDS.event, IDS.registration, IDS.ticketType, IDS.user]);
+});
