@@ -3,7 +3,7 @@ import type { PersonRow } from "../models/person.js";
 import type { RegistrationSource, RegistrationStatus } from "../models/registration.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import type { PublicEventRow } from "../repositories/event.repository.js";
-import type { PersonRegistrationRow, RegistrationWithDetails } from "../repositories/registration.repository.js";
+import type { AccountRegistrationRow, PersonRegistrationRow, RegistrationWithDetails } from "../repositories/registration.repository.js";
 
 /** A guest-list entry for staff: the registration, the guest's contact summary and the ticket type. */
 export type RegistrationDto = {
@@ -143,5 +143,38 @@ export function toPublicRegistrationDto(row: RegistrationWithDetails, event: Pub
     event: { name: event.name, slug: event.slug, starts_at: event.starts_at, ends_at: event.ends_at, timezone: event.timezone },
     organization: { name: event.organization.name, slug: event.organization.slug },
     guest: { first_name: row.person.first_name },
+  };
+}
+
+/**
+ * One entry of a guest's My Tickets (Phase 6): the guest's own registration, the event and its organizer. Only the
+ * fields the guest needs: no internal ids, no audit fields, no other guest's data.
+ */
+export type MyTicketDto = {
+  code: string;
+  status: RegistrationStatus;
+  registered_at: Date;
+  cancelled_at: Date | null;
+  ticket_type: { code: string; name: string };
+  event: { name: string; slug: string; starts_at: Date | null; ends_at: Date | null; timezone: string; status: string };
+  organization: { name: string; slug: string };
+};
+
+export function toMyTicketDto(row: AccountRegistrationRow): MyTicketDto {
+  return {
+    code: row.code,
+    status: row.status,
+    registered_at: row.registered_at,
+    cancelled_at: row.cancelled_at,
+    ticket_type: { code: row.ticketType.code, name: row.ticketType.name },
+    event: {
+      name: row.event.name,
+      slug: row.event.slug,
+      starts_at: row.event.starts_at,
+      ends_at: row.event.ends_at,
+      timezone: row.event.timezone,
+      status: row.event.status,
+    },
+    organization: { name: row.event.organization.name, slug: row.event.organization.slug },
   };
 }

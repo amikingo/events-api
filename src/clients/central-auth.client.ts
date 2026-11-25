@@ -257,4 +257,66 @@ async function getUsersByIds(userIds: readonly string[]): Promise<CentralUser[]>
   return list.map(toCentralUser);
 }
 
-export const centralAuthClient = { passwordLogin, emailLogin, refreshAccessToken, logout, findUserByMobile, getUsersByIds };
+// --- Guest accounts (Phase 6): sign-up and SMS codes, no service token, no service_id -----------------------
+//
+// auth-cheche's swagger documents these requests but not their reply bodies, so replies are read leniently:
+// tokens may sit at the top level or under tokens / token / session (after the usual data envelope), in
+// snake_case or camelCase. Refusals keep auth-cheche's own text (error, then response, then message), so the
+// guest auth service can show it; it maps the status to this API's own codes.
+
+const TOKEN_CONTAINERS = ["tokens", "token", "session"] as const;
+
+/** Reads tokens from the shapes auth-cheche might use; a reply with no access token is a clear 502, never a crash. */
+function parseGuestTokens(payload: unknown): CentralTokens {
+  const candidates = [payload, ...TOKEN_CONTAINERS.map((name) => field(payload, name))];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const record = candidate as Record<string, unknown>;
+    const normalized = {
+      access_token: record.access_token ?? record.accessToken,
+      refresh_token: record.refresh_token ?? record.refreshToken,
+      refresh_expires_in: record.refresh_expires_in ?? record.refreshExpiresIn,
+    };
+    if (typeof normalized.access_token !== "string" || !normalized.access_token) continue;
+    return parseTokens(
+      Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined && value !== null)),
+      { requireRefresh: true },
+    );
+  }
+  throw new MalformedCentralAuthResponseError("Central Auth sign-in reply has no access token");
+}
+
+export type GuestSignUpInput = { mobile: string; password: string; firstname: string; lastname: string };
+
+/** Creates an UNVERIFIED Cheche account; auth-cheche sends a code by SMS. 409 when the account exists. */
+async function signUpWithPassword(input: GuestSignUpInput): Promise<void> {
+  await call("/v1/users/signup/password", { method: "POST", body: input });
+}
+
+/** Confirms a new account with the SMS code (UNVERIFIED becomes VERIFIED). 400 for a wrong or expired code. */
+async function verifyCode(input: { mobile: string; otp: string }): Promise<void> {
+  await call("/v1/users/verify-otp", { method: "POST", body: input });
+}
+
+/** Sends a code by SMS to an existing account. 404 when there is none; 429 when too many were sent. */
+async function sendCode(mobile: string): Promise<void> {
+  await call("/v1/users/send-otp", { method: "POST", body: { mobile } });
+}
+
+/** Signs in with an SMS code instead of a password. A refresh token is required, as for password sign-in. */
+async function signInWithCode(input: { mobile: string; otp: string }): Promise<CentralTokens> {
+  return parseGuestTokens(await call("/v1/auth/otp-login", { method: "POST", body: input }));
+}
+
+export const centralAuthClient = {
+  passwordLogin,
+  emailLogin,
+  refreshAccessToken,
+  logout,
+  findUserByMobile,
+  getUsersByIds,
+  signUpWithPassword,
+  verifyCode,
+  sendCode,
+  signInWithCode,
+};

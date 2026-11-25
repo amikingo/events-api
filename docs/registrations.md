@@ -246,3 +246,38 @@ Decided 25 November 2026. Proof: matrix rows 63–65.
 - **Dates:** in the event's time zone, Ethiopian first ("Hidar 16, 2019 at 4:30 in the morning"), then Gregorian with a 12-hour time ("Nov 25, 2026, 10:30 AM"). Never 24-hour. No date is an empty cell.
 - **Safety:** a cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet can't run it as a formula. An Ethiopian mobile is written as `0911 234 567` (text in Excel, with its leading zero); other numbers go through the safety rule.
 - **Code:** `src/utils/guest-csv.ts` (pure), `registrationService.exportRegistrations`, `registrationRepository.listAllByEvent` (shares its filter with the paged list).
+
+## Phase 6: registering with a Cheche account, and My Tickets
+
+Decided 25 November 2026. Guest accounts themselves are in `docs/authentication.md` ("Guest accounts"). Proof: matrix rows 66–70.
+
+### Registering while signed in
+
+The public form is the same endpoint. A signed-in guest adds `Authorization: Bearer <guest access token>`:
+- **The profile:** the account's linked profile in the event's organization, found by `(organization_id, user_id)`
+  (`uq_person_organization_user_id`), or created with `user_id` set. An existing linked profile is reused as it is;
+  the form's details only fill a new one.
+- **The mobile** is the account's (from the token, or from auth-cheche by user id), never the form's. `phone` may be
+  left out when signed in; without an account it is still required (400 at `body.phone`).
+- **Registering again** for the same event returns the same registration with 200 ("You're already registered for this
+  event"). Another ticket type gives 409 `already_registered`, as for staff.
+- **The retry key's hash includes the account,** so one account's retry can never replay another's.
+- **Two registrations at the same moment** by a new guest, for two events of one organizer, make one profile: the
+  insert is `ON CONFLICT DO NOTHING` and the second reads the first's profile (row 70).
+- **Without a token** nothing changes: a new, unlinked profile every time.
+- A deactivated linked profile can't register (`409 person_inactive`).
+
+**Not linked (decided):** registrations made before having an account, or without signing in, stay with their unlinked
+profiles. A matching mobile never links them (spec §6), so they don't appear in My Tickets; their code still works.
+A guest who registered that way can register again for the same event once signed in: the two are separate profiles
+until claiming is built.
+
+### My Tickets
+
+`GET /v1/customer/registrations` with the guest's token: every registration of every profile linked to the account,
+across organizers. Upcoming and ongoing events first (soonest first), then past ones (most recent first). Each entry:
+`code`, `status`, `registered_at`, `cancelled_at`, `ticket_type { code, name }`,
+`event { name, slug, starts_at, ends_at, timezone, status }` and `organization { name, slug }`. No internal ids.
+Registrations staff made for a linked profile also show: they're the guest's own.
+
+Migration `20261130000000-add-person-user-id-index` adds an index on `person(user_id)` for this lookup.

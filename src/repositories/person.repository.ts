@@ -43,6 +43,33 @@ async function findByOrganizationAndId(organizationId: string, personId: string,
   return toPlain<PersonRow>(row);
 }
 
+/** The profile linked to a Cheche account in this organization (at most one: uq_person_organization_user_id). */
+async function findByOrganizationAndUserId(organizationId: string, userId: string, options: RepoOptions = {}): Promise<PersonRow | null> {
+  const row = await Person.findOne({
+    where: { organization_id: organizationId, user_id: userId },
+    attributes: [...attributes],
+    ...txOptions(options),
+    ...lockOptions(options),
+  });
+  return toPlain<PersonRow>(row);
+}
+
+/**
+ * Creates the account's linked profile unless one exists, then returns the one that does (Phase 6). The insert is
+ * ON CONFLICT DO NOTHING: when two requests of the same guest race (two events of one organization at once), the
+ * second waits on the unique index, inserts nothing, and reads the first one's profile. No error ever aborts the
+ * caller's transaction.
+ */
+async function findOrCreateLinked(
+  values: CreationAttributes<Person> & { organization_id: string; user_id: string },
+  options: WriteOptions = {},
+): Promise<PersonRow> {
+  await Person.bulkCreate([values], { ignoreDuplicates: true, ...txOptions(options) });
+  const row = await findByOrganizationAndUserId(values.organization_id, values.user_id, options);
+  if (!row) throw new Error("The linked guest profile could not be read after it was created");
+  return row;
+}
+
 async function listByOrganization(
   organizationId: string,
   filters: { q?: string | undefined; phoneVariant?: string | null; isActive?: boolean | undefined; limit: number; offset: number },
@@ -79,4 +106,11 @@ async function updateByOrganizationAndId(
   return findByOrganizationAndId(organizationId, personId, options);
 }
 
-export const personRepository = { create, findByOrganizationAndId, listByOrganization, updateByOrganizationAndId };
+export const personRepository = {
+  create,
+  findByOrganizationAndId,
+  findByOrganizationAndUserId,
+  findOrCreateLinked,
+  listByOrganization,
+  updateByOrganizationAndId,
+};

@@ -575,3 +575,64 @@ test("the export uses the list's filters without paging, names the file after th
   assert.equal(lines.length, 2002, "header plus every guest");
   assert.match(lines[1] ?? "", /^CODE0,Confirmed,Hana,/);
 });
+
+// --- Signed-in guests (Phase 6) -------------------------------------------------------------------
+
+const GUEST_ID = "d1111111-1111-4111-8111-111111111111";
+const ACCOUNT_GUEST = { account: { userId: GUEST_ID, mobile: "+251911223344", person: { first_name: "Hana", last_name: "Bekele", email: undefined, affiliation_name: undefined, country: undefined } } };
+
+test("a signed-in guest registers through the account's linked profile, created with the account's mobile and user id", async () => {
+  const calls = arrange();
+  const linked = mock.method(personRepository, "findOrCreateLinked", async (_values: Partial<PersonRow>, _options?: unknown) =>
+    personRow({ id: "linked-person", user_id: GUEST_ID, phone: "+251911223344" }),
+  );
+
+  const { outcome } = await registrationService.registerInTransaction(
+    { organizationId: IDS.orgA, eventId: IDS.event, guest: ACCOUNT_GUEST, source: "PUBLIC", actorId: null },
+    FAKE_TX,
+  );
+
+  assert.equal(outcome, "CREATED");
+  const [values, options] = linked.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(
+    [values?.organization_id, values?.user_id, values?.phone, values?.first_name, values?.last_name],
+    [IDS.orgA, GUEST_ID, "+251911223344", "Hana", "Bekele"],
+  );
+  assert.deepEqual(options, { transaction: FAKE_TX });
+  assert.equal(calls.createPerson.mock.callCount(), 0, "never an unlinked profile");
+  assert.equal(calls.create.mock.calls[0]?.arguments[0]?.person_id, "linked-person");
+});
+
+test("a deactivated linked profile can't register", async () => {
+  arrange();
+  mock.method(personRepository, "findOrCreateLinked", async () => personRow({ user_id: GUEST_ID, is_active: false }));
+  await assert.rejects(
+    registrationService.registerInTransaction({ organizationId: IDS.orgA, eventId: IDS.event, guest: ACCOUNT_GUEST, source: "PUBLIC", actorId: null }, FAKE_TX),
+    PersonInactiveError,
+  );
+});
+
+// --- My Tickets (Phase 6) -------------------------------------------------------------------------
+
+test("My Tickets: upcoming first (soonest first), then past (most recent first), with only the guest-facing fields", async () => {
+  const now = new Date("2027-01-01T00:00:00Z");
+  const row = (code: string, starts: string, ends: string) => ({
+    ...registrationRow({ code }),
+    event: { ...eventRow({ starts_at: new Date(starts), ends_at: new Date(ends) }), organization: { name: "Selam Events", slug: "selam-events" } },
+    ticketType: ticketTypeRow(),
+  });
+  const list = mock.method(registrationRepository, "listByAccount", async (_userId: string) => [
+    row("PASTOLD1", "2026-03-01T06:00:00Z", "2026-03-01T10:00:00Z"),
+    row("LATER001", "2027-06-01T06:00:00Z", "2027-06-01T10:00:00Z"),
+    row("PASTNEW1", "2026-12-01T06:00:00Z", "2026-12-01T10:00:00Z"),
+    row("SOON0001", "2027-02-01T06:00:00Z", "2027-02-01T10:00:00Z"),
+  ]);
+
+  const tickets = await registrationService.listMyTickets(GUEST_ID, now);
+
+  assert.deepEqual(list.mock.calls[0]?.arguments, [GUEST_ID]);
+  assert.deepEqual(tickets.map((ticket) => ticket.code), ["SOON0001", "LATER001", "PASTNEW1", "PASTOLD1"]);
+  assert.deepEqual(Object.keys(tickets[0] ?? {}).sort(), ["cancelled_at", "code", "event", "organization", "registered_at", "status", "ticket_type"]);
+  assert.deepEqual(tickets[0]?.organization, { name: "Selam Events", slug: "selam-events" });
+  assert.deepEqual(Object.keys(tickets[0]?.event ?? {}).sort(), ["ends_at", "name", "slug", "starts_at", "status", "timezone"]);
+});

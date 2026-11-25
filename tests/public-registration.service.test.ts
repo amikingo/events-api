@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
 import { PRIVACY_NOTICE_VERSION } from "../src/config/privacy.js";
-import { NotFoundError, PrivacyNoticeOutdatedError } from "../src/errors/app-errors.js";
+import { NotFoundError, PrivacyNoticeOutdatedError, ValidationAppError } from "../src/errors/app-errors.js";
+import type { CustomerAuthContext } from "../src/middleware/authentication.js";
 import { eventRepository, type PublicEventRow } from "../src/repositories/event.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
+import { customerAuthService } from "../src/services/customer-auth.service.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { publicRegistrationService } from "../src/services/public-registration.service.js";
 import { registrationService, type RegisterInput, type SubmissionRequest } from "../src/services/registration.service.js";
@@ -41,7 +43,7 @@ beforeEach(() => {
 });
 afterEach(() => mock.restoreAll());
 
-function arrange(outcome: "CREATED" | "REPLAYED" = "CREATED") {
+function arrange(outcome: "CREATED" | "REPLAYED" | "UNCHANGED" = "CREATED") {
   mock.method(eventRepository, "findPublishedBySlugs", async () => EVENT);
   mock.method(registrationRepository, "findDetailsByEventAndId", async () => ({
     ...registrationRow({ source: "PUBLIC", registered_by: null }),
@@ -107,4 +109,58 @@ test("a replayed request is reported as such", async () => {
   arrange("REPLAYED");
   const { replayed } = await publicRegistrationService.registerFromPublicForm("selam-events", "partner-workshop", KEY, FORM);
   assert.equal(replayed, true);
+});
+
+// --- Signed in with a Cheche account (Phase 6) ----------------------------------------------------
+
+const GUEST_ID = "d1111111-1111-4111-8111-111111111111";
+const ACCOUNT: CustomerAuthContext = {
+  kind: "customer",
+  token: "guest-access-token",
+  userId: GUEST_ID,
+  profile: { mobile: "+251911223344", firstname: "Hana", middlename: null, lastname: "Bekele" },
+  expiresAt: Math.floor(Date.now() / 1000) + 3600,
+};
+
+test("signed in, the account's mobile is used and the form's phone is ignored; the account is part of the retry hash", async () => {
+  const registerOnce = arrange();
+  const mobile = mock.method(customerAuthService, "accountMobile", async () => "+251911223344");
+
+  await publicRegistrationService.registerFromPublicForm("selam-events", "partner-workshop", KEY, { ...FORM, phone: "+251999999999" }, ACCOUNT);
+
+  assert.equal(mobile.mock.callCount(), 1);
+  const [input, submission] = registerOnce.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(input?.guest, {
+    account: {
+      userId: GUEST_ID,
+      mobile: "+251911223344",
+      person: { first_name: "Liya", last_name: "Tesfaye", email: undefined, affiliation_name: undefined, country: undefined },
+    },
+  });
+  const body = { ...FORM, phone: "+251999999999" };
+  assert.equal(submission?.requestHash, requestHash({ event_id: IDS.event, body, user_id: GUEST_ID }));
+  assert.notEqual(submission?.requestHash, requestHash({ event_id: IDS.event, body }), "another account's retry can't replay this one");
+});
+
+test("without an account the mobile is required (400 at body.phone); signed in it isn't", async () => {
+  const registerOnce = arrange();
+  mock.method(customerAuthService, "accountMobile", async () => "+251911223344");
+  const noPhone = { ...FORM, phone: undefined };
+
+  await assert.rejects(publicRegistrationService.registerFromPublicForm("selam-events", "partner-workshop", KEY, noPhone), (error: unknown) => {
+    assert.ok(error instanceof ValidationAppError);
+    assert.equal((error.details as { issues: Array<{ path: string }> }).issues[0]?.path, "body.phone");
+    return true;
+  });
+  assert.equal(registerOnce.mock.callCount(), 0);
+
+  await publicRegistrationService.registerFromPublicForm("selam-events", "partner-workshop", KEY, noPhone, ACCOUNT);
+  assert.equal(registerOnce.mock.callCount(), 1);
+});
+
+test("a signed-in guest already registered for the event is reported as UNCHANGED", async () => {
+  arrange("UNCHANGED");
+  mock.method(customerAuthService, "accountMobile", async () => "+251911223344");
+  const { outcome, replayed } = await publicRegistrationService.registerFromPublicForm("selam-events", "partner-workshop", KEY, FORM, ACCOUNT);
+  assert.deepEqual([outcome, replayed], ["UNCHANGED", false]);
 });

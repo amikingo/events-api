@@ -5,15 +5,16 @@ import { codeSchema, contactEmailSchema, countryCodeSchema, idempotencyKeySchema
 import { publicEventParamsSchema } from "./public-event.js";
 
 /**
- * The public registration form (no login). Both names and an Ethiopian mobile are required: the confirmation SMS
- * goes to that number (stored as +251…). Ticket types are chosen by code, as the public event page shows them;
+ * The public registration form. Both names are required. Without an account, an Ethiopian mobile is required too
+ * (the confirmation SMS goes to that number, stored as +251…); the service enforces it. Signed in with a Cheche
+ * account (Phase 6), `phone` is ignored: the account's verified mobile is used. Ticket types are chosen by code, as the public event page shows them;
  * `ticket_type_code` may be left out when the event has one active ticket type. `privacy_notice_version` is the
  * version of the notice the form showed (from the event page's privacy_notice).
  */
 export const publicRegistrationSchema = z.strictObject({
   first_name: z.string().trim().min(1).max(100),
   last_name: z.string().trim().min(1).max(100),
-  phone: mobileSchema,
+  phone: mobileSchema.optional(),
   email: contactEmailSchema,
   affiliation_name: nullableText(200),
   country: countryCodeSchema.nullable().optional(),

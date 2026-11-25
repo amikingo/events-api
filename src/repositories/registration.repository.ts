@@ -1,6 +1,7 @@
 import { col, fn, type CreationAttributes } from "sequelize";
 import type { EventRow } from "../models/event.js";
-import { AppEvent, Person, Registration, TicketType } from "../models/index.js";
+import { AppEvent, Organization, Person, Registration, TicketType } from "../models/index.js";
+import type { OrganizationRow } from "../models/organization.js";
 import type { PersonRow } from "../models/person.js";
 import type { RegistrationRow, RegistrationStatus } from "../models/registration.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
@@ -220,6 +221,39 @@ async function listByPerson(organizationId: string, personId: string, options: R
   return toPlainList<PersonRegistrationRow>(rows);
 }
 
+/** One of a signed-in guest's registrations, across organizers (My Tickets, Phase 6). */
+export type AccountRegistrationRow = RegistrationRow & {
+  event: Pick<EventRow, (typeof EVENT_SUMMARY)[number]> & { organization: Pick<OrganizationRow, "name" | "slug"> };
+  ticketType: Pick<TicketTypeRow, (typeof TICKET_TYPE_SUMMARY)[number]>;
+};
+
+/**
+ * Every registration of every profile linked to this Cheche account, in any organization (My Tickets). Only
+ * profiles with this user_id count: unlinked profiles with the same mobile never do (claiming is deferred).
+ */
+async function listByAccount(userId: string, options: RepoOptions = {}): Promise<AccountRegistrationRow[]> {
+  const rows = await Registration.findAll({
+    attributes: [...attributes],
+    include: [
+      { model: Person, as: "person", required: true, attributes: [], where: { user_id: userId } },
+      {
+        model: AppEvent,
+        as: "event",
+        required: true,
+        attributes: [...EVENT_SUMMARY],
+        include: [{ model: Organization, as: "organization", required: true, attributes: ["name", "slug"] }],
+      },
+      { model: TicketType, as: "ticketType", required: true, attributes: [...TICKET_TYPE_SUMMARY] },
+    ],
+    order: [
+      [{ model: AppEvent, as: "event" }, "starts_at", "ASC NULLS LAST"],
+      ["id", "ASC"],
+    ],
+    ...txOptions(options),
+  });
+  return toPlainList<AccountRegistrationRow>(rows);
+}
+
 /** Event-scoped update + read-back inside the same transaction. */
 async function updateByEventAndId(
   organizationId: string,
@@ -244,5 +278,6 @@ export const registrationRepository = {
   listByEvent,
   listAllByEvent,
   listByPerson,
+  listByAccount,
   updateByEventAndId,
 };

@@ -504,3 +504,19 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 Connect the staff and public screens to the API and run the full flow against PostgreSQL: a guest discovers an event, registers, receives a code, and appears once on the staff guest list.
 
 - The staff app never sees the refresh token: it lives only in the HttpOnly cookie. Do not copy the auth-cheche guide's frontend example, which keeps tokens in `localStorage`.
+
+### Phase 6 — Guest accounts and My Tickets (25 November 2026)
+
+**Why:** the public site's sign-in, sign-up and account page were simulated in the browser, and My Tickets only said "your ticket is your code".
+
+**Decisions (25 November 2026):**
+- **Accounts:** guests use Cheche accounts in auth-cheche, like staff. Sign-up with name, mobile and password, confirmed by an SMS code; sign-in with an SMS code or a password. events-api makes every auth-cheche call; the refresh token stays in the HttpOnly cookie, and the guest's access token is auth-cheche's own.
+- **Confirming a sign-up** sends the code and the password again (confirm, then password sign-in), so it doesn't depend on whether a code can be used twice. A "resend code" path uses `send-otp`.
+- **The mobile** always comes from the account (the token, or auth-cheche by user id), never from the browser.
+- **Registering while signed in** uses or creates the account's linked profile in the organization. **My Tickets** lists only registrations made while signed in; claiming earlier ones stays for later.
+- **Limits:** 10 a minute per IP for sign-up, codes and sign-in; 3 codes every 10 minutes per mobile.
+- **Pages:** only the landing page itself stays off-limits (`app/(home)/page.tsx`, `app/(home)/layout.tsx`, `components/marketplace/home/*`, `components/marketplace/site-footer.tsx`).
+- **Step 0 (checking auth-cheche's replies by hand) was skipped at the project owner's request.** The code reads replies leniently instead; the assumptions are listed in `docs/authentication.md` ("Guest accounts") and checked when the owner first signs up on the site.
+- **Who builds what:** the API here; the screens by Antigravity from `docs/ui-brief-phase-6.md`.
+
+**Status: built, not yet verified.** Waiting for `npm run check`, then `npm run db:migrate` (1 migration, `20261130000000-add-person-user-id-index`) and `TEST_DATABASE=1 npm test` (rows 66–70).

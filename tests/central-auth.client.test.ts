@@ -211,3 +211,83 @@ test("names for several people come from one specific_users call; a refused serv
     mock.restoreAll();
   }
 });
+
+// --- Guest accounts (Phase 6): sign-up and SMS codes -----------------------------------------------------
+
+test("guest sign-up, code confirmation, sending a code and code sign-in post the documented bodies, with no service_id and no Authorization", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ message: "ok", access_token: "a", refresh_token: "r" }));
+  await centralAuthClient.signUpWithPassword({ mobile: "+251911223344", password: "pass-1234", firstname: "Hana", lastname: "Bekele" });
+  await centralAuthClient.verifyCode({ mobile: "+251911223344", otp: "123456" });
+  await centralAuthClient.sendCode("+251911223344");
+  await centralAuthClient.signInWithCode({ mobile: "+251911223344", otp: "654321" });
+
+  assert.deepEqual(
+    calls.map((entry) => entry.url),
+    ["/v1/users/signup/password", "/v1/users/verify-otp", "/v1/users/send-otp", "/v1/auth/otp-login"].map((path) => `${authConfig.centralAuthUrl}${path}`),
+  );
+  assert.deepEqual(
+    calls.map((entry) => JSON.parse(entry.init?.body as string)),
+    [
+      { mobile: "+251911223344", password: "pass-1234", firstname: "Hana", lastname: "Bekele" },
+      { mobile: "+251911223344", otp: "123456" },
+      { mobile: "+251911223344" },
+      { mobile: "+251911223344", otp: "654321" },
+    ],
+  );
+  for (const entry of calls) {
+    assert.ok(!entry.url.includes("service_id"));
+    const headerNames = Object.keys((entry.init?.headers ?? {}) as Record<string, string>).map((name) => name.toLowerCase());
+    assert.ok(!headerNames.includes("authorization"));
+  }
+});
+
+test("code sign-in reads tokens leniently: top level, inside data, tokens, token or session, snake_case or camelCase", async () => {
+  const shapes = [
+    { access_token: "a1", refresh_token: "r1" },
+    { data: { access_token: "a2", refresh_token: "r2", refresh_expires_in: 600 } },
+    { data: { tokens: { accessToken: "a3", refreshToken: "r3" } } },
+    { token: { access_token: "a4", refresh_token: "r4" } },
+    { session: { accessToken: "a5", refreshToken: "r5", refreshExpiresIn: 60 } },
+  ];
+  const expected = [
+    { accessToken: "a1", refreshToken: "r1", refreshExpiresIn: null },
+    { accessToken: "a2", refreshToken: "r2", refreshExpiresIn: 600 },
+    { accessToken: "a3", refreshToken: "r3", refreshExpiresIn: null },
+    { accessToken: "a4", refreshToken: "r4", refreshExpiresIn: null },
+    { accessToken: "a5", refreshToken: "r5", refreshExpiresIn: 60 },
+  ];
+  for (const [index, shape] of shapes.entries()) {
+    fakeFetch(200, JSON.stringify(shape));
+    assert.deepEqual(await centralAuthClient.signInWithCode({ mobile: "+251911223344", otp: "1" }), expected[index]);
+    mock.restoreAll();
+  }
+});
+
+test("an unexpected code sign-in reply is a clear 502, never a crash; no refresh token is refused too", async () => {
+  for (const body of [{ message: "OTP login successful" }, { data: { user: { id: "x" } } }, { access_token: "only-access" }]) {
+    fakeFetch(200, JSON.stringify(body));
+    await assert.rejects(centralAuthClient.signInWithCode({ mobile: "+251911223344", otp: "1" }), MalformedCentralAuthResponseError, JSON.stringify(body));
+    mock.restoreAll();
+  }
+});
+
+test("guest refusals keep auth-cheche's text and status: 409 exists, 404 no account, 400 wrong code, 429 too many", async () => {
+  fakeFetch(409, JSON.stringify({ error: "User already exists" }));
+  await assert.rejects(centralAuthClient.signUpWithPassword({ mobile: "+251911223344", password: "p", firstname: "H", lastname: "B" }), ConflictError);
+  mock.restoreAll();
+
+  fakeFetch(404, JSON.stringify({ error: "User not found" }));
+  await assert.rejects(centralAuthClient.sendCode("+251911223344"), (error: unknown) => error instanceof AppError && error.statusCode === 404);
+  mock.restoreAll();
+
+  fakeFetch(400, JSON.stringify({ response: "Invalid or expired OTP" }));
+  await assert.rejects(centralAuthClient.verifyCode({ mobile: "+251911223344", otp: "0" }), (error: unknown) => {
+    assert.ok(error instanceof AppError);
+    assert.deepEqual([error.statusCode, error.message], [400, "Invalid or expired OTP"]);
+    return true;
+  });
+  mock.restoreAll();
+
+  fakeFetch(429, JSON.stringify({ message: "Too many requests" }));
+  await assert.rejects(centralAuthClient.sendCode("+251911223344"), CentralAuthRateLimitedError);
+});

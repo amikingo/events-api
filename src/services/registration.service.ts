@@ -12,8 +12,10 @@ import {
 } from "../errors/app-errors.js";
 import { registrationClosedReason } from "../mappers/event.mapper.js";
 import {
+  toMyTicketDto,
   toRegistrationDto,
   toRegistrationSummaryDto,
+  type MyTicketDto,
   type RegistrationDto,
   type RegistrationSummaryDto,
 } from "../mappers/registration.mapper.js";
@@ -50,7 +52,16 @@ import { ensureFound, runTransaction } from "./helpers.js";
  * the last place are decided one after the other. Only CONFIRMED registrations consume places.
  */
 
-export type RegistrationGuest = { personId: string } | { person: PersonInput };
+/**
+ * Who is registering: an existing profile (staff), a new unlinked profile (staff, or the public form without an
+ * account), or a signed-in Cheche account (Phase 6). An account registers through its linked profile in the event's
+ * organization: found by (organization_id, user_id), or created with the account's verified mobile. An existing
+ * linked profile is reused as it is; the form's details only fill a new one.
+ */
+export type RegistrationGuest =
+  | { personId: string }
+  | { person: PersonInput }
+  | { account: { userId: string; mobile: string; person: Omit<PersonInput, "phone"> } };
 
 export type RegisterInput = {
   organizationId: string;
@@ -113,6 +124,27 @@ async function resolvePerson(input: RegisterInput, transaction: Transaction): Pr
   const { organizationId, guest, actorId } = input;
   if ("personId" in guest) {
     const person = ensureFound(await personRepository.findByOrganizationAndId(organizationId, guest.personId, { transaction }), "Guest not found");
+    if (!person.is_active) throw new PersonInactiveError();
+    return person;
+  }
+  if ("account" in guest) {
+    const { userId, mobile, person: details } = guest.account;
+    const person = await personRepository.findOrCreateLinked(
+      {
+        organization_id: organizationId,
+        user_id: userId,
+        first_name: details.first_name,
+        last_name: details.last_name ?? null,
+        email: details.email ?? null,
+        phone: mobile,
+        affiliation_name: details.affiliation_name ?? null,
+        country: details.country ?? null,
+        is_active: true,
+        created_by: actorId,
+        updated_by: actorId,
+      },
+      { transaction },
+    );
     if (!person.is_active) throw new PersonInactiveError();
     return person;
   }
@@ -491,6 +523,23 @@ async function getRegistrationSummary(organizationId: string, eventId: string): 
   return toRegistrationSummaryDto(event.capacity, ticketTypes, confirmed);
 }
 
+/**
+ * My Tickets (Phase 6): a signed-in guest's registrations across organizers. Upcoming and ongoing events first
+ * (soonest first), then past ones (most recent first); an event without dates counts as upcoming.
+ */
+async function listMyTickets(userId: string, now: Date = new Date()): Promise<MyTicketDto[]> {
+  const tickets = (await registrationRepository.listByAccount(userId)).map(toMyTicketDto);
+  const endOf = (ticket: MyTicketDto) => ticket.event.ends_at ?? ticket.event.starts_at;
+  const isPast = (ticket: MyTicketDto) => {
+    const end = endOf(ticket);
+    return end !== null && end.getTime() <= now.getTime();
+  };
+  const startTime = (ticket: MyTicketDto) => ticket.event.starts_at?.getTime() ?? Number.POSITIVE_INFINITY;
+  const upcoming = tickets.filter((ticket) => !isPast(ticket)).sort((a, b) => startTime(a) - startTime(b));
+  const past = tickets.filter(isPast).sort((a, b) => startTime(b) - startTime(a));
+  return [...upcoming, ...past];
+}
+
 export const registrationService = {
   registerInTransaction,
   registerOnce,
@@ -501,4 +550,5 @@ export const registrationService = {
   exportRegistrations,
   getRegistration,
   getRegistrationSummary,
+  listMyTickets,
 };

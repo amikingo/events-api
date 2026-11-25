@@ -5,7 +5,10 @@ import { PRIVACY_NOTICE_VERSION } from "../src/config/privacy.js";
 import type { PublicRegistrationDto } from "../src/mappers/registration.mapper.js";
 import { publicRegistrationLimiter } from "../src/middleware/rate-limit.js";
 import { publicRegistrationService } from "../src/services/public-registration.service.js";
+import type { CustomerAuthContext } from "../src/middleware/authentication.js";
+import type { SubmissionOutcome } from "../src/services/registration.service.js";
 import type { PublicRegistrationInput } from "../src/validators/public-registration.js";
+import { centralAccessToken, IDS, staffToken } from "./helpers/fixtures.js";
 import { withServer, type TestResponse } from "./helpers/http.js";
 
 /**
@@ -36,11 +39,15 @@ async function post(baseUrl: string, body: unknown, headers: Record<string, stri
   return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
 }
 
-function stubService(replayed = false) {
+function stubService(replayed = false, outcome: SubmissionOutcome = replayed ? "REPLAYED" : "CREATED") {
   return mock.method(
     publicRegistrationService,
     "registerFromPublicForm",
-    async (_organizationSlug: string, _eventSlug: string, _key: string, _input: PublicRegistrationInput) => ({ registration: REPLY, replayed }),
+    async (_organizationSlug: string, _eventSlug: string, _key: string, _input: PublicRegistrationInput, _account?: CustomerAuthContext | null) => ({
+      registration: REPLY,
+      replayed,
+      outcome,
+    }),
   );
 }
 
@@ -83,13 +90,13 @@ test("Idempotency-Key is required and checked: missing or malformed is 400 at he
   assert.equal(register.mock.callCount(), 0);
 });
 
-test("the form is strict: both names, an Ethiopian mobile and the notice version are required; nothing else is accepted", async () => {
+// A missing phone passes the contract (a signed-in guest sends none); the service requires it without an account.
+test("the form is strict: both names, an Ethiopian mobile if sent, and the notice version; nothing else is accepted", async () => {
   const register = stubService();
   await withServer(app, async (baseUrl) => {
     const refused = [
       { ...FORM, last_name: undefined },
       { ...FORM, phone: "+44 20 7946 0958" },
-      { ...FORM, phone: undefined },
       { ...FORM, privacy_notice_version: undefined },
       { ...FORM, person_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1" },
       { ...FORM, source: "STAFF" },
@@ -101,4 +108,28 @@ test("the form is strict: both names, an Ethiopian mobile and the notice version
     }
   });
   assert.equal(register.mock.callCount(), 0);
+});
+
+// --- Signed in with a Cheche account (Phase 6) ----------------------------------------------------
+
+test("a guest's access token reaches the service as the account; no token means no account; a staff token is refused", async () => {
+  const register = stubService();
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await post(baseUrl, FORM, { "Idempotency-Key": KEY, Authorization: `Bearer ${centralAccessToken()}` })).status, 201);
+    assert.equal((await post(baseUrl, FORM)).status, 201);
+    const staff = await post(baseUrl, FORM, { "Idempotency-Key": KEY, Authorization: `Bearer ${staffToken()}` });
+    assert.equal(staff.status, 401, "a token that isn't a guest's fails instead of being ignored");
+  });
+  const accounts = register.mock.calls.map((entry) => entry.arguments[4] ?? null);
+  assert.equal(accounts.length, 2);
+  assert.deepEqual([accounts[0]?.kind, accounts[0]?.userId], ["customer", IDS.user]);
+  assert.equal(accounts[1], null);
+});
+
+test("a signed-in guest already registered for the event gets 200 with the same registration", async () => {
+  stubService(false, "UNCHANGED");
+  await withServer(app, async (baseUrl) => {
+    const response = await post(baseUrl, FORM, { "Idempotency-Key": KEY, Authorization: `Bearer ${centralAccessToken()}` });
+    assert.deepEqual([response.status, response.body.message], [200, "You're already registered for this event"]);
+  });
 });

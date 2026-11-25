@@ -1,8 +1,10 @@
 import { z } from "zod";
-import { APP_TITLE, STAFF_REFRESH_COOKIE } from "../config/app.js";
+import { APP_TITLE, CUSTOMER_REFRESH_COOKIE, STAFF_REFRESH_COOKIE } from "../config/app.js";
 import type { RequestContract } from "../middleware/validate.js";
 import * as auth from "../validators/auth.js";
 import * as branch from "../validators/branch.js";
+import * as customer from "../validators/customer.js";
+import * as customerAuth from "../validators/customer-auth.js";
 import * as customerAccount from "../validators/customer-account.js";
 import * as event from "../validators/event.js";
 import * as organization from "../validators/organization.js";
@@ -30,7 +32,8 @@ export type ApiOperation = {
   summary: string;
   description?: string;
   tags: string[];
-  auth: "staff" | "refresh-cookie" | "public";
+  /** customer: a guest's Cheche access token (Phase 6); customer-optional: public, personalized when one is sent. */
+  auth: "staff" | "refresh-cookie" | "customer-refresh-cookie" | "customer" | "customer-optional" | "public";
   successStatus: 200 | 201 | 204;
   /** A success reply that is a file rather than the JSON envelope (the guest list export). Errors stay JSON. */
   successContent?: "text/csv";
@@ -44,6 +47,18 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "post", path: "/v1/auth/staff/logout", contract: auth.staffLogoutRequest, summary: "Sign out: clear the refresh cookie and revoke the Central Auth session (best effort; data.revoked says whether Central confirmed)", tags: ["Auth"], auth: "refresh-cookie", successStatus: 200 },
   { method: "get", path: "/v1/auth/staff/me", contract: auth.currentStaffSessionRequest, summary: "Current staff session: assignment, flat permissions, nested navigation", tags: ["Auth"], auth: "staff", successStatus: 200 },
   { method: "post", path: "/v1/auth/staff/switch-assignment", contract: auth.staffSwitchAssignmentRequest, bodyComponent: "StaffSwitchAssignmentRequest", summary: "Re-issue the staff token for another active assignment", tags: ["Auth"], auth: "staff", successStatus: 200 },
+
+  // --- Guest accounts (Phase 6): Cheche accounts on the public site ---------------------------------------
+  { method: "post", path: "/v1/auth/customer/signup", contract: customerAuth.customerSignUpRequest, bodyComponent: "CustomerSignUpRequest", summary: "Create a Cheche account (unconfirmed); auth-cheche sends a code by SMS", description: "Errors: 409 account_exists (sign in instead); 400 validation_error, with auth-cheche's text when it refused the details; 429 rate_limited (10 a minute per IP, 3 codes every 10 minutes per mobile); 429 central_auth_rate_limited; 503 central_auth_unavailable.", tags: ["Guest accounts"], auth: "public", successStatus: 201 },
+  { method: "post", path: "/v1/auth/customer/signup/confirm", contract: customerAuth.customerConfirmSignUpRequest, bodyComponent: "CustomerConfirmSignUpRequest", summary: "Confirm the new account with the SMS code and sign in (the password is sent again); sets the HttpOnly refresh cookie", description: "Errors: 400 invalid_code; 404 account_not_found; 401 invalid_credentials (wrong password).", tags: ["Guest accounts"], auth: "public", successStatus: 200 },
+  { method: "post", path: "/v1/auth/customer/signup/resend", contract: customerAuth.customerResendSignUpCodeRequest, bodyComponent: "CustomerSendCodeRequest", summary: "Send a new code for an unconfirmed sign-up", description: "auth-cheche's refusal text is shown as it is. Errors: 404 account_not_found; 429 rate_limited (3 every 10 minutes per mobile); 429 central_auth_rate_limited.", tags: ["Guest accounts"], auth: "public", successStatus: 200 },
+  { method: "post", path: "/v1/auth/customer/code", contract: customerAuth.customerSendCodeRequest, bodyComponent: "CustomerSendCodeRequest", summary: "Send a sign-in code by SMS", description: "Errors: 404 account_not_found (offer sign-up); 429 rate_limited (3 every 10 minutes per mobile); 429 central_auth_rate_limited.", tags: ["Guest accounts"], auth: "public", successStatus: 200 },
+  { method: "post", path: "/v1/auth/customer/login/code", contract: customerAuth.customerCodeLoginRequest, bodyComponent: "CustomerCodeLoginRequest", summary: "Sign in with the SMS code; sets the HttpOnly refresh cookie", description: "Errors: 400 invalid_code; 404 account_not_found.", tags: ["Guest accounts"], auth: "public", successStatus: 200 },
+  { method: "post", path: "/v1/auth/customer/login/password", contract: customerAuth.customerPasswordLoginRequest, bodyComponent: "CustomerPasswordLoginRequest", summary: "Sign in with mobile and password; sets the HttpOnly refresh cookie", description: "Errors: 401 invalid_credentials (one fixed text for every refusal).", tags: ["Guest accounts"], auth: "public", successStatus: 200 },
+  { method: "post", path: "/v1/auth/customer/refresh", contract: customerAuth.customerRefreshRequest, summary: "Renew the guest's access token from the refresh cookie (asks auth-cheche every time)", tags: ["Guest accounts"], auth: "customer-refresh-cookie", successStatus: 200 },
+  { method: "post", path: "/v1/auth/customer/logout", contract: customerAuth.customerLogoutRequest, summary: "Sign out: clear the refresh cookie and revoke the session in auth-cheche (best effort)", tags: ["Guest accounts"], auth: "customer-refresh-cookie", successStatus: 200 },
+  { method: "get", path: "/v1/auth/customer/me", contract: customerAuth.currentCustomerRequest, summary: "The signed-in guest: id, names and the account's mobile", tags: ["Guest accounts"], auth: "customer", successStatus: 200 },
+  { method: "get", path: "/v1/customer/registrations", contract: customer.listMyTicketsRequest, summary: "My Tickets: the guest's own registrations across organizers, upcoming first (only those made while signed in)", tags: ["Guest accounts"], auth: "customer", successStatus: 200 },
 
   // --- Organizations --------------------------------------------------------------------------
   { method: "post", path: "/v1/organizations", contract: organization.createOrganizationRequest, bodyComponent: "OrganizationCreateRequest", summary: "Create a tenant (platform scope) with its OWNER and VIEWER roles. A hidden MAIN branch is always created; has_branches (default false) decides whether its staff see branches. Optional owner_mobile adds the first Owner in the same step", description: "Errors: 404 central_account_not_found (no Cheche account uses owner_mobile); 409 conflict (field slug, or field user_id when that person is already staff anywhere); 503 when auth-cheche can't be reached. A refusal creates nothing.", tags: ["Organizations"], auth: "staff", successStatus: 201 },
@@ -119,7 +134,7 @@ export const v1Operations: readonly ApiOperation[] = [
   // --- Public (no login) ------------------------------------------------------------------------
   { method: "get", path: "/v1/public/events", contract: publicEvent.listPublicEventsRequest, summary: "Public catalog: upcoming and live PUBLISHED + PUBLIC events of active organizations, by start time (filters: exact category, organization slug)", tags: ["Public"], auth: "public", successStatus: 200 },
   { method: "get", path: "/v1/public/organizations/{organizationSlug}/events/{eventSlug}", contract: publicEvent.getPublicEventRequest, summary: "Public event page by both slugs: any event published at least once (also UNLISTED, ended, closed or cancelled); 404 for drafts", tags: ["Public"], auth: "public", successStatus: 200 },
-  { method: "post", path: "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations", contract: publicRegistration.createPublicRegistrationRequest, bodyComponent: "PublicRegistrationRequest", summary: "Register for an event without an account (Idempotency-Key required): 201 with the code; the same key and form again returns the same registration with 200", description: "Same rules as staff entry: the event must be taking registrations, the ticket type active and a place free. Errors: 400 validation_error (e.g. headers.idempotency-key, a non-Ethiopian mobile), 404 unknown event, 409 privacy_notice_outdated (details.current), 409 idempotency_key_reused, 409 registration_closed (details.reason), 409 capacity_reached (details.scope), 400 ticket_type_required, 429 rate_limited (10 a minute per IP).", tags: ["Public"], auth: "public", successStatus: 201 },
+  { method: "post", path: "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations", contract: publicRegistration.createPublicRegistrationRequest, bodyComponent: "PublicRegistrationRequest", summary: "Register for an event, without an account or signed in with one (Idempotency-Key required): 201 with the code; the same key and form again, or a signed-in guest already registered, returns the registration with 200", description: "Without an account, phone is required and a new, unlinked guest profile is made. With a guest's access token, phone is ignored: the account's linked profile is used or created with its verified mobile. Same rules as staff entry: the event must be taking registrations, the ticket type active and a place free. Errors: 400 validation_error (e.g. headers.idempotency-key, a non-Ethiopian mobile), 404 unknown event, 409 privacy_notice_outdated (details.current), 409 idempotency_key_reused, 409 registration_closed (details.reason), 409 capacity_reached (details.scope), 400 ticket_type_required, 429 rate_limited (10 a minute per IP).", tags: ["Public"], auth: "customer-optional", successStatus: 201 },
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -169,6 +184,9 @@ function parametersOf(location: "path" | "query" | "header", schema: z.ZodObject
 function securityFor(auth: ApiOperation["auth"]): Array<Record<string, string[]>> {
   if (auth === "staff") return [{ bearerAuth: [] }];
   if (auth === "refresh-cookie") return [{ refreshCookie: [] }];
+  if (auth === "customer-refresh-cookie") return [{ customerRefreshCookie: [] }];
+  if (auth === "customer") return [{ customerBearer: [] }];
+  if (auth === "customer-optional") return [{}, { customerBearer: [] }];
   return [];
 }
 
@@ -261,6 +279,8 @@ export function buildV1Document(): OpenApiDocument {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
         refreshCookie: { type: "apiKey", in: "cookie", name: STAFF_REFRESH_COOKIE },
+        customerRefreshCookie: { type: "apiKey", in: "cookie", name: CUSTOMER_REFRESH_COOKIE },
+        customerBearer: { type: "http", scheme: "bearer", bearerFormat: "JWT", description: "A guest's Cheche access token (from /v1/auth/customer/*)" },
       },
     },
   };

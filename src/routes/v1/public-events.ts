@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { publicEventController } from "../../controllers/public-event.controller.js";
 import { publicRegistrationController } from "../../controllers/public-registration.controller.js";
+import { optionalCustomerAuthentication } from "../../middleware/authentication.js";
 import { publicReadLimiter, publicRegistrationLimiter } from "../../middleware/rate-limit.js";
 import { validate } from "../../middleware/validate.js";
 import { getPublicEventRequest, listPublicEventsRequest } from "../../validators/public-event.js";
@@ -22,9 +23,11 @@ publicEventsRouter.get(
 );
 
 // Phase 4b: register for an event by link, without an account. Idempotency-Key is required (see the validator).
+// Phase 6: a guest signed in with a Cheche account sends its access token, and registers through its linked profile.
 publicEventsRouter.post(
   "/organizations/:organizationSlug/events/:eventSlug/registrations",
   publicRegistrationLimiter,
+  optionalCustomerAuthentication,
   validate(createPublicRegistrationRequest),
   publicRegistrationController.registerForEvent,
 );

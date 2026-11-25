@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { authRouter } from "./auth.js";
 import { branchesRouter } from "./branches.js";
 import { customerAccountsRouter } from "./customer-accounts.js";
+import { customerRouter } from "./customer.js";
 import { docsRouter } from "./docs.js";
 import { eventsRouter } from "./events.js";
 import { organizationsRouter } from "./organizations.js";
@@ -29,6 +30,7 @@ router.use("/organizations/:organizationId/persons", personsRouter);
 router.use("/organizations/:organizationId/roles", rolesRouter);
 router.use("/organizations/:organizationId", staffAssignmentsRouter); // /staff-assignments, /staff-lookup
 router.use("/public", publicEventsRouter); // no login: catalog and event pages
+router.use("/customer", customerRouter); // a signed-in guest's own data (My Tickets)
 
 if (env.API_DOCS_ENABLED) {
   router.use(docsRouter); // GET /v1/openapi.json, /v1/docs

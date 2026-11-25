@@ -7,8 +7,8 @@
   its **own** short-lived access token (HS256, `APP_AUTH_TOKEN`, `iss`/`aud` = `events_api`,
   `token_type = staff_access`, `sub` = Central Auth user id, claims `assignment_id`, `role_id`,
   `organization_id`, `branch_id`, profile names). TTL = min(`APP_TOKEN_TTL_SECONDS`, upstream remaining lifetime).
-- **Customers** (when needed): the Central Auth access token itself, verified with `APP_AUTH_TOKEN`
-  (`iss = auth_api`, `token_type = access`).
+- **Guests (customers, Phase 6):** the Central Auth access token itself, verified with `APP_AUTH_TOKEN`
+  (`iss = auth_api`, `token_type = access`). See "Guest accounts" below.
 - One shared secret, like bookings_api: `APP_AUTH_TOKEN` (auth-cheche's secret, same name there) both verifies
   Central Auth tokens and signs this API's own tokens. Only these checks keep the three token types apart:
   - Central token: issuer `auth_api` and `token_type = access`.
@@ -61,6 +61,39 @@ the refresh cookie).
 - Trade-off: for up to the TTL (default 6 hours), refresh does not notice a session ended at Central Auth
   (password change, logout elsewhere, disabled account). Removing the person's assignment here still takes
   effect at their next refresh.
+
+## Guest accounts (Phase 6)
+
+Guests on the public site use **Cheche accounts** in auth-cheche, like staff. This API makes every auth-cheche call:
+the browser never talks to auth-cheche, and the refresh token lives only in the HttpOnly cookie
+`events_customer_refresh` on `/v1/auth/customer`. The access token is auth-cheche's own; the web app keeps it in memory
+and sends it as a Bearer token on `/v1/customer/*`, `/v1/auth/customer/me` and the public registration POST.
+
+| Call | auth-cheche | Notes |
+|---|---|---|
+| `POST /v1/auth/customer/signup` `{ first_name, last_name, mobile, password }` | `POST /v1/users/signup/password` | The account is unconfirmed; a code arrives by SMS. 409 `account_exists`: sign in instead. |
+| `POST /v1/auth/customer/signup/confirm` `{ mobile, otp, password }` | `verify-otp`, then `signin/password` | The password is sent again, so this works whether or not auth-cheche lets the same code be used twice. Sets the cookie. |
+| `POST /v1/auth/customer/signup/resend` `{ mobile }` | `send-otp` | A new code for an unconfirmed sign-up. auth-cheche's refusal text is shown as it is. |
+| `POST /v1/auth/customer/code` `{ mobile }` | `send-otp` | A sign-in code. 404 `account_not_found`: offer sign-up. |
+| `POST /v1/auth/customer/login/code` `{ mobile, otp }` | `POST /v1/auth/otp-login` | Sets the cookie. 400 `invalid_code`. |
+| `POST /v1/auth/customer/login/password` `{ mobile, password }` | `signin/password` | Sets the cookie. 401 `invalid_credentials` (one fixed text). |
+| `POST /v1/auth/customer/refresh` | `POST /v1/auth/refresh` | Cookie only; trusted Origin; rotates the cookie. **Asks auth-cheche every time.** |
+| `POST /v1/auth/customer/logout` | `POST /v1/auth/logout` | Clears the cookie; revokes at auth-cheche (best effort). |
+| `GET /v1/auth/customer/me` | | The guest: id, names and the account's mobile. |
+
+- **No `service_id`** is sent, as for staff sign-in.
+- **The SMS code is sent as `otp`,** which every log redacts (adding `code` to the redaction list would hide error codes).
+- **The mobile always comes from the account:** the token's `mobile` claim, or, when the token has none, auth-cheche's
+  `specific_users` by user id with the service token. A mobile sent by the browser is never trusted for a signed-in guest.
+- **Replies are read leniently.** auth-cheche's swagger doesn't describe its reply bodies, so tokens are read from the
+  top level or from `tokens`, `token` or `session` (after the usual `data` envelope), in snake_case or camelCase.
+  Refusal text comes from `error`, then `response`, then `message`. A reply without an access and refresh token is a
+  502 `central_auth_malformed_response`, never a crash.
+- **Rate limits:** sign-up, codes and sign-in get 10 a minute per IP. Sending a code (sign-up, resend and sign-in codes)
+  is also limited to **3 every 10 minutes per mobile**, whatever its spelling. auth-cheche adds its own 429.
+- **Before launch:** every guest refresh calls auth-cheche (there's no local confirmation cookie as for staff).
+  auth-cheche's limit of 5 a second per IP must be raised for this API's server, or busy times will refuse refreshes.
+- A person can't be signed in as staff and as a guest at the same time in the website (one session at a time).
 
 ## Request identity
 

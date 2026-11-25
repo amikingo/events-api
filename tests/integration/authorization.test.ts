@@ -3,14 +3,17 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, mock, test } from "node:test";
+import jwt from "jsonwebtoken";
 import { Op } from "sequelize";
 import { createApp } from "../../src/app.js";
 import { centralAuthClient } from "../../src/clients/central-auth.client.js";
+import { CUSTOMER_REFRESH_COOKIE } from "../../src/config/app.js";
+import { authConfig } from "../../src/config/auth.js";
 import { filesConfig } from "../../src/config/files.js";
 import { PRIVACY_NOTICE_VERSION } from "../../src/config/privacy.js";
 import { sequelize } from "../../src/db.js";
 import { CentralAuthUnavailableError, ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
-import { publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
+import { authRefreshLimiter, customerAuthLimiter, customerCodePerMobileLimiter, publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
 import { up as backfillDefaultRoles } from "../../src/migrations/20261127000100-backfill-default-roles.js";
 import { up as grantGuestExportToOwners } from "../../src/migrations/20261129000000-grant-guest-export-to-owners.js";
 import { migrator } from "../../src/migrator.js";
@@ -1481,4 +1484,189 @@ test("row 65: the migration gives existing Owners Export; a role holder gets it 
   } finally {
     mock.restoreAll();
   }
+});
+
+// --- Phase 6: guest accounts and My Tickets (auth-cheche stubbed; guest tokens signed as auth-cheche signs them) ---
+
+const GUESTS = {
+  HANA: { id: "d1111111-1111-4111-8111-111111111111", mobile: "+251944000001" },
+  ABEL: { id: "d2222222-2222-4222-8222-222222222222", mobile: "+251944000002" },
+  SARA: { id: "d3333333-3333-4333-8333-333333333333", mobile: "+251944000003" },
+} as const;
+type Guest = keyof typeof GUESTS;
+
+/** An auth-cheche access token for a guest (HS256, iss auth_api, token_type access), with the account's mobile. */
+function guestAccessToken(guest: Guest): string {
+  const { id, mobile } = GUESTS[guest];
+  return jwt.sign({ user_id: id, token_type: "access", mobile, firstname: guest, lastname: "Guest" }, authConfig.centralAuthJwtSecret, {
+    algorithm: "HS256",
+    expiresIn: 3 * 24 * 3600,
+    issuer: authConfig.centralIssuer,
+    subject: id,
+  });
+}
+
+const guestFixturePhase6 = { selamGalaSlug: "", abayDaySlug: "", abaySlug: "", abayId: "", selamFairSlug: "", selamMarketSlug: "" };
+
+async function guestPost(path: string, body: unknown, options: { token?: string; key?: string; cookie?: string } = {}) {
+  return withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.key ? { "Idempotency-Key": options.key } : {}),
+        ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+        ...(options.cookie ? { Cookie: `${CUSTOMER_REFRESH_COOKIE}=${options.cookie}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    return { status: response.status, body: text ? JSON.parse(text) : null, setCookie: response.headers.getSetCookie() };
+  });
+}
+
+async function guestGet(path: string, token?: string) {
+  return withServer(app, (baseUrl) => call(baseUrl, "GET", path, token ? { token } : {}));
+}
+
+/** A signed-in guest registers on the public form (a fresh retry key each time, as each press of Register makes). */
+function registerSignedIn(guest: Guest | null, organizationSlug: string, eventSlug: string, extra: Record<string, unknown> = {}) {
+  return guestPost(
+    `/v1/public/organizations/${organizationSlug}/events/${eventSlug}/registrations`,
+    { first_name: guest ?? "Walk", last_name: "Guest", privacy_notice_version: PRIVACY_NOTICE_VERSION, ...extra },
+    { key: randomUUID(), ...(guest ? { token: guestAccessToken(guest) } : {}) },
+  );
+}
+
+const resetGuestLimits = () => {
+  publicRegistrationLimiter.resetKey("127.0.0.1");
+  customerAuthLimiter.resetKey("127.0.0.1");
+  authRefreshLimiter.resetKey("127.0.0.1");
+  for (const { mobile } of Object.values(GUESTS)) customerCodePerMobileLimiter.resetKey(`mobile:${mobile}`);
+};
+
+test("row 66: a guest signs up, confirms and is signed in; the refresh cookie rotates and logout clears it; guest and staff tokens never cross", { skip }, async () => {
+  resetGuestLimits();
+  const tokensFor = (refreshToken: string) => ({ accessToken: guestAccessToken("HANA"), refreshToken, refreshExpiresIn: 7 * 24 * 3600 });
+  mock.method(centralAuthClient, "signUpWithPassword", async () => undefined);
+  mock.method(centralAuthClient, "verifyCode", async () => undefined);
+  mock.method(centralAuthClient, "passwordLogin", async () => tokensFor("refresh-1"));
+  mock.method(centralAuthClient, "refreshAccessToken", async () => tokensFor("refresh-2"));
+  const logout = mock.method(centralAuthClient, "logout", async (_token: string) => undefined);
+  try {
+    const signUp = await guestPost("/v1/auth/customer/signup", { first_name: "Hana", last_name: "Guest", mobile: "0944000001", password: "pass-1234" });
+    assert.equal(signUp.status, 201, JSON.stringify(signUp.body));
+    const confirmed = await guestPost("/v1/auth/customer/signup/confirm", { mobile: "0944000001", otp: "123456", password: "pass-1234" });
+    assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+    assert.deepEqual([confirmed.body.data.user.id, confirmed.body.data.user.mobile], [GUESTS.HANA.id, GUESTS.HANA.mobile]);
+    assert.ok(confirmed.setCookie.some((header) => header.startsWith(`${CUSTOMER_REFRESH_COOKIE}=refresh-1;`)));
+
+    const renewed = await guestPost("/v1/auth/customer/refresh", {}, { cookie: "refresh-1" });
+    assert.equal(renewed.status, 200, JSON.stringify(renewed.body));
+    assert.ok(renewed.setCookie.some((header) => header.startsWith(`${CUSTOMER_REFRESH_COOKIE}=refresh-2;`)), "the cookie rotates");
+
+    const out = await guestPost("/v1/auth/customer/logout", {}, { cookie: "refresh-2" });
+    assert.equal(out.status, 200);
+    assert.equal(logout.mock.calls[0]?.arguments[0], "refresh-2");
+    assert.ok(out.setCookie.some((header) => header.startsWith(`${CUSTOMER_REFRESH_COOKIE}=;`)), "the cookie is cleared");
+  } finally {
+    mock.restoreAll();
+  }
+
+  const guest = guestAccessToken("HANA");
+  assert.equal((await guestGet("/v1/auth/staff/me", guest)).status, 401, "a guest token can't reach staff routes");
+  assert.equal((await guestGet(`/v1/organizations/${fixture.selamId}/events`, guest)).status, 401);
+  assert.equal((await guestGet("/v1/customer/registrations", tokens.get("SELAM_OWNER"))).status, 401, "a staff token can't reach My Tickets");
+});
+
+test("row 67: a signed-in guest registers with two organizers: one linked profile in each, with the account's mobile; registering again returns the same code", { skip }, async () => {
+  resetGuestLimits();
+  const gala = await createAndPublish("SELAM_OWNER", fixture.selamId, { name: "Selam Gala", starts_at: "2027-12-10T18:00:00+03:00", ends_at: "2027-12-10T22:00:00+03:00" });
+  // The second organizer is Abay Pilot (row 62): Horn was switched off in row 37 and stays off.
+  const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
+  assert.ok(abay, "row 62 created Abay Pilot");
+  const abayOwner = await tokenFor(ABAY_OWNER_ID);
+  const created = await asToken(abayOwner, "POST", `/v1/organizations/${abay.id}/events`, {
+    name: "Abay Health Day",
+    starts_at: "2027-08-01T09:00:00+03:00",
+    ends_at: "2027-08-01T17:00:00+03:00",
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const published = await asToken(abayOwner, "PATCH", `/v1/organizations/${abay.id}/events/${created.body.data.id}/status`, { status: "PUBLISHED" });
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  Object.assign(guestFixturePhase6, { selamGalaSlug: gala.slug, abayDaySlug: created.body.data.slug, abaySlug: abay.slug, abayId: abay.id });
+
+  const atSelam = await registerSignedIn("HANA", "selam-events", gala.slug, { phone: "+251999999999" });
+  assert.equal(atSelam.status, 201, JSON.stringify(atSelam.body));
+  const atAbay = await registerSignedIn("HANA", abay.slug, guestFixturePhase6.abayDaySlug);
+  assert.equal(atAbay.status, 201, JSON.stringify(atAbay.body));
+
+  const profiles = await PersonModel.findAll({ where: { user_id: GUESTS.HANA.id }, raw: true });
+  assert.deepEqual(profiles.map((profile) => profile.organization_id).sort(), [fixture.selamId, abay.id].sort());
+  assert.ok(profiles.every((profile) => profile.phone === GUESTS.HANA.mobile), "the account's mobile, never the form's");
+
+  const again = await registerSignedIn("HANA", "selam-events", gala.slug);
+  assert.deepEqual([again.status, again.body.data.code], [200, atSelam.body.data.code]);
+  assert.equal(await PersonModel.count({ where: { user_id: GUESTS.HANA.id } }), 2, "no new profile");
+});
+
+test("row 68: My Tickets shows both registrations with their organizers, upcoming first; a staff cancellation shows; another guest sees none", { skip }, async () => {
+  const mine = await guestGet("/v1/customer/registrations", guestAccessToken("HANA"));
+  assert.equal(mine.status, 200, JSON.stringify(mine.body));
+  assert.deepEqual(
+    mine.body.data.map((ticket: { organization: { slug: string }; event: { slug: string } }) => [ticket.organization.slug, ticket.event.slug]),
+    [
+      [guestFixturePhase6.abaySlug, guestFixturePhase6.abayDaySlug],
+      ["selam-events", guestFixturePhase6.selamGalaSlug],
+    ],
+    "the August event before the December one",
+  );
+  const serialized = JSON.stringify(mine.body.data);
+  assert.ok(!serialized.includes(fixture.selamId) && !serialized.includes(GUESTS.HANA.id), "no internal ids");
+
+  const gala = await AppEvent.findOne({ where: { organization_id: fixture.selamId, slug: guestFixturePhase6.selamGalaSlug }, raw: true });
+  assert.ok(gala);
+  const selamTicket = mine.body.data[1];
+  const registration = await Registration.findOne({ where: { event_id: gala.id, code: selamTicket.code }, raw: true });
+  assert.ok(registration);
+  const cancelled = await as("SELAM_OWNER", "PATCH", `/v1/organizations/${fixture.selamId}/events/${gala.id}/registrations/${registration.id}/status`, { status: "CANCELLED" });
+  assert.equal(cancelled.status, 200);
+  const after = await guestGet("/v1/customer/registrations", guestAccessToken("HANA"));
+  assert.equal(after.body.data[1].status, "CANCELLED");
+
+  assert.deepEqual((await guestGet("/v1/customer/registrations", guestAccessToken("ABEL"))).body.data, [], "another guest sees nothing");
+});
+
+test("row 69: a registration made without signing in, with the same mobile, never appears in My Tickets; without a token the profile stays unlinked", { skip }, async () => {
+  resetGuestLimits();
+  const fair = await createAndPublish("SELAM_OWNER", fixture.selamId, { name: "Selam Fair", starts_at: "2027-09-05T09:00:00+03:00", ends_at: "2027-09-05T17:00:00+03:00" });
+  guestFixturePhase6.selamFairSlug = fair.slug;
+
+  const anonymous = await registerSignedIn(null, "selam-events", fair.slug, { phone: GUESTS.HANA.mobile });
+  assert.equal(anonymous.status, 201, JSON.stringify(anonymous.body));
+  const walkIn = await Registration.findOne({ where: { event_id: fair.id }, include: [{ model: PersonModel, as: "person" }] });
+  assert.equal((walkIn?.get({ plain: true }) as unknown as { person: { user_id: string | null } }).person.user_id, null, "unlinked");
+
+  const mine = await guestGet("/v1/customer/registrations", guestAccessToken("HANA"));
+  assert.ok(!mine.body.data.some((ticket: { event: { slug: string } }) => ticket.event.slug === fair.slug), "not claimed by a matching mobile");
+
+  const missingPhone = await registerSignedIn(null, "selam-events", fair.slug);
+  assert.deepEqual([missingPhone.status, missingPhone.body.error.details.issues[0].path], [400, "body.phone"]);
+
+  const signedInToo = await registerSignedIn("HANA", "selam-events", fair.slug);
+  assert.equal(signedInToo.status, 201, "a separate profile until claiming is built");
+});
+
+test("row 70: a new guest registering for two events of one organizer at the same moment ends up with exactly one linked profile there", { skip }, async () => {
+  resetGuestLimits();
+  const market = await createAndPublish("SELAM_OWNER", fixture.selamId, { name: "Selam Market", starts_at: "2027-10-02T09:00:00+03:00", ends_at: "2027-10-02T17:00:00+03:00" });
+  guestFixturePhase6.selamMarketSlug = market.slug;
+
+  const results = await Promise.all([
+    registerSignedIn("SARA", "selam-events", market.slug),
+    registerSignedIn("SARA", "selam-events", guestFixturePhase6.selamFairSlug),
+  ]);
+  assert.deepEqual(results.map((response) => response.status), [201, 201], JSON.stringify(results.map((response) => response.body)));
+  assert.equal(await PersonModel.count({ where: { organization_id: fixture.selamId, user_id: GUESTS.SARA.id } }), 1);
+  assert.equal((await guestGet("/v1/customer/registrations", guestAccessToken("SARA"))).body.data.length, 2);
 });

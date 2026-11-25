@@ -96,4 +96,6 @@ Selam now has one attendee profile and two registrations. Each registration has 
 
 ## Later phases
 
-Paid checkout, QR scanning and door check-in, online or hybrid events, self-service claiming of earlier guest registrations, and a cross-organizer **My Tickets** view are deferred. MVP 1 already issues confirmation codes and supports an optional Central Auth link for an attendee.
+Paid checkout, QR scanning and door check-in, online or hybrid events, and self-service claiming of earlier guest registrations are deferred. MVP 1 already issues confirmation codes and supports an optional Central Auth link for an attendee.
+
+**Built since (Phase 6, 25 November 2026):** guest accounts (Cheche accounts with sign-up and SMS-code sign-in), registering while signed in through the account's linked profile, and a cross-organizer **My Tickets** view. It lists only registrations made while signed in; claiming earlier ones is still deferred. See `docs/registrations.md` (Phase 6).

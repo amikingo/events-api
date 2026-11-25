@@ -380,7 +380,19 @@ id. Use the cover endpoints to change it rather than sending `cover_file_id` in 
 
 Use `registration_open` to show or hide the sign-up button.
 
-**Public registration (Phase 4b, no login).**
+**Guest accounts and My Tickets (Phase 6).** Guests sign up and sign in through `/v1/auth/customer/*` (Cheche
+accounts; the full table is in `docs/authentication.md`, "Guest accounts"). Keep the guest's access token in memory
+only, like the staff token; the refresh token stays in the HttpOnly `events_customer_refresh` cookie, renewed with
+`POST /v1/auth/customer/refresh`. Send the guest token only on `/v1/customer/*`, `/v1/auth/customer/me` and the public
+registration POST. Errors to handle: `409 account_exists` ("You already have a Cheche account. Sign in", then switch to
+sign-in), `404 account_not_found` (offer sign-up), `400 invalid_code`, `401 invalid_credentials`, `429 rate_limited`
+(3 codes every 10 minutes per mobile), `429 central_auth_rate_limited`. My Tickets is
+`GET /v1/customer/registrations` (only registrations made while signed in). A guest who registered before having an
+account can register again for the same event when signed in: it's a separate profile until claiming is built.
+
+**Public registration (Phase 4b, no login; Phase 6, optionally signed in).** With a guest token, `phone` is ignored
+and may be left out: the account's mobile is used, and registering again for the same event returns 200 with the same
+code.
 `POST /v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations`, with the header
 `Idempotency-Key: <uuid>` and the body
 `{ first_name, last_name, phone, email?, affiliation_name?, country?, ticket_type_code?, privacy_notice_version }`.

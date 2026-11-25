@@ -88,6 +88,29 @@ export class InvalidCredentialsError extends AppError {
   }
 }
 
+// --- Guest accounts (Phase 6): Cheche accounts used on the public site ---------------------------
+
+/** Sign-up for a mobile that already has a Cheche account: the site switches to sign-in. */
+export class AccountExistsError extends AppError {
+  constructor(message = "You already have a Cheche account. Sign in", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "account_exists", details, cause: options?.cause });
+  }
+}
+
+/** No Cheche account uses this mobile: the site offers sign-up. */
+export class AccountNotFoundError extends AppError {
+  constructor(message = "No Cheche account uses this mobile number", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 404, code: "account_not_found", details, cause: options?.cause });
+  }
+}
+
+/** The SMS code is wrong or has expired. The message is auth-cheche's when it gave one. */
+export class InvalidCodeError extends AppError {
+  constructor(message = "The code is wrong or has expired", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 400, code: "invalid_code", details, cause: options?.cause });
+  }
+}
+
 export class InvalidTokenError extends AppError {
   constructor(message = "Invalid token", details?: unknown, options?: ErrorOptions) {
     super(message, { statusCode: 401, code: "invalid_token", details, cause: options?.cause });
