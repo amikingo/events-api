@@ -1,9 +1,34 @@
+import type { Transaction } from "sequelize";
+import {
+  ConflictError,
+  GrantExceedsOwnAccessError,
+  RoleInUseError,
+  RoleLockedError,
+  ValidationAppError,
+} from "../errors/app-errors.js";
 import { toRoleDto, type RoleDto } from "../mappers/staff.mapper.js";
+import type { RoleRow } from "../models/role.js";
+import { moduleRepository } from "../repositories/module.repository.js";
+import { organizationRepository } from "../repositories/organization.repository.js";
 import { roleModuleAccessRepository } from "../repositories/role-module-access.repository.js";
 import { roleRepository } from "../repositories/role.repository.js";
-import { ensureFound } from "./helpers.js";
+import { userRoleRepository } from "../repositories/user-role.repository.js";
+import { OWNER_ROLE_CODE } from "../utils/default-roles.js";
+import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, TENANT_GRANTABLE, type GrantableAction } from "../utils/rbac.js";
+import type { RoleCreateInput, RoleGrantInput, RoleUpdateInput } from "../validators/role.js";
+import { ensureFound, runTransaction } from "./helpers.js";
+import { permissionResolutionService } from "./permission-resolution.service.js";
 
-/** The organization's roles and what each may do (read only for now; custom roles come later). */
+/**
+ * The organization's roles (Phase 2b read, Phase 2c write). Rules (decided 25 November 2026):
+ * - a tenant role gets only what TENANT_GRANTABLE allows (never platform modules, never ORGANIZATIONS create);
+ * - nobody gives a role an action they don't hold themselves in their signed-in assignment (Super Admin holds all);
+ * - the built-in OWNER is locked; VIEWER and custom roles are editable; codes are fixed after creation;
+ * - a role still held by active staff can't be switched off.
+ * Changes apply on the next request: the permission engine reads grants from the database every time.
+ */
+export type RoleEditor = { userId: string; assignmentId: string };
+
 async function listRoles(organizationId: string): Promise<RoleDto[]> {
   const roles = await roleRepository.listByOrganization(organizationId);
   const grants = await roleModuleAccessRepository.listWithModulesByRoleIds(roles.map((role) => role.id));
@@ -15,4 +40,155 @@ async function getRole(organizationId: string, roleId: string): Promise<RoleDto>
   return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id]));
 }
 
-export const roleService = { listRoles, getRole };
+const grantedActions = (grant: RoleGrantInput): GrantableAction[] => GRANTABLE_ACTIONS.filter((action) => grant[action]);
+
+/**
+ * Refuses anything a tenant role may not hold (400, naming the module or action) and returns the module ids.
+ * Runs before the escalation check, so an impossible grant is always a 400, never a 403.
+ */
+async function assertGrantable(grants: RoleGrantInput[], transaction: Transaction): Promise<Map<string, string>> {
+  const moduleIds = new Map((await moduleRepository.listActiveOrdered({ transaction })).filter((m) => m.is_permission).map((m) => [m.code, m.id]));
+  const issues: Array<{ path: string; message: string; code: string }> = [];
+  grants.forEach((grant, index) => {
+    const allowed = TENANT_GRANTABLE[grant.module_code];
+    if (!allowed || !moduleIds.has(grant.module_code)) {
+      issues.push({ path: `body.grants.${index}.module_code`, message: `${grant.module_code} can't be given to an organization's role`, code: "module_not_grantable" });
+      return;
+    }
+    for (const action of grantedActions(grant)) {
+      if (!allowed.includes(action)) {
+        issues.push({ path: `body.grants.${index}.${action}`, message: `${grant.module_code} can't be given "${action}" in an organization's role`, code: "action_not_grantable" });
+      }
+    }
+  });
+  if (issues.length > 0) throw new ValidationAppError("Request validation failed", { issues });
+  return moduleIds;
+}
+
+/** The rows for a role's grants; only view, create and update are ever stored as true. */
+function grantRows(roleId: string, grants: RoleGrantInput[], moduleIds: Map<string, string>, actorId: string | null) {
+  return grants
+    .filter((grant) => grantedActions(grant).length > 0)
+    .map((grant) => ({
+      role_id: roleId,
+      module_id: moduleIds.get(grant.module_code) as string,
+      can_view: grant.view,
+      can_create: grant.create,
+      can_update: grant.update,
+      can_delete: false,
+      can_import: false,
+      can_export: false,
+      can_notify: false,
+      created_by: actorId,
+      updated_by: actorId,
+    }));
+}
+
+/** Nobody hands out access they don't have: every newly granted action must be one the editor holds here. */
+async function assertNoEscalation(organizationId: string, editor: RoleEditor, grants: RoleGrantInput[], current: Map<string, Set<GrantableAction>>) {
+  for (const grant of grants) {
+    for (const action of grantedActions(grant)) {
+      if (current.get(grant.module_code)?.has(action)) continue; // already granted: not a new grant
+      const resolution = await permissionResolutionService.resolvePermission({
+        userId: editor.userId,
+        assignmentId: editor.assignmentId,
+        scope: { level: "organization", organizationId, branchId: null },
+        moduleCode: grant.module_code,
+        action,
+      });
+      if (!resolution.allowed) throw new GrantExceedsOwnAccessError(undefined, { module_code: grant.module_code, action });
+    }
+  }
+}
+
+async function currentGrants(roleId: string, transaction: Transaction): Promise<Map<string, Set<GrantableAction>>> {
+  const rows = await roleModuleAccessRepository.listWithModulesByRoleIds([roleId], { transaction });
+  return new Map(
+    rows.map((row) => [row.module.code, new Set(GRANTABLE_ACTIONS.filter((action) => row[ACTION_TO_FIELD[action]]))] as const),
+  );
+}
+
+async function assertNameFree(organizationId: string, name: string, transaction: Transaction, roleId?: string): Promise<void> {
+  const roles = await roleRepository.listByOrganization(organizationId, { transaction });
+  if (roles.some((role) => role.id !== roleId && role.name.trim().toLowerCase() === name.trim().toLowerCase())) {
+    throw new ConflictError("Another role already has this name", { field: "name" });
+  }
+}
+
+function assertUnlocked(role: RoleRow): void {
+  if (role.code === OWNER_ROLE_CODE) throw new RoleLockedError();
+}
+
+async function roleDto(organizationId: string, roleId: string, transaction: Transaction): Promise<RoleDto> {
+  const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId, { transaction }), "Role not found");
+  return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id], { transaction }));
+}
+
+async function createRole(organizationId: string, input: RoleCreateInput, editor: RoleEditor): Promise<RoleDto> {
+  return runTransaction(async (transaction) => {
+    ensureFound(await organizationRepository.findById(organizationId, { transaction }), "Organization not found");
+    if (await roleRepository.findByOrganizationAndCode(organizationId, input.code, { transaction })) {
+      throw new ConflictError("Another role already uses this code", { field: "code" });
+    }
+    await assertNameFree(organizationId, input.name, transaction);
+    const moduleIds = await assertGrantable(input.grants, transaction);
+    await assertNoEscalation(organizationId, editor, input.grants, new Map());
+
+    const role = await roleRepository.create(
+      {
+        organization_id: organizationId,
+        code: input.code,
+        name: input.name,
+        description: input.description ?? null,
+        is_active: true,
+        created_by: editor.userId,
+        updated_by: editor.userId,
+      },
+      { transaction },
+    );
+    await roleModuleAccessRepository.replaceForRole(role.id, grantRows(role.id, input.grants, moduleIds, editor.userId), { transaction });
+    return roleDto(organizationId, role.id, transaction);
+  });
+}
+
+async function updateRole(organizationId: string, roleId: string, input: RoleUpdateInput, editor: RoleEditor): Promise<RoleDto> {
+  return runTransaction(async (transaction) => {
+    const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId, { transaction, lock: true }), "Role not found");
+    assertUnlocked(role);
+    if (input.name !== undefined) await assertNameFree(organizationId, input.name, transaction, role.id);
+    if (input.grants !== undefined) {
+      const moduleIds = await assertGrantable(input.grants, transaction);
+      await assertNoEscalation(organizationId, editor, input.grants, await currentGrants(role.id, transaction));
+      await roleModuleAccessRepository.replaceForRole(role.id, grantRows(role.id, input.grants, moduleIds, editor.userId), { transaction });
+    }
+    await roleRepository.updateByOrganizationAndId(
+      organizationId,
+      role.id,
+      {
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.description === undefined ? {} : { description: input.description }),
+        updated_by: editor.userId,
+      },
+      { transaction },
+    );
+    return roleDto(organizationId, role.id, transaction);
+  });
+}
+
+/** Switch a role off (refused while staff hold it) or back on. Asking for the current state changes nothing. */
+async function changeRoleStatus(organizationId: string, roleId: string, isActive: boolean, editor: RoleEditor): Promise<RoleDto> {
+  return runTransaction(async (transaction) => {
+    const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId, { transaction, lock: true }), "Role not found");
+    assertUnlocked(role);
+    if (role.is_active !== isActive) {
+      if (!isActive) {
+        const holders = await userRoleRepository.countActiveByRole(organizationId, role.id, { transaction });
+        if (holders > 0) throw new RoleInUseError(undefined, { active_assignments: holders });
+      }
+      await roleRepository.updateByOrganizationAndId(organizationId, role.id, { is_active: isActive, updated_by: editor.userId }, { transaction });
+    }
+    return roleDto(organizationId, role.id, transaction);
+  });
+}
+
+export const roleService = { listRoles, getRole, createRole, updateRole, changeRoleStatus };

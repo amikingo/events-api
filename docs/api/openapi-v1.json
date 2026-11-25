@@ -178,7 +178,8 @@
     },
     "/v1/organizations": {
       "post": {
-        "summary": "Create a tenant (platform scope). A hidden MAIN branch is always created; has_branches (default false) decides whether its staff see branches",
+        "summary": "Create a tenant (platform scope) with its OWNER and VIEWER roles. A hidden MAIN branch is always created; has_branches (default false) decides whether its staff see branches. Optional owner_mobile adds the first Owner in the same step",
+        "description": "Errors: 404 central_account_not_found (no Cheche account uses owner_mobile); 409 conflict (field slug, or field user_id when that person is already staff anywhere); 503 when auth-cheche can't be reached. A refusal creates nothing.",
         "tags": [
           "Organizations"
         ],
@@ -280,7 +281,7 @@
     },
     "/v1/organizations/{organizationId}": {
       "patch": {
-        "summary": "Edit the organization's defaults (country, timezone, default_currency). Existing events keep their own timezone",
+        "summary": "Edit the organization's name, description and defaults (country, timezone, default_currency). The slug never changes. Existing events keep their own timezone",
         "tags": [
           "Organizations"
         ],
@@ -349,6 +350,56 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/status": {
+      "patch": {
+        "summary": "Switch a tenant off or back on (platform Super Admin only). Switched off, its staff can't act (organization_inactive) and its events leave the catalog; nothing is deleted",
+        "tags": [
+          "Organizations"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChangeRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
@@ -1918,7 +1969,7 @@
     },
     "/v1/organizations/{organizationId}/roles": {
       "get": {
-        "summary": "The organization's roles and what each may do, module by module (read only)",
+        "summary": "The organization's roles and what each may do, module by module",
         "tags": [
           "Access control"
         ],
@@ -1941,6 +1992,55 @@
         ],
         "responses": {
           "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a role with its grants (view, create, update per module). The code is fixed afterwards",
+        "description": "Errors: 400 validation_error (a module or action a tenant role may not hold, named in issues[].path); 403 grant_exceeds_own_access (details.module_code and action: you can't grant what you don't hold); 409 conflict (field code or name).",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
           },
           "default": {
@@ -1989,6 +2089,126 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Edit a role's name, description or grants (grants replaces the whole set). Applies on the next request",
+        "description": "Errors: as for creating, plus 409 role_locked for the built-in OWNER.",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "roleId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/roles/{roleId}/status": {
+      "patch": {
+        "summary": "Switch a role off or back on",
+        "description": "Errors: 409 role_locked (OWNER); 409 role_in_use (details.active_assignments: reassign those staff first).",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "roleId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChangeRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
@@ -3309,6 +3529,11 @@
               "name"
             ],
             "additionalProperties": false
+          },
+          "owner_mobile": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 20
           }
         },
         "required": [
@@ -3319,6 +3544,16 @@
       "OrganizationSettingsUpdateRequest": {
         "type": "object",
         "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 4000
+          },
           "country": {
             "type": "string",
             "pattern": "^[A-Z]{2}$"
@@ -3333,6 +3568,18 @@
             "pattern": "^[A-Z]{3}$"
           }
         },
+        "additionalProperties": false
+      },
+      "StatusChangeRequest": {
+        "type": "object",
+        "properties": {
+          "is_active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "is_active"
+        ],
         "additionalProperties": false
       },
       "BranchCreateRequest": {
@@ -3385,18 +3632,6 @@
             "maxLength": 4000
           }
         },
-        "additionalProperties": false
-      },
-      "StatusChangeRequest": {
-        "type": "object",
-        "properties": {
-          "is_active": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "is_active"
-        ],
         "additionalProperties": false
       },
       "CustomerAccountCreateRequest": {
@@ -3888,6 +4123,108 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 10000
+          }
+        },
+        "additionalProperties": false
+      },
+      "RoleCreateRequest": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 250
+          },
+          "description": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 2000
+          },
+          "grants": {
+            "maxItems": 30,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "module_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "view": {
+                  "type": "boolean"
+                },
+                "create": {
+                  "type": "boolean"
+                },
+                "update": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "module_code",
+                "view",
+                "create",
+                "update"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "grants"
+        ],
+        "additionalProperties": false
+      },
+      "RoleUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 250
+          },
+          "description": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 2000
+          },
+          "grants": {
+            "maxItems": 30,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "module_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "view": {
+                  "type": "boolean"
+                },
+                "create": {
+                  "type": "boolean"
+                },
+                "update": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "module_code",
+                "view",
+                "create",
+                "update"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "additionalProperties": false

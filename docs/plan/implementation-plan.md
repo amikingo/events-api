@@ -376,6 +376,23 @@ Details are in `docs/rbac-application-flow.md` ("Managing staff over HTTP").
 
 **Fix found by the frontend (25 November 2026):** `POST /v1/organizations` created no roles, so organizations made in the app had empty Roles and Staff pages. It now creates the default `OWNER` and `VIEWER` in the same transaction, the same code as `provision:organizer`. Migration `20261127000100-backfill-default-roles` repairs existing bare organizations. The first Owner is added by the Super Admin through Staff Assignments. Matrix row 56 covers it. **Status: done.** The migration was applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 259 of 259 on the real database, none skipped, including row 56. `npm run check` passed beforehand.
 
+### Phase 2c — Custom roles and organization management (25 November 2026)
+
+**Why:** after Phase 2b, roles could only be read: every organization had just Owner and Viewer. A review of all endpoints found three more gaps: an organization's name and description couldn't be edited, an organization couldn't be switched off or on, and the first Owner couldn't be added when creating the organization.
+
+**Decisions (25 November 2026):**
+- **What a tenant role may hold:** the code constant `TENANT_GRANTABLE` (`src/utils/rbac.ts`): view, create and update on the tenant modules, only view and update on `ORGANIZATIONS`, nothing on platform modules. This settles the open decision in `docs/rbac-application-flow.md`.
+- **No escalation:** nobody grants an action they don't hold in their signed-in assignment (`403 grant_exceeds_own_access`).
+- **`OWNER` is locked; `VIEWER` is editable.** Codes are fixed after creation.
+- **Switching off a role staff still hold is refused** (`409 role_in_use`) until they're reassigned.
+- **Owners** gain create and update on `ROLES` (migration `20261128000000-grant-role-management-to-owners`; `default-roles.ts` for new organizations).
+- **Organizations:** name and description become editable (the slug never changes); switching off and on is Super Admin only; `owner_mobile` adds the first Owner when creating one.
+- **Who builds what:** the API here; the screens by Antigravity from `docs/ui-brief-phase-2c.md`.
+
+Details are in `docs/rbac-application-flow.md` ("Custom roles and organization switching").
+
+**Status: built, not verified on PostgreSQL yet.** Still to do: apply the migration (`npm run db:migrate`), then `TEST_DATABASE=1 npm test`, which includes matrix rows 57–62.
+
 ---
 
 ## Phases 3–5 — outline

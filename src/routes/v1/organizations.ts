@@ -5,6 +5,7 @@ import { organizationScopeFromParams, requirePermission } from "../../middleware
 import { validate } from "../../middleware/validate.js";
 import { MODULE_CODES } from "../../utils/module-codes.js";
 import {
+  changeOrganizationStatusRequest,
   createOrganizationRequest,
   getOrganizationRequest,
   listOrganizationsRequest,
@@ -40,7 +41,16 @@ organizationsRouter.get(
   organizationController.getOrganization,
 );
 
-// The organization's own defaults (country, timezone, currency): its owner may edit them.
+// Switching a tenant off or on is a platform operation: only the platform Super Admin, never its own staff.
+organizationsRouter.patch(
+  "/:organizationId/status",
+  requireStaffAuthentication,
+  validate(changeOrganizationStatusRequest),
+  requirePermission({ moduleCode: MODULE_CODES.ORGANIZATIONS, action: "update", scope: "platform" }),
+  organizationController.changeOrganizationStatus,
+);
+
+// The organization's own details and defaults (name, description, country, timezone, currency): its owner may edit them.
 organizationsRouter.patch(
   "/:organizationId",
   requireStaffAuthentication,

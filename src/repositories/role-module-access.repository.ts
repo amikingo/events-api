@@ -1,4 +1,4 @@
-import { Op, type CreationAttributes } from "sequelize";
+import { Op, type CreationAttributes, type Transaction } from "sequelize";
 import { AppModule, RoleModuleAccess } from "../models/index.js";
 import type { ModuleRow } from "../models/module.js";
 import type { RoleModuleAccessRow } from "../models/role-module-access.js";
@@ -62,4 +62,10 @@ async function listWithModulesByRoleIds(roleIds: readonly string[], options: Rep
   return toPlainList<RoleGrantRow>(rows);
 }
 
-export const roleModuleAccessRepository = { listByRoleIdsAndModule, listByRoleId, listWithModulesByRoleIds, bulkCreate };
+/** Replaces a role's whole grant set: delete, then insert, in the caller's transaction. */
+async function replaceForRole(roleId: string, values: CreationAttributes<RoleModuleAccess>[], options: { transaction: Transaction }): Promise<void> {
+  await RoleModuleAccess.destroy({ where: { role_id: roleId }, transaction: options.transaction });
+  if (values.length > 0) await RoleModuleAccess.bulkCreate(values, { transaction: options.transaction });
+}
+
+export const roleModuleAccessRepository = { listByRoleIdsAndModule, listByRoleId, listWithModulesByRoleIds, bulkCreate, replaceForRole };

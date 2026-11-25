@@ -127,14 +127,14 @@ Organizations manage their own staff in the app. These endpoints all sit under `
 
 | Call | Permission | Notes |
 |---|---|---|
-| `GET /roles`, `GET /roles/{roleId}` | `ROLES.view` | The organization's roles and what each may do. Read only: creating or editing roles comes later. |
+| `GET /roles`, `GET /roles/{roleId}` | `ROLES.view` | The organization's roles and what each may do. Creating and editing: see Phase 2c below. |
 | `GET /staff-lookup?mobile=` | `USER_ROLES.create` | Who uses this mobile in auth-cheche (look up only; this API never creates accounts) |
 | `GET /staff-assignments` | `USER_ROLES.view` | Role, branch and name. Names come from auth-cheche, best effort: `profile: null` when it can't be read. |
 | `POST /staff-assignments` `{ mobile, role_id, branch_id? }` | `USER_ROLES.create` | The mobile is looked up again on the server; a `user_id` from the browser is never trusted |
 | `PATCH /staff-assignments/{id}` `{ role_id?, branch_id? }` | `USER_ROLES.update` | |
 | `PATCH /staff-assignments/{id}/status` `{ is_active }` | `USER_ROLES.update` | |
 
-- **Who has these grants:** `OWNER` has view, create and update on Staff Assignments (migration `20261127000000`) and view on Roles. `VIEWER` has neither, because the staff list shows phone numbers.
+- **Who has these grants:** `OWNER` has view, create and update on Staff Assignments (migration `20261127000000`) and on Roles (view since Phase 2, create and update since migration `20261128000000`). `VIEWER` has neither, because the staff list shows phone numbers.
 - **The rules,** in `src/services/staff-assignment.service.ts` and `staff-rules.ts`, shared with the scripts:
   - only roles of this organization (a platform role is not found);
   - a branch only when the organization has branches;
@@ -143,7 +143,7 @@ Organizations manage their own staff in the app. These endpoints all sit under `
   - the **last active Owner** can't be deactivated or moved to another role (409 `last_owner_assignment`). Owner changes in one organization are serialized by an advisory lock, so two Owners can't remove each other at the same moment.
 - **Not built:** endpoints for Modules, Role Templates and Permission Overrides. They're platform administration, and the scripts cover them.
 - **Every organization gets the default roles** (fixed 25 November 2026): `POST /v1/organizations` and `provision:organizer` both create `OWNER` and `VIEWER` with their grants, in the same transaction (`src/services/default-roles.service.ts`). Before the fix, organizations made in the app had no roles. Migration `20261127000100-backfill-default-roles` gives the defaults, once, to every organization that has no role at all.
-- **The first Owner of an organization made in the app:** the platform Super Admin opens its Staff Assignments, looks up the owner's mobile and gives them the `OWNER` role. Super Admin passes every permission check. The script still does it in one step (`--owner-user-id`).
+- **The first Owner of an organization made in the app:** since Phase 2c, `POST /v1/organizations` takes an optional `owner_mobile` and adds that Owner in the same transaction. The Super Admin can still add one later through Staff Assignments. The script does it in one step (`--owner-user-id`).
 
 ### Rules for later role and access editing
 
@@ -161,5 +161,32 @@ database trigger and constraints stay as the backstop.
   *Why:* a tenant who can edit their own role could otherwise give it platform powers. Explicit platform scope
   already stops those grants from passing platform checks, but they must not be stored at all. bookings_api
   still has this gap, so it must be right here from the start.
-  *Open decision for when this is built:* how to mark a module as platform-only (for example a column on
-  `module` set by migration), since `ORGANIZATIONS` is used at both levels.
+  *Settled in Phase 2c:* a code constant, `TENANT_GRANTABLE` in `src/utils/rbac.ts`, lists what a tenant role
+  may hold, per module and action; no database change. `ORGANIZATIONS` is listed with view and update only.
+
+## Custom roles and organization switching (Phase 2c, 25 November 2026)
+
+All under `/v1/organizations/{organizationId}`, in `src/services/role.service.ts`:
+
+| Call | Permission |
+|---|---|
+| `POST /roles` `{ code, name, description?, grants: [{ module_code, view, create, update }] }` | `ROLES.create` |
+| `PATCH /roles/{roleId}` `{ name?, description?, grants? }` (`grants` replaces the whole set) | `ROLES.update` |
+| `PATCH /roles/{roleId}/status` `{ is_active }` | `ROLES.update` |
+
+- **What a tenant role may hold:** `TENANT_GRANTABLE`:
+
+  | Module | Actions |
+  |---|---|
+  | `ORGANIZATIONS` | view, update (never create: creating tenants is platform work) |
+  | `BRANCHES`, `ROLES`, `USER_ROLES`, `EVENTS`, `CUSTOMERS`, `REGISTRATIONS` | view, create, update |
+  | `MODULES`, `ROLE_TEMPLATES`, `USER_MODULE_ACCESSES` | nothing |
+
+  Anything else is `400 validation_error`, naming the module and action in `issues[].path`. Delete, import, export and notify are never stored as true: the API uses none of them.
+- **No privilege escalation:** every action a request *adds* to a role is checked with `resolvePermission` for the editor's signed-in assignment, at organization scope. Actions the role already had need no check, so an editor can keep what's there. A refusal is `403 grant_exceeds_own_access` with `details.module_code` and `action`. An Owner holds every grantable action, and the Super Admin passes through the engine's bypass, so in practice this limits custom roles given *Roles › update*.
+- **Built-in roles:** `OWNER` is locked (`409 role_locked`: no rename, re-grant or switch-off), so an organization can never lose its full-access role. `VIEWER` is editable like any created role. **Codes never change** after creation; names (unique per organization, ignoring case) and descriptions may.
+- **Switching a role off** while active assignments hold it is `409 role_in_use` with `details.active_assignments`. Switching it on is always allowed. A role being edited or switched is row-locked, and so is the role an assignment is being given, so a role can't be switched off while someone is being given it.
+- **When changes apply:** at once. The permission engine reads grants from the database on every request; the menu follows on the next `/me`.
+- **Organizations:** `PATCH /v1/organizations/{id}` also edits `name` and `description` (`ORGANIZATIONS.update`); the slug never changes. `PATCH /v1/organizations/{id}/status` `{ is_active }` is **platform scope** (Super Admin only), so an Owner can't switch their own organization off. Switched off, the existing rules apply: staff get `organization_inactive` at sign-in, refresh and `/me`, every permission check denies, and its events leave the catalog (links answer 404). Switched on, everything returns; nothing is deleted.
+- **The first Owner at creation:** `owner_mobile` on `POST /v1/organizations` is looked up in auth-cheche *before* the transaction (no lock waits on the network). Inside it: the person's assignments are locked, `staffRules.assertNotStaffElsewhere` runs, then the organization, its default roles and the Owner assignment are created together. No account (`404`) or already staff (`409`) creates nothing.
+- **Not built:** deleting roles or organizations (they're switched off), editing a slug, and endpoints for Modules, Role Templates and Permission Overrides.

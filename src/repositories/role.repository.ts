@@ -2,7 +2,7 @@ import type { CreationAttributes } from "sequelize";
 import { Role } from "../models/index.js";
 import type { RoleRow } from "../models/role.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
-import { txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
+import { lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
 
 const attributes = [
   "id",
@@ -35,8 +35,26 @@ async function create(values: CreationAttributes<Role>, options: WriteOptions = 
 
 // Tenant roles are keyed by organization_id + id: a platform role (organization_id NULL) is never found here.
 async function findByOrganizationAndId(organizationId: string, roleId: string, options: RepoOptions = {}): Promise<RoleRow | null> {
-  const row = await Role.findOne({ where: { organization_id: organizationId, id: roleId }, attributes: [...attributes], ...txOptions(options) });
+  const row = await Role.findOne({
+    where: { organization_id: organizationId, id: roleId },
+    attributes: [...attributes],
+    ...txOptions(options),
+    ...lockOptions(options),
+  });
   return toPlain<RoleRow>(row);
+}
+
+export type RoleUpdateValues = Partial<Pick<RoleRow, "name" | "description" | "is_active" | "updated_by">>;
+
+/** Tenant-scoped update + read-back inside the same transaction. */
+async function updateByOrganizationAndId(
+  organizationId: string,
+  roleId: string,
+  values: RoleUpdateValues,
+  options: WriteOptions = {},
+): Promise<RoleRow | null> {
+  await Role.update(values, { where: { organization_id: organizationId, id: roleId }, ...txOptions(options) });
+  return findByOrganizationAndId(organizationId, roleId, options);
 }
 
 async function listByOrganization(organizationId: string, options: RepoOptions = {}): Promise<RoleRow[]> {
@@ -52,4 +70,11 @@ async function listByOrganization(organizationId: string, options: RepoOptions =
   return toPlainList<RoleRow>(rows);
 }
 
-export const roleRepository = { findPlatformRoleByCode, findByOrganizationAndCode, findByOrganizationAndId, listByOrganization, create };
+export const roleRepository = {
+  findPlatformRoleByCode,
+  findByOrganizationAndCode,
+  findByOrganizationAndId,
+  listByOrganization,
+  updateByOrganizationAndId,
+  create,
+};

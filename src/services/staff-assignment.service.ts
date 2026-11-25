@@ -48,7 +48,8 @@ async function profilesOf(userIds: string[]): Promise<Map<string, CentralUser>> 
 
 async function activeTenantRole(organizationId: string, roleId: string, transaction: Transaction): Promise<RoleRow> {
   // Platform roles (organization_id NULL) are never found here, so they can't be handed out.
-  const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId, { transaction }), "Role not found");
+  // Locked, so a role being switched off at the same moment can't end up with a new active assignment.
+  const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId, { transaction, lock: true }), "Role not found");
   if (!role.is_active) throw new RoleInactiveError();
   return role;
 }

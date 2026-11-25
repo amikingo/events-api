@@ -194,6 +194,11 @@ async function countActiveOwners(organizationId: string, options: RepoOptions = 
   });
 }
 
+/** Active assignments holding a role (switching a role off is refused while any exist). */
+async function countActiveByRole(organizationId: string, roleId: string, options: RepoOptions = {}): Promise<number> {
+  return UserRole.count({ where: { organization_id: organizationId, role_id: roleId, is_active: true }, ...txOptions(options) });
+}
+
 /** Serializes Owner changes in one organization, so two Owners can't remove each other at the same moment. */
 async function lockOwnersOfOrganization(organizationId: string, options: { transaction: Transaction }): Promise<void> {
   await acquireAdvisoryXactLock("organization_owners", organizationId, options);
@@ -205,6 +210,7 @@ export const userRoleRepository = {
   findStaffByOrganizationAndId,
   updateRoleAndBranch,
   countActiveOwners,
+  countActiveByRole,
   lockOwnersOfOrganization,
   listActiveAssignmentsByUser,
   findActiveAssignmentByIdAndUser,

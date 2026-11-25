@@ -1,5 +1,5 @@
 import type { Transaction } from "sequelize";
-import { ConflictError, ValidationAppError } from "../errors/app-errors.js";
+import { CentralAccountNotFoundError, ConflictError, ValidationAppError } from "../errors/app-errors.js";
 import type { BranchRow } from "../models/branch.js";
 import type { OrganizationRow } from "../models/organization.js";
 import { branchRepository } from "../repositories/branch.repository.js";
@@ -9,7 +9,11 @@ import { pickDefined } from "../utils/patch.js";
 import { slugify } from "../utils/slug.js";
 import type { OrganizationCreateInput, OrganizationListQuery, OrganizationSettingsUpdateInput } from "../validators/organization.js";
 import type { RoleRow } from "../models/role.js";
+import { centralAuthClient } from "../clients/central-auth.client.js";
+import { userRoleRepository } from "../repositories/user-role.repository.js";
+import { OWNER_ROLE_CODE } from "../utils/default-roles.js";
 import { defaultRolesService } from "./default-roles.service.js";
+import { staffRules } from "./staff-rules.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 
 const MAIN_BRANCH = { code: "MAIN", name: "Main Branch" } as const;
@@ -107,7 +111,7 @@ async function createOrganizationInTransaction(
 async function createOrganization(
   input: OrganizationCreateInput,
   actorId: string | null,
-): Promise<{ organization: OrganizationRow; branches: BranchRow[] }> {
+): Promise<{ organization: OrganizationRow; branches: BranchRow[]; owner: { user_id: string; assignment_id: string } | null }> {
   const draft: OrganizationDraft = {
     name: input.organization.name,
     slug: resolveSlug(input.organization.name, input.organization.slug),
@@ -118,9 +122,40 @@ async function createOrganization(
     defaultCurrency: input.organization.default_currency,
     defaultBranch: input.default_branch,
   };
+  // The first Owner (optional, Phase 2c): looked up in auth-cheche before the transaction, so no lock waits on the
+  // network; no account means nothing is created at all.
+  const owner = input.owner_mobile === undefined ? null : await centralAuthClient.findUserByMobile(input.owner_mobile);
+  if (input.owner_mobile !== undefined && !owner) throw new CentralAccountNotFoundError(undefined, { mobile: input.owner_mobile });
+
   return runTransaction(async (transaction) => {
-    const { organization, branches } = await createOrganizationInTransaction(draft, actorId, transaction);
-    return { organization, branches };
+    if (owner) {
+      await userRoleRepository.lockAssignmentsOfUser(owner.userId, { transaction });
+      // A new organization's Owner may not be staff anywhere yet (one person, one organization).
+      await staffRules.assertNotStaffElsewhere(owner.userId, null, transaction);
+    }
+    const { organization, branches, roles } = await createOrganizationInTransaction(draft, actorId, transaction);
+    if (!owner) return { organization, branches, owner: null };
+
+    const ownerRole = roles.get(OWNER_ROLE_CODE);
+    if (!ownerRole) throw new Error(`Default role ${OWNER_ROLE_CODE} is missing from DEFAULT_TENANT_ROLES`);
+    const assignment = await userRoleRepository.create(
+      { user_id: owner.userId, role_id: ownerRole.id, organization_id: organization.id, branch_id: null, created_by: actorId, updated_by: actorId },
+      { transaction },
+    );
+    return { organization, branches, owner: { user_id: owner.userId, assignment_id: assignment.id } };
+  });
+}
+
+/**
+ * Switch an organization off or back on (platform Super Admin only, enforced by the route). Switched off, its staff
+ * can't act (organization_inactive), its events leave the catalog and their links answer 404; nothing is deleted.
+ */
+async function changeOrganizationStatus(organizationId: string, isActive: boolean, actorId: string | null): Promise<OrganizationRow> {
+  return runTransaction(async (transaction) => {
+    const current = ensureFound(await organizationRepository.findById(organizationId, { transaction, lock: true }), "Organization not found");
+    if (current.is_active === isActive) return current;
+    const updated = await organizationRepository.updateSettings(organizationId, { is_active: isActive, updated_by: actorId }, { transaction });
+    return ensureFound(updated, "Organization not found");
   });
 }
 
@@ -136,7 +171,7 @@ async function updateOrganizationSettings(
     ensureFound(await organizationRepository.findById(organizationId, { transaction, lock: true }), "Organization not found");
     const updated = await organizationRepository.updateSettings(
       organizationId,
-      { ...pickDefined(input, ["country", "timezone", "default_currency"] as const), updated_by: actorId },
+      { ...pickDefined(input, ["name", "description", "country", "timezone", "default_currency"] as const), updated_by: actorId },
       { transaction },
     );
     return ensureFound(updated, "Organization not found");
@@ -159,6 +194,7 @@ async function getOrganization(organizationId: string): Promise<OrganizationRow>
 
 export const organizationService = {
   createOrganization,
+  changeOrganizationStatus,
   createOrganizationInTransaction,
   resolveSlug,
   listOrganizations,

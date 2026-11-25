@@ -1158,3 +1158,170 @@ test("row 56: an organization created in the app gets OWNER and VIEWER; its firs
   assert.equal(ownerGrants, 7, "the OWNER grants of a new organization");
   assert.equal(await Role.count({ where: { organization_id: fixture.selamId } }), selamRolesBefore, "an organization with roles is untouched");
 });
+
+// --- Phase 2c: custom roles, organization editing and switching, the first Owner at creation -------------
+
+const DOOR_ID = "c9999999-9999-4999-8999-999999999999";
+const ABAY_OWNER_ID = "caaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const PHASE_2C_MOBILES: Record<string, string> = { "+251933000005": DOOR_ID, "+251933000006": ABAY_OWNER_ID, "+251933000001": NEW_STAFF_ID };
+const roleFixture = { doorRoleId: "", doorAssignmentId: "", helpersRoleId: "" };
+
+function stubPhase2cUsers() {
+  mock.method(centralAuthClient, "findUserByMobile", async (mobile: string) => {
+    const userId = PHASE_2C_MOBILES[mobile];
+    return userId ? { userId, mobile, firstname: "Selam", middlename: null, lastname: "Staff" } : null;
+  });
+  mock.method(centralAuthClient, "getUsersByIds", async (ids: readonly string[]) =>
+    ids.map((userId) => ({ userId, mobile: null, firstname: "Name", middlename: null, lastname: "Of Staff" })),
+  );
+}
+
+const grantOf = (module_code: string, view: boolean, create: boolean, update: boolean) => ({ module_code, view, create, update });
+
+test("row 57: an owner creates Door staff (guests view and update only) and assigns someone; they see and cancel guests, can't create events, and see only Guests", { skip }, async () => {
+  stubPhase2cUsers();
+  try {
+    const created = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, {
+      code: "door_staff",
+      name: "Door staff",
+      description: "Checks guests in at the door",
+      grants: [grantOf("REGISTRATIONS", true, false, true)],
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.deepEqual([created.body.data.code, created.body.data.grants.length], ["DOOR_STAFF", 1]);
+    roleFixture.doorRoleId = created.body.data.id;
+
+    const added = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "0933000005", role_id: roleFixture.doorRoleId });
+    assert.equal(added.status, 201, JSON.stringify(added.body));
+    roleFixture.doorAssignmentId = added.body.data.id;
+
+    const door = await tokenFor(DOOR_ID);
+    const guests = await asToken(door, "GET", guestFixture.nightPath);
+    assert.equal(guests.status, 200);
+    const confirmed = guests.body.data.find((row: { status: string }) => row.status === "CONFIRMED");
+    assert.ok(confirmed, "a confirmed guest to cancel");
+    const cancelled = await asToken(door, "PATCH", `${guestFixture.nightPath}/${confirmed.id}/status`, { status: "CANCELLED" });
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+    const back = await asToken(door, "PATCH", `${guestFixture.nightPath}/${confirmed.id}/status`, { status: "CONFIRMED" });
+    assert.notEqual(back.status, 403, "bringing a guest back is an update too");
+
+    const event = await asToken(door, "POST", `/v1/organizations/${fixture.selamId}/events`, { name: "Door Party" });
+    assert.deepEqual([event.status, event.body.error.code], [403, "permission_denied"]);
+
+    const me = await asToken(door, "GET", "/v1/auth/staff/me");
+    const navigation: Array<{ code: string; children: Array<{ code: string }> }> = me.body.data.navigation;
+    assert.deepEqual(navigation.find((node) => node.code === "EVENT_MANAGEMENT")?.children.map((child) => child.code), ["REGISTRATIONS"]);
+    assert.ok(!navigation.some((node) => node.code === "ACCESS_CONTROL" || node.code === "ADMINISTRATION"));
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 58: the owner changes Door staff's grants and it applies on the very next request", { skip }, async () => {
+  const door = await tokenFor(DOOR_ID);
+  assert.equal((await asToken(door, "GET", `${staffBase()}/roles`)).status, 403);
+
+  const edited = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.doorRoleId}`, {
+    grants: [grantOf("REGISTRATIONS", true, false, true), grantOf("ROLES", true, false, true)],
+  });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+
+  assert.equal((await asToken(door, "GET", `${staffBase()}/roles`)).status, 200, "same token, new grants");
+  const me = await asToken(door, "GET", "/v1/auth/staff/me");
+  assert.deepEqual([me.body.data.permissions.ROLES.view, me.body.data.permissions.ROLES.update, me.body.data.permissions.ROLES.create], [true, true, false]);
+});
+
+test("row 59: platform modules and ORGANIZATIONS create are 400; someone with Roles › update can't grant what they don't hold (403)", { skip }, async () => {
+  const before = await Role.count({ where: { organization_id: fixture.selamId } });
+  const platform = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "ROGUE", name: "Rogue", grants: [grantOf("MODULES", true, false, false)] });
+  assert.deepEqual([platform.status, platform.body.error.code], [400, "validation_error"]);
+  const tenantCreate = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "ROGUE", name: "Rogue", grants: [grantOf("ORGANIZATIONS", true, true, false)] });
+  assert.equal(tenantCreate.status, 400);
+  assert.equal(await Role.count({ where: { organization_id: fixture.selamId } }), before, "nothing written");
+
+  const helpers = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "HELPERS", name: "Helpers", grants: [] });
+  assert.equal(helpers.status, 201);
+  roleFixture.helpersRoleId = helpers.body.data.id;
+
+  const door = await tokenFor(DOOR_ID);
+  const escalate = await asToken(door, "PATCH", `${staffBase()}/roles/${roleFixture.helpersRoleId}`, {
+    grants: [grantOf("REGISTRATIONS", true, false, false), grantOf("EVENTS", false, true, false)],
+  });
+  assert.deepEqual([escalate.status, escalate.body.error.code, escalate.body.error.details], [403, "grant_exceeds_own_access", { module_code: "EVENTS", action: "create" }]);
+  const within = await asToken(door, "PATCH", `${staffBase()}/roles/${roleFixture.helpersRoleId}`, { grants: [grantOf("REGISTRATIONS", true, false, false)] });
+  assert.equal(within.status, 200, "what they hold themselves, they may hand on");
+});
+
+test("row 60: OWNER is locked; a role staff still hold can't be switched off until they're reassigned", { skip }, async () => {
+  stubPhase2cUsers();
+  try {
+    const roles = await as("SELAM_OWNER", "GET", `${staffBase()}/roles`);
+    const ownerRole = roles.body.data.find((role: { code: string }) => role.code === "OWNER");
+    const viewerRole = roles.body.data.find((role: { code: string }) => role.code === "VIEWER");
+    const locked = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${ownerRole.id}`, { name: "Boss" });
+    assert.deepEqual([locked.status, locked.body.error.code], [409, "role_locked"]);
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${ownerRole.id}/status`, { is_active: false })).body.error.code, "role_locked");
+
+    const inUse = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.doorRoleId}/status`, { is_active: false });
+    assert.deepEqual([inUse.status, inUse.body.error.code, inUse.body.error.details], [409, "role_in_use", { active_assignments: 1 }]);
+
+    const moved = await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${roleFixture.doorAssignmentId}`, { role_id: viewerRole.id });
+    assert.equal(moved.status, 200, JSON.stringify(moved.body));
+    const off = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.doorRoleId}/status`, { is_active: false });
+    assert.deepEqual([off.status, off.body.data.is_active], [200, false]);
+    const assignToOff = await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${roleFixture.doorAssignmentId}`, { role_id: roleFixture.doorRoleId });
+    assert.equal(assignToOff.status, 409, "nobody is given a switched-off role");
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.doorRoleId}/status`, { is_active: true })).status, 200);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 61: the owner renames the organization (slug and links unchanged); only the Super Admin switches it off and on", { skip }, async () => {
+  const selam = `/v1/organizations/${fixture.selamId}`;
+  const catalog = "/v1/public/events?organization=selam-events";
+  const listedBefore: number = (await publicGet(catalog)).body.meta.count;
+
+  const renamed = await as("SELAM_OWNER", "PATCH", selam, { name: "Selam Events PLC", description: "Events in Addis" });
+  assert.deepEqual([renamed.status, renamed.body.data.name, renamed.body.data.slug], [200, "Selam Events PLC", "selam-events"]);
+  assert.equal((await as("SELAM_OWNER", "PATCH", selam, { slug: "selam-plc" })).status, 400);
+  assert.equal((await publicGet(catalog)).body.meta.count, listedBefore, "the links still work");
+
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${selam}/status`, { is_active: false })).status, 403, "an Owner can't switch their own organization off");
+
+  const off = await as("SUPER", "PATCH", `${selam}/status`, { is_active: false });
+  assert.deepEqual([off.status, off.body.data.is_active], [200, false]);
+  try {
+    assert.equal((await publicGet(catalog)).body.meta.count, 0, "its events leave the catalog");
+    const me = await as("SELAM_OWNER", "GET", "/v1/auth/staff/me");
+    assert.deepEqual([me.status, me.body.error.code], [409, "organization_inactive"]);
+    assert.equal((await as("SELAM_OWNER", "GET", branchesOf(fixture.selamId))).status, 403, "its staff can't act");
+  } finally {
+    const on = await as("SUPER", "PATCH", `${selam}/status`, { is_active: true });
+    assert.equal(on.status, 200);
+  }
+  assert.equal((await publicGet(catalog)).body.meta.count, listedBefore, "everything returns");
+  assert.equal((await as("SELAM_OWNER", "GET", "/v1/auth/staff/me")).status, 200);
+  assert.equal((await as("SELAM_OWNER", "PATCH", selam, { name: "Selam Events" })).status, 200);
+});
+
+test("row 62: the Super Admin creates an organization with its first Owner in one step; an unknown mobile or existing staff create nothing", { skip }, async () => {
+  stubPhase2cUsers();
+  try {
+    const before = await Organization.count();
+    const unknown = await as("SUPER", "POST", "/v1/organizations", { organization: { name: "Abay Pilot" }, owner_mobile: "0933000007" });
+    assert.deepEqual([unknown.status, unknown.body.error.code], [404, "central_account_not_found"]);
+    const taken = await as("SUPER", "POST", "/v1/organizations", { organization: { name: "Abay Pilot" }, owner_mobile: "0933000001" });
+    assert.deepEqual([taken.status, taken.body.error.code], [409, "conflict"], "already staff in Selam");
+    assert.equal(await Organization.count(), before, "nothing created");
+
+    const created = await as("SUPER", "POST", "/v1/organizations", { organization: { name: "Abay Pilot" }, owner_mobile: "0933000006" });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(created.body.data.owner.user_id, ABAY_OWNER_ID);
+    const me = await asToken(await tokenFor(ABAY_OWNER_ID), "GET", "/v1/auth/staff/me");
+    assert.deepEqual([me.status, me.body.data.assignment.organization.id, me.body.data.assignment.role.code], [200, created.body.data.organization.id, "OWNER"]);
+    assert.equal(me.body.data.permissions.ROLES.create, true, "a new Owner manages roles");
+  } finally {
+    mock.restoreAll();
+  }
+});

@@ -250,6 +250,9 @@ Usage: `await api("/v1/organizations/<id>/branches?page=1")`, or
 | `privacy_notice_outdated` | 409 | The form showed an older privacy notice (`details.current` is the current version) | Reload the event page and show the current notice |
 | `idempotency_key_reused` | 409 | The same `Idempotency-Key` came with a different form | Make a new key for the changed form (a bug if you see it) |
 | `capacity_below_registrations` | 409 | A capacity edit would go below the confirmed registrations (`details.confirmed`) | "N guests are already confirmed; cancel some first" |
+| `grant_exceeds_own_access` | 403 | A role edit would grant an action the editor doesn't hold (`details.module_code`, `details.action`) | "You can't give access you don't have yourself" |
+| `role_locked` | 409 | The built-in Owner role can't be renamed, re-granted or switched off | Show Owner read only |
+| `role_in_use` | 409 | Staff still hold the role (`details.active_assignments`) | "Give them another role first" |
 
 ---
 
@@ -259,7 +262,7 @@ The permission column shows what the signed-in role needs: module code and actio
 
 | Call | Permission | Body / query |
 |---|---|---|
-| `POST /v1/organizations` | `ORGANIZATIONS.create`, platform role | `{ organization: { name, slug?, description?, has_branches? }, default_branch?: { code, name } }`. `has_branches` defaults to `false`, which keeps branches hidden (see section 3). A name with no Latin letters (e.g. Amharic) needs a `slug`, or you get `400` with issue code `slug_required`. Always creates one default branch: `MAIN`, or `default_branch` when given. |
+| `POST /v1/organizations` | `ORGANIZATIONS.create`, platform role | `{ organization: { name, slug?, description?, has_branches? }, default_branch?: { code, name }, owner_mobile? }`. Creates the `OWNER` and `VIEWER` roles too. **`owner_mobile`** (Phase 2c, `09…` or `+251…`) makes that person the first Owner in the same step; the reply then has `owner: { user_id, assignment_id }`, otherwise `owner: null`. No Cheche account: `404 central_account_not_found`; already staff anywhere: `409 conflict` (`details.field: "user_id"`); either way nothing is created. `has_branches` defaults to `false`, which keeps branches hidden (see section 3). A name with no Latin letters (e.g. Amharic) needs a `slug`, or you get `400` with issue code `slug_required`. Always creates one default branch: `MAIN`, or `default_branch` when given. |
 | `GET /v1/organizations` | `ORGANIZATIONS.view`, platform role | `?page&pageSize&is_active` |
 | `GET /v1/organizations/{organizationId}` | `ORGANIZATIONS.view` in that organization | |
 | `POST /v1/organizations/{organizationId}/branches` | `BRANCHES.create` | `{ code, name, description?, is_active? }`. `code` is letters, digits and `_`, stored upper-case. In an organization without branches, this turns branches on. |
@@ -277,7 +280,8 @@ The permission column shows what the signed-in role needs: module code and actio
 | `GET /v1/organizations/{organizationId}/venues/{venueId}` | `EVENTS.view` | |
 | `PATCH /v1/organizations/{organizationId}/venues/{venueId}` | `EVENTS.update` | Any of the create fields except `is_active`; `null` clears. |
 | `PATCH /v1/organizations/{organizationId}/venues/{venueId}/status` | `EVENTS.update` | `{ is_active }`. Venues are deactivated, never deleted. |
-| `PATCH /v1/organizations/{organizationId}` | `ORGANIZATIONS.update` | The organization's defaults: `{ country?, timezone?, default_currency? }` (e.g. `ET`, `Africa/Addis_Ababa`, `ETB`). Changing the timezone never changes existing events. |
+| `PATCH /v1/organizations/{organizationId}` | `ORGANIZATIONS.update` | Any of `{ name, description, country, timezone, default_currency }` (e.g. `ET`, `Africa/Addis_Ababa`, `ETB`); `description: null` clears it. The **slug can't be changed** (it's in every public event link; sending it is `400`). Changing the timezone never changes existing events. |
+| `PATCH /v1/organizations/{organizationId}/status` | `ORGANIZATIONS.update`, **platform role only** | `{ is_active }`. Switched off: its staff get `409 organization_inactive` from `/me`, sign-in and refresh, and `403` elsewhere; its events leave the catalog and their links answer 404. Switched on: everything returns. Nothing is deleted. Show this control only to the Super Admin. |
 | `POST /v1/organizations/{organizationId}/events` | `EVENTS.create` | `{ name, slug?, description?, starts_at?, ends_at?, timezone?, capacity?, registration_opens_at?, registration_closes_at?, visibility?, category?, branch_id?, customer_account_id?, venue_id?, cover_file_id? }`. Created as `DRAFT`, `UNLISTED` unless you send `PUBLIC`, with a **General Admission** ticket type. Omit `slug` to generate one; omit `timezone` to use the organization's. Leave `branch_id` out (organization-wide) unless the organizer picks a branch. |
 | `GET /v1/organizations/{organizationId}/events` | `EVENTS.view` | `?page&pageSize&status&visibility`. |
 | `GET /v1/organizations/{organizationId}/events/{eventId}` | `EVENTS.view` | |
@@ -294,8 +298,11 @@ The permission column shows what the signed-in role needs: module code and actio
 
 | Call | Permission | Body / query |
 |---|---|---|
-| `GET /v1/organizations/{organizationId}/roles` | `ROLES.view` | Each role is `{ id, code, name, description, is_active, grants: [{ module_code, module_name, view, create, update, delete, import, export, notify }] }`. Read only: there's no create or edit yet. |
+| `GET /v1/organizations/{organizationId}/roles` | `ROLES.view` | Each role is `{ id, code, name, description, is_active, grants: [{ module_code, module_name, view, create, update, delete, import, export, notify }] }`. |
 | `GET /v1/organizations/{organizationId}/roles/{roleId}` | `ROLES.view` | One role. |
+| `POST /v1/organizations/{organizationId}/roles` | `ROLES.create` | Phase 2c. `{ code, name, description?, grants: [{ module_code, view, create, update }] }`. `code` is letters, digits and `_`, stored upper-case, and **fixed afterwards**. **201** with the role. |
+| `PATCH /v1/organizations/{organizationId}/roles/{roleId}` | `ROLES.update` | Any of `{ name, description, grants }`. `grants` **replaces the whole set** (send every module you want kept; `[]` removes all). |
+| `PATCH /v1/organizations/{organizationId}/roles/{roleId}/status` | `ROLES.update` | `{ is_active }`. |
 | `GET /v1/organizations/{organizationId}/staff-assignments` | `USER_ROLES.view` | `?is_active&page&pageSize`. Each row is `{ id, user_id, is_active, role { id, code, name }, branch { id, code, name } \| null, profile { firstname, middlename, lastname, mobile } \| null }`. |
 | `GET /v1/organizations/{organizationId}/staff-lookup?mobile=` | `USER_ROLES.create` | Who uses this mobile (`09…` or `+251…`): `{ user_id, firstname, middlename, lastname, mobile }`. |
 | `POST /v1/organizations/{organizationId}/staff-assignments` | `USER_ROLES.create` | `{ mobile, role_id, branch_id? }`. **201** = role given (new or reactivated); **200** = they already had it. |
@@ -317,6 +324,24 @@ The permission column shows what the signed-in role needs: module code and actio
 - **`profile: null`** on a row means the name couldn't be read just now. Show the role and status anyway, with a dash for the name.
 
 A changed role applies on the person's next request; there's no need to sign out.
+
+**Creating and editing roles (Phase 2c).** Owners have `ROLES` view, create and update.
+- **The grant grid:** one row per module, with *View*, *Create* and *Update* boxes. Only these may be ticked; leave other boxes out of the screen:
+
+  | Module | Allowed |
+  |---|---|
+  | `ORGANIZATIONS` | view, update |
+  | `BRANCHES`, `ROLES`, `USER_ROLES`, `EVENTS`, `CUSTOMERS`, `REGISTRATIONS` | view, create, update |
+
+  Module names for the rows come from the roles you already read (`grants[].module_name`), or from `/me` navigation. `MODULES`, `ROLE_TEMPLATES` and `USER_MODULE_ACCESSES` are never offered.
+- **The built-in `OWNER` role is read only:** show it without edit or switch-off controls. `VIEWER` and every created role are editable.
+- **What to show:**
+  - **400 `validation_error`** with `details.issues[].path` like `body.grants.2.create`: "This access can't be given to an organization's role." (A bug if the grid only offers allowed boxes.)
+  - **403 `grant_exceeds_own_access`** (`details.module_code`, `details.action`): "You can't give access you don't have yourself (Events › create)."
+  - **409 `conflict`** with `details.field` `code` or `name`: "Another role already uses this code" / "this name", next to the field.
+  - **409 `role_locked`:** "The Owner role can't be changed."
+  - **409 `role_in_use`** (`details.active_assignments`): "N staff still have this role. Give them another role first, then switch it off." Link to Staff Assignments.
+  - **409 `role_inactive`** when adding staff with a switched-off role: hide switched-off roles from the role picker.
 
 **A new organization** (`POST /v1/organizations`) comes with the default **Owner** and **Viewer** roles, but with no staff yet. After creating one, the Super Admin opens its *Staff Assignments* and adds the first Owner by mobile. A good place for that is a "Next: add the owner" step right after the create form. Organizations created before this fix get the two roles from a one-off migration.
 

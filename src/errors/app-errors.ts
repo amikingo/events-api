@@ -309,3 +309,26 @@ export class LastOwnerAssignmentError extends AppError {
     super(message, { statusCode: 409, code: "last_owner_assignment", details, cause: options?.cause });
   }
 }
+
+// --- Custom roles (Phase 2c) ---------------------------------------------------------------
+
+/** The built-in OWNER role can't be renamed, re-granted or switched off, so an organization can't lock itself out. */
+export class RoleLockedError extends AppError {
+  constructor(message = "The Owner role can't be changed", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "role_locked", details, cause: options?.cause });
+  }
+}
+
+/** Staff still hold this role: move them to another role first (`details.active_assignments`). */
+export class RoleInUseError extends AppError {
+  constructor(message = "Staff still hold this role; move them to another role first", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "role_in_use", details, cause: options?.cause });
+  }
+}
+
+/** A role can't be given an action its editor doesn't hold (`details.module_code`, `details.action`). */
+export class GrantExceedsOwnAccessError extends AppError {
+  constructor(message = "You can't give a role access you don't have yourself", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 403, code: "grant_exceeds_own_access", details, cause: options?.cause });
+  }
+}

@@ -45,3 +45,24 @@ export const FULL_PERMISSION: Readonly<PermissionMatrix> = Object.freeze({
 });
 
 export const SUPER_ADMIN_ROLE_CODE = "SUPER_ADMIN";
+
+/** The actions a role can be given in the app (Phase 2c). The API uses no delete, import, export or notify actions. */
+export const GRANTABLE_ACTIONS = ["view", "create", "update"] as const;
+export type GrantableAction = (typeof GRANTABLE_ACTIONS)[number];
+
+/**
+ * What a tenant (organization) role may be granted, module by module (decided 25 November 2026). Anything else is
+ * refused, so a tenant can never store platform powers in its own roles:
+ * - ORGANIZATIONS: view and update only; creating tenants is platform work;
+ * - MODULES, ROLE_TEMPLATES, USER_MODULE_ACCESSES: platform modules, never grantable to a tenant role.
+ * Keyed by module code (utils/module-codes.ts).
+ */
+export const TENANT_GRANTABLE: Readonly<Record<string, readonly GrantableAction[]>> = Object.freeze({
+  ORGANIZATIONS: ["view", "update"],
+  BRANCHES: ["view", "create", "update"],
+  ROLES: ["view", "create", "update"],
+  USER_ROLES: ["view", "create", "update"],
+  EVENTS: ["view", "create", "update"],
+  CUSTOMERS: ["view", "create", "update"],
+  REGISTRATIONS: ["view", "create", "update"],
+});

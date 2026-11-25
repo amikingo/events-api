@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { organizationService } from "../services/organization.service.js";
 import { sendList, sendSuccess } from "../utils/http.js";
 import {
+  changeOrganizationStatusRequest,
   createOrganizationRequest,
   getOrganizationRequest,
   listOrganizationsRequest,
@@ -34,4 +35,10 @@ async function updateOrganizationSettings(req: Request, res: Response): Promise<
   sendSuccess(res, 200, organization, "Organization settings updated");
 }
 
-export const organizationController = { createOrganization, listOrganizations, getOrganization, updateOrganizationSettings };
+async function changeOrganizationStatus(req: Request, res: Response): Promise<void> {
+  const { params, body } = getValidated(req, changeOrganizationStatusRequest);
+  const organization = await organizationService.changeOrganizationStatus(params.organizationId, body.is_active, getActorId(req));
+  sendSuccess(res, 200, organization, body.is_active ? "Organization switched on" : "Organization switched off");
+}
+
+export const organizationController = { createOrganization, listOrganizations, getOrganization, updateOrganizationSettings, changeOrganizationStatus };
