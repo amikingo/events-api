@@ -7,13 +7,16 @@
 #   ~/events/db.env       (secrets, created on the server, never in git)
 #   ~/events/api.env      (secrets, created on the server, never in git)
 #
+# Public address: https://eventra-dev.duckdns.org. The server's Caddy (shared with teammates' sites) holds the
+# https certificate and forwards to nginx on 127.0.0.1:8080 (README "Caddy").
+#
 # Published ports (Docker-published ports bypass ufw):
-#   8080   nginx (website + /api)
-#   15432  Postgres, shared with the team's own local events-api and pgAdmin (one login: events, from
-#          db.env). Encrypted connections only (pg_hba.conf). Rules: README "Team database access".
+#   127.0.0.1:8080  nginx (website + /api), reachable only from this server, i.e. through Caddy
+#   15432           Postgres, shared with the team's own local events-api and pgAdmin (one login: events, from
+#                   db.env). Encrypted connections only (pg_hba.conf). Rules: README "Team database access".
 name: events-temp
 
-x-public-url: &public_url http://169.58.247.85:8080
+x-public-url: &public_url https://eventra-dev.duckdns.org
 
 services:
   db:
@@ -56,7 +59,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: "5010"
-      TRUST_PROXY_HOPS: "1" # nginx
+      TRUST_PROXY_HOPS: "2" # Caddy, then nginx
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_DATABASE: events
@@ -67,8 +70,7 @@ services:
       AUTH_REFRESH_TRUSTED_ORIGINS: *public_url
       # Same as bookings_api: the public API sits under /api, so cookie paths must include it.
       AUTH_REFRESH_COOKIE_PATH_PREFIX: /api
-      # Plain http (no domain): browsers drop Secure cookies over http, which would log users out on reload.
-      AUTH_REFRESH_COOKIE_SECURE: "false"
+      # Refresh cookies are Secure (the production default): the site is https through Caddy.
       FILES_DIR: /assets/uploads
       # Test server: confirmation SMS are only logged, never sent.
       SMS_DELIVERY: log
@@ -83,7 +85,11 @@ services:
       context: ../../../events-web
       dockerfile: Dockerfile # events-web's own Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://169.58.247.85:8080/api
+        NEXT_PUBLIC_API_URL: https://eventra-dev.duckdns.org/api
+    environment:
+      # Server-rendered pages call the API directly inside Docker instead of going out to the public address
+      # and back in (faster, and it doesn't depend on Caddy, DNS or the server's firewall).
+      API_INTERNAL_URL: http://api:5010
     restart: unless-stopped
     depends_on:
       - api
@@ -92,7 +98,7 @@ services:
     image: nginx:alpine
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80" # Caddy only; not published to the internet
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

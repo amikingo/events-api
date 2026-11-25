@@ -2,22 +2,25 @@
 
 **Temporary.** It runs until events gets a real setup like bookings. Removal is at the end of this file.
 
-- Address: **http://169.58.247.85:8080** (website) and **http://169.58.247.85:8080/api** (API)
+- Address: **https://eventra-dev.duckdns.org** (website) and **https://eventra-dev.duckdns.org/api** (API).
+  The name is a free DuckDNS subdomain pointing at 169.58.247.85.
 - The VPS is shared. Caddy (ports 80/443, the Fidel and Moodle sites) and the Fidel containers belong to
-  teammates: never change, restart or remove them. Never run `docker system prune` or other bulk removals.
+  teammates. The only change made to Caddy is the events block (section "Caddy"); never change, restart or
+  remove anything else of theirs. Never run `docker system prune` or other bulk removals.
 - Everything here runs as user `joedee`. Docker commands use `sudo`.
 
 ## What runs
 
 | Container | What | Reachable from |
 |---|---|---|
-| `nginx` | `/api/*` → API (prefix removed), everything else → web | internet, port **8080** |
-| `web` | events-web, `next start` | inside Docker only |
+| Caddy (the server's, not ours) | https for `eventra-dev.duckdns.org` → `127.0.0.1:8080` | internet, ports 80/443 |
+| `nginx` | `/api/*` → API (prefix removed), everything else → web | this server only, `127.0.0.1:8080` |
+| `web` | events-web, `next start`; server-rendered pages call `http://api:5010` directly | inside Docker only |
 | `api` | events-api, `node dist/server.js` | inside Docker only |
 | `db` | Postgres 17, data in volume `events-temp_db-data` | internet, port **15432**, encrypted + password only |
 
-Ports published by Docker bypass ufw: whatever is listed under `ports:` is open to the internet.
-The database is published on purpose, so teammates' local events-api and pgAdmin can use it
+Ports published by Docker bypass ufw: a port listed under `ports:` without `127.0.0.1:` is open to the
+internet. The database is published on purpose, so teammates' local events-api and pgAdmin can use it
 (see "Team database access"). `pg_hba.conf` refuses unencrypted connections.
 
 ## Which file lives where
@@ -73,7 +76,7 @@ Save with Ctrl+O, Enter, Ctrl+X. Then:
 chmod 600 ~/events/db.env ~/events/api.env
 ```
 
-Every other setting is in `docker-compose.yml`: no domain, plain http, cookies not `Secure`, SMS only logged.
+Every other setting is in `docker-compose.yml`: the public address, `/api` cookie paths, SMS only logged.
 
 ## 3. Build
 
@@ -106,14 +109,47 @@ sudo docker compose ps
 curl -s http://localhost:8080/api/health/ready
 ```
 
-Then open http://169.58.247.85:8080 in a browser. If it doesn't load from your Mac but the `curl` works,
-check whether a firewall in the Contabo panel (Network → Firewall) is assigned to this VPS.
+Then add the events block to Caddy (next section) and open https://eventra-dev.duckdns.org.
 
 Logs: `sudo docker compose logs --tail=100 api` (or `web`, `nginx`, `db`).
 
+## Caddy
+
+The server's Caddy serves teammates' sites too, so a mistake in its file affects them. Always validate
+before reloading; a reload keeps the other sites running.
+
+1. Back up the file, then open it:
+
+   ```bash
+   sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak-$(date +%Y%m%d-%H%M%S)
+   sudo nano /etc/caddy/Caddyfile
+   ```
+
+2. Add this block at the end, leaving the existing sites untouched:
+
+   ```
+   # Events (temporary deployment: ~/events, user joedee)
+   eventra-dev.duckdns.org {
+   	encode zstd gzip
+   	reverse_proxy 127.0.0.1:8080
+   }
+   ```
+
+3. Check, then reload only if the check passes:
+
+   ```bash
+   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   sudo systemctl reload caddy
+   sudo systemctl status caddy --no-pager | head -5
+   ```
+
+   If `validate` fails, fix the block (or restore the backup with `sudo cp /etc/caddy/Caddyfile.bak-<time>
+   /etc/caddy/Caddyfile`) and don't reload. Caddy fetches the https certificate on the first visit; that
+   can take up to a minute.
+
 ## Team database access
 
-One shared database for everyone: the site at http://169.58.247.85:8080, each teammate's local
+One shared database for everyone: the site at https://eventra-dev.duckdns.org, each teammate's local
 events-api and pgAdmin. Everyone uses the same login, **`events`**, which can change data and structure
 (migrations). One login on purpose: in Postgres only a table's owner can alter or drop it, and two logins
 would end up owning different tables.
@@ -132,7 +168,7 @@ API's password: if it leaks, follow "Changing the database password" below.
 Only the database settings change; everything else stays as in their own local setup:
 
 ```
-POSTGRES_HOST=169.58.247.85
+POSTGRES_HOST=eventra-dev.duckdns.org
 POSTGRES_PORT=15432
 POSTGRES_DATABASE=events
 POSTGRES_USER=events
@@ -146,7 +182,7 @@ OUTBOX_WORKER_ENABLED=false
 - `OUTBOX_WORKER_ENABLED=false`: the server's API already delivers confirmation messages; local APIs
   shouldn't pick them up too. Never set `SMS_DELIVERY=afromessage` against this database.
 - Event covers uploaded through a local API are saved on that person's computer, not on the server, so
-  others see a broken image. Upload covers through http://169.58.247.85:8080.
+  others see a broken image. Upload covers through https://eventra-dev.duckdns.org.
 
 ### Rules for changing the structure (migrations)
 
@@ -162,7 +198,7 @@ A migration changes the database for everyone at once, including the live site.
 
 ### pgAdmin
 
-Host `169.58.247.85`, port `15432`, maintenance database `events`, username `events`, the password from
+Host `eventra-dev.duckdns.org` (or `169.58.247.85`), port `15432`, maintenance database `events`, username `events`, the password from
 `db.env`; on the **Parameters** tab set **SSL mode** to `require`.
 
 ### Backups
@@ -224,5 +260,6 @@ sudo docker compose down -v --rmi local
 rm -rf ~/events
 ```
 
-Then delete this `deploy/contabo-temp/` folder from the repo. The two Dockerfiles stay: the real setup can
-build from them.
+Then remove the events block from `/etc/caddy/Caddyfile` (validate and reload as in "Caddy"), delete the
+`eventra-dev` domain on duckdns.org, and delete this `deploy/contabo-temp/` folder from the repo. The two
+Dockerfiles stay: the real setup can build from them.
