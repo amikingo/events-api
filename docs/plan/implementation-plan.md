@@ -391,7 +391,11 @@ Details are in `docs/rbac-application-flow.md` ("Managing staff over HTTP").
 
 Details are in `docs/rbac-application-flow.md` ("Custom roles and organization switching").
 
-**Status: built, not verified on PostgreSQL yet.** Still to do: apply the migration (`npm run db:migrate`), then `TEST_DATABASE=1 npm test`, which includes matrix rows 57–62.
+**Status: done (25 November 2026).**
+- **Database:** migration `20261128000000-grant-role-management-to-owners` was applied to `events_dev`.
+- **Tests:** `TEST_DATABASE=1 npm test` passed on the real database, including matrix rows 57–62. The first run found that an impossible grant was refused with 403 instead of 400, because escalation was checked first. The grants are now checked before escalation. `npm run check` passed: typecheck, lint, the tests on fakes, and the OpenAPI snapshot.
+- **Screens:** Antigravity built them in events-web from `docs/ui-brief-phase-2c.md`. A review found one bug: saving a role in an organization without branches dropped its hidden Branches grant. It's fixed. events-web typecheck and lint pass. Both repositories are committed and pushed.
+- **Not verified yet:** the screens in a browser (375 px wide, dark mode), and `owner_mobile` and the staff look-up against the real auth-cheche.
 
 ---
 
