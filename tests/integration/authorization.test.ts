@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { after, before, test } from "node:test";
+import { after, before, mock, test } from "node:test";
 import { Op } from "sequelize";
 import { createApp } from "../../src/app.js";
+import { centralAuthClient } from "../../src/clients/central-auth.client.js";
 import { filesConfig } from "../../src/config/files.js";
 import { PRIVACY_NOTICE_VERSION } from "../../src/config/privacy.js";
 import { sequelize } from "../../src/db.js";
-import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
+import { CentralAuthUnavailableError, ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
 import { migrator } from "../../src/migrator.js";
 import {
@@ -22,9 +23,11 @@ import {
   StoredFile,
   SubmissionKey,
   UserModuleAccess,
+  UserRole,
 } from "../../src/models/index.js";
 import { eventRepository } from "../../src/repositories/event.repository.js";
 import { moduleRepository } from "../../src/repositories/module.repository.js";
+import { roleRepository } from "../../src/repositories/role.repository.js";
 import { userRoleRepository } from "../../src/repositories/user-role.repository.js";
 import { authTokenService } from "../../src/services/auth-token.service.js";
 import { branchService } from "../../src/services/branch.service.js";
@@ -986,4 +989,132 @@ test("row 50: the worker sends every due confirmation exactly once, leaves lease
   assert.equal(hana.body.data.confirmation.status, "SENT", "staff see the delivery");
   const list = await as("SELAM_OWNER", "GET", guestFixture.nightPath);
   assert.ok(list.body.data.every((row: { confirmation: { status: string } | null }) => row.confirmation === null || row.confirmation.status === "SENT"));
+});
+
+// --- Phase 2b: roles and staff assignments (auth-cheche stubbed on the client: no network) ----------------
+
+const NEW_STAFF_ID = "c7777777-7777-4777-8777-777777777777";
+const STAFF_MOBILES: Record<string, string> = { "+251933000001": NEW_STAFF_ID, "+251933000002": PEOPLE.HORN_OWNER };
+const staffBase = () => `/v1/organizations/${fixture.selamId}`;
+
+function stubCentralUsers(options: { namesFail?: boolean } = {}) {
+  mock.method(centralAuthClient, "findUserByMobile", async (mobile: string) => {
+    const userId = STAFF_MOBILES[mobile];
+    return userId ? { userId, mobile, firstname: "Dawit", middlename: null, lastname: "Staff", } : null;
+  });
+  mock.method(centralAuthClient, "getUsersByIds", async (ids: readonly string[]) => {
+    if (options.namesFail) throw new CentralAuthUnavailableError();
+    return ids.map((userId) => ({ userId, mobile: null, firstname: "Name", middlename: null, lastname: "Of Staff" }));
+  });
+}
+
+async function asToken(token: string, method: string, path: string, body?: unknown) {
+  return withServer(app, (baseUrl) => call(baseUrl, method, path, body === undefined ? { token } : { token, body }));
+}
+
+test("row 51: an owner lists roles, looks a person up by mobile and gives them a role; the same again changes nothing", { skip }, async () => {
+  stubCentralUsers();
+  try {
+    const roles = await as("SELAM_OWNER", "GET", `${staffBase()}/roles`);
+    assert.equal(roles.status, 200);
+    const owner = roles.body.data.find((role: { code: string }) => role.code === "OWNER");
+    const viewer = roles.body.data.find((role: { code: string }) => role.code === "VIEWER");
+    assert.ok(owner && viewer);
+    assert.deepEqual(
+      owner.grants.find((grant: { module_code: string }) => grant.module_code === "USER_ROLES"),
+      { module_code: "USER_ROLES", module_name: "Staff Assignments", view: true, create: true, update: true, delete: false, import: false, export: false, notify: false },
+    );
+
+    const lookup = await as("SELAM_OWNER", "GET", `${staffBase()}/staff-lookup?mobile=0933000001`);
+    assert.deepEqual([lookup.status, lookup.body.data.user_id, lookup.body.data.firstname], [200, NEW_STAFF_ID, "Dawit"]);
+
+    const added = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "0933000001", role_id: viewer.id });
+    assert.equal(added.status, 201, JSON.stringify(added.body));
+    assert.deepEqual([added.body.data.user_id, added.body.data.role.code, added.body.data.is_active], [NEW_STAFF_ID, "VIEWER", true]);
+    const again = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "+251933000001", role_id: viewer.id });
+    assert.deepEqual([again.status, again.body.data.id], [200, added.body.data.id]);
+
+    const me = await asToken(await tokenFor(NEW_STAFF_ID), "GET", "/v1/auth/staff/me");
+    assert.equal(me.body.data.assignment.organization.id, fixture.selamId, "the new person can sign in to Selam");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 52: no Cheche account, someone already in another organization, or a platform role is refused", { skip }, async () => {
+  stubCentralUsers();
+  try {
+    const roles = await as("SELAM_OWNER", "GET", `${staffBase()}/roles`);
+    const viewerId = roles.body.data.find((role: { code: string }) => role.code === "VIEWER").id;
+    const before = await UserRole.count();
+
+    const unknown = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "0933000003", role_id: viewerId });
+    assert.deepEqual([unknown.status, unknown.body.error.code], [404, "central_account_not_found"]);
+    const elsewhere = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "0933000002", role_id: viewerId });
+    assert.deepEqual([elsewhere.status, elsewhere.body.error.code], [409, "conflict"], "Horn's owner belongs to Horn");
+    const superAdmin = await roleRepository.findPlatformRoleByCode("SUPER_ADMIN");
+    assert.ok(superAdmin);
+    const platform = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "0933000001", role_id: superAdmin.id });
+    assert.equal(platform.status, 404, "a platform role is not a role of this organization");
+
+    assert.equal(await UserRole.count(), before, "nothing written");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 53: the organization always keeps an active Owner", { skip }, async () => {
+  stubCentralUsers();
+  try {
+    const roles = await as("SELAM_OWNER", "GET", `${staffBase()}/roles`);
+    const ownerRoleId = roles.body.data.find((role: { code: string }) => role.code === "OWNER").id;
+    const viewerRoleId = roles.body.data.find((role: { code: string }) => role.code === "VIEWER").id;
+    const staff = await as("SELAM_OWNER", "GET", `${staffBase()}/staff-assignments`);
+    const original = staff.body.data.find((row: { user_id: string }) => row.user_id === PEOPLE.SELAM_OWNER);
+    const newcomer = staff.body.data.find((row: { user_id: string }) => row.user_id === NEW_STAFF_ID);
+    assert.ok(original && newcomer);
+    assert.equal(original.profile.lastname, "Of Staff", "names come from Central Auth");
+
+    const promoted = await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${newcomer.id}`, { role_id: ownerRoleId });
+    assert.deepEqual([promoted.status, promoted.body.data.role.code], [200, "OWNER"]);
+    const stepDown = await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${original.id}/status`, { is_active: false });
+    assert.deepEqual([stepDown.status, stepDown.body.data.is_active], [200, false], "another Owner remains");
+
+    const newOwner = await tokenFor(NEW_STAFF_ID);
+    const lastOff = await asToken(newOwner, "PATCH", `${staffBase()}/staff-assignments/${newcomer.id}/status`, { is_active: false });
+    assert.deepEqual([lastOff.status, lastOff.body.error.code], [409, "last_owner_assignment"]);
+    const lastDemoted = await asToken(newOwner, "PATCH", `${staffBase()}/staff-assignments/${newcomer.id}`, { role_id: viewerRoleId });
+    assert.deepEqual([lastDemoted.status, lastDemoted.body.error.code], [409, "last_owner_assignment"]);
+
+    // Put Selam's original Owner back for the rows that follow.
+    assert.equal((await asToken(newOwner, "PATCH", `${staffBase()}/staff-assignments/${original.id}/status`, { is_active: true })).status, 200);
+    assert.equal((await as("SELAM_OWNER", "GET", `${staffBase()}/staff-assignments`)).status, 200, "the original Owner works again");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 54: viewers, branch-limited staff and another tenant can't see or change staff", { skip }, async () => {
+  stubCentralUsers();
+  try {
+    assert.equal((await as("SELAM_VIEWER", "GET", `${staffBase()}/staff-assignments`)).status, 403);
+    assert.equal((await as("SELAM_VIEWER", "GET", `${staffBase()}/roles`)).status, 403);
+    assert.equal((await as("SELAM_ADDIS", "GET", `${staffBase()}/staff-assignments`)).status, 403);
+    assert.equal((await as("HORN_OWNER", "GET", `${staffBase()}/staff-assignments`)).status, 403);
+    assert.equal((await as("SELAM_VIEWER", "GET", `${staffBase()}/staff-lookup?mobile=0933000001`)).status, 403);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 55: when Central Auth can't give names, the staff list still answers with profile null", { skip }, async () => {
+  stubCentralUsers({ namesFail: true });
+  try {
+    const staff = await as("SELAM_OWNER", "GET", `${staffBase()}/staff-assignments`);
+    assert.equal(staff.status, 200);
+    assert.ok(staff.body.data.length >= 3);
+    assert.ok(staff.body.data.every((row: { profile: unknown }) => row.profile === null));
+  } finally {
+    mock.restoreAll();
+  }
 });

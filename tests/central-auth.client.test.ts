@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
+import jwt from "jsonwebtoken";
 import { centralAuthClient } from "../src/clients/central-auth.client.js";
 import { authConfig } from "../src/config/auth.js";
 import {
   AppError,
   CentralAuthRateLimitedError,
+  CentralAuthUnavailableError,
   ConflictError,
   InvalidCredentialsError,
   MalformedCentralAuthResponseError,
@@ -144,6 +146,68 @@ test("auth-cheche's error text is read from error, response or message", async (
       centralAuthClient.logout("refresh-abc"),
       (error: unknown) => error instanceof ConflictError && error.message === `already exists (${field})`,
     );
+    mock.restoreAll();
+  }
+});
+
+// --- Staff lookups with the service token (Phase 2b) ----------------------------------------------
+
+const PERSON = { id: "7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b", mobile: "+251911234567", firstname: "Hana", middlename: null, lastname: "Bekele" };
+
+function bearerOf(init: RequestInit | undefined): string {
+  const headers = (init?.headers ?? {}) as Record<string, string>;
+  return headers.Authorization ?? "";
+}
+
+test("a lookup by mobile sends a 5-minute service token of the system user, signed with the shared secret", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ user: PERSON }));
+
+  const user = await centralAuthClient.findUserByMobile("+251911234567");
+
+  assert.deepEqual(user, { userId: PERSON.id, mobile: "+251911234567", firstname: "Hana", middlename: null, lastname: "Bekele" });
+  const [{ url, init } = { url: "", init: undefined }] = calls;
+  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/get-user-by-mobile?mobile=%2B251911234567`);
+  const token = bearerOf(init).replace(/^Bearer /, "");
+  const claims = jwt.verify(token, authConfig.centralAuthJwtSecret, { algorithms: ["HS256"], issuer: authConfig.centralIssuer }) as jwt.JwtPayload;
+  assert.deepEqual(
+    [claims.token_type, claims.auth_role, claims.user_id, claims.service_ids],
+    ["access", "super_admin", "00000000-0000-0000-0000-000000000000", [authConfig.centralAuthServiceId]],
+  );
+  assert.equal((claims.exp ?? 0) - (claims.iat ?? 0), 300, "valid for 5 minutes");
+});
+
+test("a lookup accepts the reply shapes auth-cheche uses and reads localized names; 404 means no account", async () => {
+  for (const body of [{ data: { user: PERSON } }, PERSON, { user: { ...PERSON, id: undefined, user_id: PERSON.id, firstname: { en: "Hana", am: "ሃና" } } }]) {
+    fakeFetch(200, JSON.stringify(body));
+    const user = await centralAuthClient.findUserByMobile("+251911234567");
+    assert.deepEqual([user?.userId, user?.firstname], [PERSON.id, "Hana"], JSON.stringify(body));
+    mock.restoreAll();
+  }
+
+  fakeFetch(404, JSON.stringify({ error: "user not found" }));
+  assert.equal(await centralAuthClient.findUserByMobile("+251911000000"), null);
+  mock.restoreAll();
+
+  fakeFetch(200, JSON.stringify({ user: { mobile: "+251911234567" } }));
+  await assert.rejects(centralAuthClient.findUserByMobile("+251911234567"), MalformedCentralAuthResponseError, "no user id");
+});
+
+test("names for several people come from one specific_users call; a refused service token is a 503, never the staff member's fault", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ users: [PERSON] }));
+  const users = await centralAuthClient.getUsersByIds([PERSON.id]);
+  assert.deepEqual(users.map((user) => user.lastname), ["Bekele"]);
+  const [{ url, init } = { url: "", init: undefined }] = calls;
+  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/specific_users`);
+  assert.ok(typeof init?.body === "string");
+  assert.deepEqual(JSON.parse(init.body), { user_ids: [PERSON.id] });
+  assert.match(bearerOf(init), /^Bearer /);
+  mock.restoreAll();
+
+  assert.deepEqual(await centralAuthClient.getUsersByIds([]), [], "no call for an empty list");
+
+  for (const status of [401, 403]) {
+    fakeFetch(status, JSON.stringify({ error: "invalid token" }));
+    await assert.rejects(centralAuthClient.findUserByMobile("+251911234567"), (error: unknown) => error instanceof CentralAuthUnavailableError);
     mock.restoreAll();
   }
 });

@@ -85,6 +85,9 @@ must look like `/segment[/segment]`, no `//`, no trailing `/`; checked at startu
 
 One shared secret (`APP_AUTH_TOKEN`) is a deliberate choice for now, matching bookings_api.
 
+- **The service token (Phase 2b):** for staff lookups (`GET /v1/users/get-user-by-mobile` and `POST /v1/users/specific_users`), this API signs a short auth-cheche access token of the system user (`auth_role: super_admin`, our service id, valid for 5 minutes) with the shared secret, exactly as bookings_api does. It's built only in `src/clients/central-auth.client.ts`, for one request at a time, and is never logged or returned. It works only because of the shared secret, so splitting the secret later also needs auth-cheche to issue this API a real service credential.
+- **A refused service token** (auth-cheche answers 401 or 403) reaches staff as 503 `central_auth_unavailable`, because it's a configuration problem, never theirs.
+
 - **The risk:** any service holding `APP_AUTH_TOKEN` can sign a staff token for this API, for any person and any
   role. It also works the other way: tokens this API signs carry a signature other Cheche services trust, so
   those services keep them out only through their own `token_type` / issuer checks (this API never issues

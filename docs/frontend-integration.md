@@ -290,6 +290,34 @@ The permission column shows what the signed-in role needs: module code and actio
 | `PUT /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | `multipart/form-data` with **one file in the field `file`** and nothing else (see *Cover images* below). Replaces the current cover. Replies with the event. |
 | `DELETE /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | No body. Removes the cover; the event comes back with `cover: null`. |
 
+**Roles and staff (Phase 2b): the *Access Control* screens.** The menu shows *Access Control › Roles* (`/access/roles`) and *Staff Assignments* (`/access/assignments`) to owners. Keep **Modules**, **Role Templates** and **Permission Overrides** hidden: they have no endpoints, by decision.
+
+| Call | Permission | Body / query |
+|---|---|---|
+| `GET /v1/organizations/{organizationId}/roles` | `ROLES.view` | Each role is `{ id, code, name, description, is_active, grants: [{ module_code, module_name, view, create, update, delete, import, export, notify }] }`. Read only: there's no create or edit yet. |
+| `GET /v1/organizations/{organizationId}/roles/{roleId}` | `ROLES.view` | One role. |
+| `GET /v1/organizations/{organizationId}/staff-assignments` | `USER_ROLES.view` | `?is_active&page&pageSize`. Each row is `{ id, user_id, is_active, role { id, code, name }, branch { id, code, name } \| null, profile { firstname, middlename, lastname, mobile } \| null }`. |
+| `GET /v1/organizations/{organizationId}/staff-lookup?mobile=` | `USER_ROLES.create` | Who uses this mobile (`09…` or `+251…`): `{ user_id, firstname, middlename, lastname, mobile }`. |
+| `POST /v1/organizations/{organizationId}/staff-assignments` | `USER_ROLES.create` | `{ mobile, role_id, branch_id? }`. **201** = role given (new or reactivated); **200** = they already had it. |
+| `PATCH /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` | `USER_ROLES.update` | `{ role_id?, branch_id? }`; `branch_id: null` makes it organization-wide again. |
+| `PATCH /v1/organizations/{organizationId}/staff-assignments/{assignmentId}/status` | `USER_ROLES.update` | `{ is_active }`. |
+
+**The "add staff" flow:**
+1. The owner types a mobile number.
+2. Call `staff-lookup` and show the name it returns, so the owner can confirm it's the right person.
+3. The owner picks a role (from `GET /roles`) and, only if the organization has branches, a branch.
+4. `POST` with the same `mobile`. The API looks the number up again itself, so never send a `user_id`.
+
+**What to show:**
+- **404 `central_account_not_found`:** "This number has no Cheche account yet. Ask them to sign up first, then try again." The API never creates accounts.
+- **409 `conflict`:** "This person is already staff of another organization."
+- **409 `last_owner_assignment`:** "The organization needs at least one active Owner." Disable *Deactivate* and *Change role* on the only active Owner.
+- **409 `invalid_branch_state`:** the organization has no branches. Hide the branch picker when `has_branches` is false.
+- **503 `central_auth_unavailable`:** "Cheche accounts can't be reached right now. Try again."
+- **`profile: null`** on a row means the name couldn't be read just now. Show the role and status anyway, with a dash for the name.
+
+A changed role applies on the person's next request; there's no need to sign out.
+
 **Event dates and times.** Send instants with an offset or `Z` (`2027-03-12T09:00:00+03:00`); the API answers in
 UTC (`…Z`). Show them in the event's own `timezone`. Show `display_status` for the badge: it is `LIVE` while a
 published event is running; a cancelled event shows `CANCELLED` even during its hours. `CLOSED` and `CANCELLED`

@@ -121,10 +121,31 @@ Most organizers have no branches. `organization.has_branches` (default `false`) 
 - Set it at creation with `POST /v1/organizations` `{ organization: { has_branches: true } }` or
   `provision:organizer --has-branches`.
 
-## Managing role assignments over HTTP (not built yet)
+## Managing staff over HTTP (Phase 2b, 25 November 2026)
 
-There are no endpoints for managing roles, role access or assignments yet (only the scripts above).
-When they are built, these rules apply. Each is enforced in the service with a friendly error first; the
+Organizations manage their own staff in the app. These endpoints all sit under `/v1/organizations/{organizationId}`, and the scripts above still work:
+
+| Call | Permission | Notes |
+|---|---|---|
+| `GET /roles`, `GET /roles/{roleId}` | `ROLES.view` | The organization's roles and what each may do. Read only: creating or editing roles comes later. |
+| `GET /staff-lookup?mobile=` | `USER_ROLES.create` | Who uses this mobile in auth-cheche (look up only; this API never creates accounts) |
+| `GET /staff-assignments` | `USER_ROLES.view` | Role, branch and name. Names come from auth-cheche, best effort: `profile: null` when it can't be read. |
+| `POST /staff-assignments` `{ mobile, role_id, branch_id? }` | `USER_ROLES.create` | The mobile is looked up again on the server; a `user_id` from the browser is never trusted |
+| `PATCH /staff-assignments/{id}` `{ role_id?, branch_id? }` | `USER_ROLES.update` | |
+| `PATCH /staff-assignments/{id}/status` `{ is_active }` | `USER_ROLES.update` | |
+
+- **Who has these grants:** `OWNER` has view, create and update on Staff Assignments (migration `20261127000000`) and view on Roles. `VIEWER` has neither, because the staff list shows phone numbers.
+- **The rules,** in `src/services/staff-assignment.service.ts` and `staff-rules.ts`, shared with the scripts:
+  - only roles of this organization (a platform role is not found);
+  - a branch only when the organization has branches;
+  - one person, one organization;
+  - an identical active assignment is unchanged, and an identical inactive one is reactivated;
+  - the **last active Owner** can't be deactivated or moved to another role (409 `last_owner_assignment`). Owner changes in one organization are serialized by an advisory lock, so two Owners can't remove each other at the same moment.
+- **Not built:** endpoints for Modules, Role Templates and Permission Overrides. They're platform administration, and the scripts cover them.
+
+### Rules for later role and access editing
+
+When editing roles and role access over HTTP is built, these rules apply. Each is enforced in the service with a friendly error first; the
 database trigger and constraints stay as the backstop.
 
 - **Platform level is Super Admin only.** Only a platform Super Admin (signed in as that assignment) may

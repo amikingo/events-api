@@ -10,6 +10,8 @@ import * as person from "../validators/person.js";
 import * as publicEvent from "../validators/public-event.js";
 import * as publicRegistration from "../validators/public-registration.js";
 import * as registration from "../validators/registration.js";
+import * as role from "../validators/role.js";
+import * as staffAssignment from "../validators/staff-assignment.js";
 import * as ticketType from "../validators/ticket-type.js";
 import * as venue from "../validators/venue.js";
 
@@ -82,6 +84,15 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types", contract: ticketType.listTicketTypesRequest, summary: "List an event's ticket types", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}", contract: ticketType.updateTicketTypeRequest, bodyComponent: "TicketTypeUpdateRequest", summary: "Update a ticket type (PATCH semantics)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}/status", contract: ticketType.changeTicketTypeStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a ticket type (a published event keeps at least one active)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
+
+  // --- Roles and staff assignments (Phase 2b) ---------------------------------------------------------
+  { method: "get", path: "/v1/organizations/{organizationId}/roles", contract: role.listRolesRequest, summary: "The organization's roles and what each may do, module by module (read only)", tags: ["Access control"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/roles/{roleId}", contract: role.getRoleRequest, summary: "Read a role and its grants", tags: ["Access control"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/staff-lookup", contract: staffAssignment.lookUpStaffRequest, summary: "Find the Cheche account using a mobile number, to confirm the person before assigning a role (404 central_account_not_found when there is none)", tags: ["Access control"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/staff-assignments", contract: staffAssignment.listStaffAssignmentsRequest, summary: "The organization's staff: role, branch and name (profile is null when Central Auth can't be read)", tags: ["Access control"], auth: "staff", successStatus: 200 },
+  { method: "post", path: "/v1/organizations/{organizationId}/staff-assignments", contract: staffAssignment.createStaffAssignmentRequest, bodyComponent: "StaffAssignmentCreateRequest", summary: "Give the person behind a mobile number a role of this organization: 201 when given (new or reactivated), 200 when they already had it", description: "The mobile is looked up in Central Auth on the server; the person must already have a Cheche account. Errors: 404 central_account_not_found, 409 conflict (already staff of another organization or the platform), 409 role_inactive, 409 branch_inactive, 409 invalid_branch_state (no branches), 503 central_auth_unavailable.", tags: ["Access control"], auth: "staff", successStatus: 201 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/staff-assignments/{assignmentId}", contract: staffAssignment.updateStaffAssignmentRequest, bodyComponent: "StaffAssignmentUpdateRequest", summary: "Change the role or branch of an assignment (the last active Owner keeps the Owner role: 409 last_owner_assignment)", tags: ["Access control"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/staff-assignments/{assignmentId}/status", contract: staffAssignment.changeStaffAssignmentStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate an assignment (the last active Owner can't be deactivated: 409 last_owner_assignment)", tags: ["Access control"], auth: "staff", successStatus: 200 },
 
   // --- Guests (person: reusable attendee profiles) -------------------------------------------------
   { method: "post", path: "/v1/organizations/{organizationId}/persons", contract: person.createPersonRequest, bodyComponent: "PersonCreateRequest", summary: "Create a guest profile (only first_name is required; Ethiopian mobiles are stored as +251…)", tags: ["Guests"], auth: "staff", successStatus: 201 },

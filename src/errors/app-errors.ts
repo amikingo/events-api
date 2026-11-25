@@ -293,3 +293,19 @@ export class IdempotencyKeyReusedError extends AppError {
     super(message, { statusCode: 409, code: "idempotency_key_reused", details, cause: options?.cause });
   }
 }
+
+// --- Staff management (Phase 2b) -----------------------------------------------------------
+
+/** No Cheche (auth-cheche) account uses this mobile number; the person must create one first. */
+export class CentralAccountNotFoundError extends AppError {
+  constructor(message = "No Cheche account uses this mobile number", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 404, code: "central_account_not_found", details, cause: options?.cause });
+  }
+}
+
+/** The change would leave the organization without an active Owner. */
+export class LastOwnerAssignmentError extends AppError {
+  constructor(message = "The organization must keep at least one active Owner", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "last_owner_assignment", details, cause: options?.cause });
+  }
+}

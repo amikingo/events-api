@@ -1,5 +1,6 @@
 import { Op, type CreationAttributes } from "sequelize";
-import { RoleModuleAccess } from "../models/index.js";
+import { AppModule, RoleModuleAccess } from "../models/index.js";
+import type { ModuleRow } from "../models/module.js";
 import type { RoleModuleAccessRow } from "../models/role-module-access.js";
 import { toPlainList } from "../utils/sequelize.js";
 import { txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
@@ -46,4 +47,19 @@ async function bulkCreate(values: CreationAttributes<RoleModuleAccess>[], option
   await RoleModuleAccess.bulkCreate(values, txOptions(options));
 }
 
-export const roleModuleAccessRepository = { listByRoleIdsAndModule, listByRoleId, bulkCreate };
+/** A grant with the module it is for (code and name), for showing what a role may do. */
+export type RoleGrantRow = RoleModuleAccessRow & { module: Pick<ModuleRow, "code" | "module_name" | "sno"> };
+
+async function listWithModulesByRoleIds(roleIds: readonly string[], options: RepoOptions = {}): Promise<RoleGrantRow[]> {
+  if (roleIds.length === 0) return [];
+  const rows = await RoleModuleAccess.findAll({
+    where: { role_id: { [Op.in]: [...roleIds] } },
+    attributes: [...attributes],
+    include: [{ model: AppModule, as: "module", required: true, attributes: ["code", "module_name", "sno"] }],
+    order: [[{ model: AppModule, as: "module" }, "sno", "ASC"]],
+    ...txOptions(options),
+  });
+  return toPlainList<RoleGrantRow>(rows);
+}
+
+export const roleModuleAccessRepository = { listByRoleIdsAndModule, listByRoleId, listWithModulesByRoleIds, bulkCreate };

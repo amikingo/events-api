@@ -17,6 +17,7 @@ import { DEFAULT_TENANT_ROLES, OWNER_ROLE_CODE } from "../utils/default-roles.js
 import type { PermissionAction, PermissionField } from "../utils/rbac.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 import { organizationService } from "./organization.service.js";
+import { staffRules } from "./staff-rules.js";
 
 /**
  * Pilot provisioning, run from operational scripts (no HTTP endpoint yet). Every call is one transaction and
@@ -51,8 +52,7 @@ export type AssignStaffResult = {
   branchId: string | null;
 };
 
-const ELSEWHERE_MESSAGE =
-  "This person already has assignments in another organization or at platform level (inactive ones count too)";
+
 
 function permissionFlags(actions: readonly PermissionAction[]): Record<PermissionField, boolean> {
   return {
@@ -70,12 +70,6 @@ function permissionFlags(actions: readonly PermissionAction[]): Record<Permissio
  * Mirrors fn_user_role_scope_guard: a person is platform staff or staff of exactly one organization, and
  * every assignment counts, active or not. `organizationId` null means "a brand-new organization".
  */
-async function assertNotStaffElsewhere(userId: string, organizationId: string | null, transaction: Transaction): Promise<void> {
-  const assignments = await userRoleRepository.listAllByUser(userId, { transaction });
-  if (assignments.some((assignment) => organizationId === null || assignment.organization_id !== organizationId)) {
-    throw new ConflictError(ELSEWHERE_MESSAGE, { field: "user_id" });
-  }
-}
 
 async function createDefaultRoles(
   organizationId: string,
@@ -124,7 +118,7 @@ async function provisionOrganizer(
     if (await organizationRepository.findBySlug(slug, { transaction })) {
       throw new ConflictError("Organization slug is already in use", { field: "slug" });
     }
-    await assertNotStaffElsewhere(input.ownerUserId, null, transaction);
+    await staffRules.assertNotStaffElsewhere(input.ownerUserId, null, transaction);
 
     if (!apply) {
       return { applied: false, slug, hasBranches, organizationId: null, defaultBranchId: null, roleIds: {}, ownerAssignmentId: null };
@@ -203,7 +197,7 @@ async function assignStaff(
       branchId = branch.id;
     }
 
-    await assertNotStaffElsewhere(input.userId, organization.id, transaction);
+    await staffRules.assertNotStaffElsewhere(input.userId, organization.id, transaction);
 
     const existing = await userRoleRepository.findByScope(
       { userId: input.userId, roleId: role.id, organizationId: organization.id, branchId },

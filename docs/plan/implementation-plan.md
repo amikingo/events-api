@@ -358,6 +358,22 @@ curl -X POST -H "Authorization: Bearer <viewer token>" -H 'Content-Type: applica
 - The demo reproduces an allowed and a denied request from the command line.
 - **This completes the first milestone:** a staff member signs in, sees their permissions in `/me`, can act in their own organization, and is denied everywhere else.
 
+### Phase 2b — Roles and Staff Assignments over HTTP (25 November 2026)
+
+**Why:** Phase 2 managed staff through scripts only. events-web showed 6 of the 11 menu items, because the *Access Control* items had no endpoints, while owners were already granted view on Roles and Staff Assignments.
+
+**Decisions (25 November 2026):**
+- **Build:** Staff Assignments (list, look up, add, change role or branch, activate or deactivate) and Roles (read only).
+- **Leave hidden:** Modules, Role Templates and Permission Overrides.
+- **Adding staff = look up only:** the person needs a Cheche account, found by mobile. This API never creates accounts or handles passwords.
+- **Owners** gain create and update on `USER_ROLES`.
+- **The last active Owner** can't be removed.
+- **Screens:** your colleague's AI builds them from the spec in `docs/frontend-integration.md`, after this is pushed.
+
+Details are in `docs/rbac-application-flow.md` ("Managing staff over HTTP").
+
+**Status: done.** Migration `20261127000000-grant-staff-management-to-owners` was applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 256 of 256 on the real database, none skipped. That includes matrix rows 51–55, with auth-cheche stubbed: roles, lookup and assign, refusals, the last-Owner guard, access limits, and names being best effort. `npm run check` passed beforehand, with the OpenAPI snapshot up to date. Not verified yet: the service token against the real auth-cheche (check it by hand with `staff-lookup`).
+
 ---
 
 ## Phases 3–5 — outline

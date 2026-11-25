@@ -121,7 +121,91 @@ async function setActive(
   await UserRole.update({ is_active: isActive, updated_by: actorId }, { where: { id }, ...txOptions(options) });
 }
 
+// --- Staff management (Phase 2b): an organization's assignments --------------------------------
+
+/** A staff-list row: the assignment with its role and branch. */
+export type StaffAssignmentRow = UserRoleRow & { role: RoleRow; branch: BranchRow | null };
+
+const staffIncludes = [
+  { model: Role, as: "role", required: true },
+  { model: Branch, as: "branch", required: false },
+];
+
+async function listByOrganization(
+  organizationId: string,
+  filters: { isActive?: boolean | undefined; limit: number; offset: number },
+  options: RepoOptions = {},
+): Promise<{ rows: StaffAssignmentRow[]; count: number }> {
+  const { rows, count } = await UserRole.findAndCountAll({
+    where: { organization_id: organizationId, ...(typeof filters.isActive === "boolean" ? { is_active: filters.isActive } : {}) },
+    attributes: [...attributes],
+    include: staffIncludes,
+    order: [
+      ["is_active", "DESC"],
+      ["created_at", "ASC"],
+      ["id", "ASC"],
+    ],
+    limit: filters.limit,
+    offset: filters.offset,
+    ...txOptions(options),
+  });
+  return { rows: toPlainList<StaffAssignmentRow>(rows), count };
+}
+
+// Keyed by organization_id + id: an assignment id alone is never a tenant boundary.
+async function findByOrganizationAndId(organizationId: string, assignmentId: string, options: RepoOptions = {}): Promise<UserRoleRow | null> {
+  const row = await UserRole.findOne({
+    where: { organization_id: organizationId, id: assignmentId },
+    attributes: [...attributes],
+    ...txOptions(options),
+    ...lockOptions(options),
+  });
+  return toPlain<UserRoleRow>(row);
+}
+
+async function findStaffByOrganizationAndId(
+  organizationId: string,
+  assignmentId: string,
+  options: RepoOptions = {},
+): Promise<StaffAssignmentRow | null> {
+  const row = await UserRole.findOne({
+    where: { organization_id: organizationId, id: assignmentId },
+    attributes: [...attributes],
+    include: staffIncludes,
+    ...txOptions(options),
+  });
+  return toPlain<StaffAssignmentRow>(row);
+}
+
+async function updateRoleAndBranch(
+  id: string,
+  values: { role_id: string; branch_id: string | null; updated_by: string | null },
+  options: WriteOptions = {},
+): Promise<void> {
+  await UserRole.update(values, { where: { id }, ...txOptions(options) });
+}
+
+/** Active assignments of the organization's OWNER role. */
+async function countActiveOwners(organizationId: string, options: RepoOptions = {}): Promise<number> {
+  return UserRole.count({
+    where: { organization_id: organizationId, is_active: true },
+    include: [{ model: Role, as: "role", required: true, where: { code: "OWNER", is_active: true }, attributes: [] }],
+    ...txOptions(options),
+  });
+}
+
+/** Serializes Owner changes in one organization, so two Owners can't remove each other at the same moment. */
+async function lockOwnersOfOrganization(organizationId: string, options: { transaction: Transaction }): Promise<void> {
+  await acquireAdvisoryXactLock("organization_owners", organizationId, options);
+}
+
 export const userRoleRepository = {
+  listByOrganization,
+  findByOrganizationAndId,
+  findStaffByOrganizationAndId,
+  updateRoleAndBranch,
+  countActiveOwners,
+  lockOwnersOfOrganization,
   listActiveAssignmentsByUser,
   findActiveAssignmentByIdAndUser,
   findPlatformAssignment,

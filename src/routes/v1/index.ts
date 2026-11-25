@@ -9,6 +9,8 @@ import { organizationsRouter } from "./organizations.js";
 import { personsRouter } from "./persons.js";
 import { publicEventsRouter } from "./public-events.js";
 import { registrationsRouter } from "./registrations.js";
+import { rolesRouter } from "./roles.js";
+import { staffAssignmentsRouter } from "./staff-assignments.js";
 import { ticketTypesRouter } from "./ticket-types.js";
 import { venuesRouter } from "./venues.js";
 
@@ -24,6 +26,8 @@ router.use("/organizations/:organizationId/events", eventsRouter);
 router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticketTypesRouter);
 router.use("/organizations/:organizationId/events/:eventId/registrations", registrationsRouter);
 router.use("/organizations/:organizationId/persons", personsRouter);
+router.use("/organizations/:organizationId/roles", rolesRouter);
+router.use("/organizations/:organizationId", staffAssignmentsRouter); // /staff-assignments, /staff-lookup
 router.use("/public", publicEventsRouter); // no login: catalog and event pages
 
 if (env.API_DOCS_ENABLED) {
