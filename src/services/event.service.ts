@@ -1,4 +1,5 @@
 import type { Transaction } from "sequelize";
+import { fileStorageClient } from "../clients/file-storage.client.js";
 import { ConflictError, EventNotPublishableError, InvalidEventStateError, ValidationAppError } from "../errors/app-errors.js";
 import { toEventDto, type EventDto } from "../mappers/event.mapper.js";
 import type { EventRow, EventStatus } from "../models/event.js";
@@ -132,6 +133,22 @@ async function chooseSlug(
   return firstFreeSlug(base, new Set(await eventRepository.listSlugsWithPrefix(organizationId, base, { transaction })));
 }
 
+/** Staff replies carry the cover's URL. One query for a whole page of events. */
+async function withCovers(organizationId: string, events: EventRow[], now: Date, transaction?: Transaction): Promise<EventDto[]> {
+  const fileIds = [...new Set(events.flatMap((event) => (event.cover_file_id === null ? [] : [event.cover_file_id])))];
+  const files = await fileRepository.listByOrganizationAndIds(organizationId, fileIds, { transaction: transaction ?? null });
+  const urls = new Map(files.map((file) => [file.id, fileStorageClient.url(file.storage_key)]));
+  return events.map((event) => {
+    const url = event.cover_file_id === null ? undefined : urls.get(event.cover_file_id);
+    return toEventDto(event, now, url === undefined ? null : { url });
+  });
+}
+
+async function withCover(event: EventRow, transaction?: Transaction): Promise<EventDto> {
+  const [dto] = await withCovers(event.organization_id, [event], new Date(), transaction);
+  return dto ?? toEventDto(event);
+}
+
 async function createEvent(organizationId: string, input: EventCreateInput, actorId: string | null): Promise<EventDto> {
   return runTransaction(async (transaction) => {
     const organization = ensureFound(await organizationRepository.findById(organizationId, { transaction }), "Organization not found");
@@ -183,7 +200,7 @@ async function createEvent(organizationId: string, input: EventCreateInput, acto
       },
       { transaction },
     );
-    return toEventDto(event);
+    return withCover(event, transaction);
   });
 }
 
@@ -195,12 +212,11 @@ async function listEvents(organizationId: string, query: EventListQuery): Promis
     limit,
     offset,
   });
-  const now = new Date();
-  return { rows: rows.map((row) => toEventDto(row, now)), count };
+  return { rows: await withCovers(organizationId, rows, new Date()), count };
 }
 
 async function getEvent(organizationId: string, eventId: string): Promise<EventDto> {
-  return toEventDto(ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId), "Event not found"));
+  return withCover(ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId), "Event not found"));
 }
 
 async function updateEvent(organizationId: string, eventId: string, input: EventUpdateInput, actorId: string | null): Promise<EventDto> {
@@ -247,7 +263,7 @@ async function updateEvent(organizationId: string, eventId: string, input: Event
       { ...patch, updated_by: actorId },
       { transaction },
     );
-    return toEventDto(ensureFound(updated, "Event not found"));
+    return withCover(ensureFound(updated, "Event not found"), transaction);
   });
 }
 
@@ -264,7 +280,7 @@ async function changeEventStatus(
       await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }),
       "Event not found",
     );
-    if (current.status === target) return toEventDto(current);
+    if (current.status === target) return withCover(current, transaction);
     const from: EventStatus = current.status; // the model's creation-optional brand can't index a record
     if (!ALLOWED_TRANSITIONS[from].includes(target)) {
       throw new InvalidEventStateError(`An event can't go from ${current.status} to ${target}`, { from: current.status, to: target });
@@ -278,7 +294,7 @@ async function changeEventStatus(
     if (target === "PUBLISHED" && current.published_at === null) values.published_at = new Date();
 
     const updated = await eventRepository.updateByOrganizationAndId(organizationId, eventId, values, { transaction });
-    return toEventDto(ensureFound(updated, "Event not found"));
+    return withCover(ensureFound(updated, "Event not found"), transaction);
   });
 }
 

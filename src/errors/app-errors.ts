@@ -189,6 +189,20 @@ export class BranchInactiveError extends AppError {
   }
 }
 
+/** An uploaded file whose actual contents are not an accepted format (checked by magic bytes, not by name). */
+export class UnsupportedFileTypeError extends AppError {
+  constructor(message = "Unsupported file type", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 415, code: "unsupported_file_type", details, cause: options?.cause });
+  }
+}
+
+/** The files folder is missing or not writable; nothing was recorded. */
+export class FileStorageUnavailableError extends AppError {
+  constructor(message = "File storage is unavailable", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 503, code: "file_storage_unavailable", details, cause: options?.cause });
+  }
+}
+
 /** An event change its current status does not allow (e.g. an invalid transition, editing a CLOSED event). */
 export class InvalidEventStateError extends AppError {
   constructor(message = "The event's current status does not allow this", details?: unknown, options?: ErrorOptions) {

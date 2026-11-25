@@ -55,6 +55,7 @@ test("public shapes carry only visitor fields: no client, staff, internal ids or
     ...eventRow({ status: "PUBLISHED", visibility: "PUBLIC", customer_account_id: "client-id", description: "Annual forum", category: "Conference" }),
     organization: { name: "Selam Events", slug: "selam-events" },
     venue: { name: "Millennium Hall", address: null, city: "Addis Ababa", country: "ET" },
+    coverFile: null,
   };
   const now = new Date("2027-01-15T00:00:00Z");
 

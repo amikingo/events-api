@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { StartupConfigError } from "../errors/app-errors.js";
 
@@ -52,6 +53,13 @@ const EnvSchema = z.object({
     .optional(),
   // How long a "Central Auth confirmed this person" cookie lets staff refresh skip Central. 0 = always ask Central.
   AUTH_CENTRAL_SESSION_TTL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(21_600),
+  // Where uploaded files live (e.g. event covers). Default /assets/uploads, as in bookings_api. Must be absolute:
+  // in production it is a mounted volume; a folder inside the app would be wiped on every redeploy.
+  FILES_DIR: z
+    .string()
+    .trim()
+    .refine((value) => isAbsolute(value), "must be an absolute path, e.g. /assets/uploads (never a folder inside the app)")
+    .optional(),
 });
 
 export type Env = z.output<typeof EnvSchema>;

@@ -20,6 +20,8 @@ export type ApiOperation = {
   contract: RequestContract;
   /** components/schemas name for the body. Required exactly when contract.body exists. */
   bodyComponent?: string;
+  /** A multipart/form-data upload of one file in this field (parsed by multer on the route, not by validate()). */
+  fileUpload?: { field: string; description: string };
   summary: string;
   description?: string;
   tags: string[];
@@ -69,6 +71,8 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}", contract: event.getEventRequest, summary: "Read an event", tags: ["Events"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}", contract: event.updateEventRequest, bodyComponent: "EventUpdateRequest", summary: "Update an event (PATCH semantics; the slug is frozen after the first publication; set registration_closes_at to stop sign-ups early)", tags: ["Events"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/status", contract: event.changeEventStatusRequest, bodyComponent: "EventStatusChangeRequest", summary: "Publish, close or cancel an event (DRAFT→PUBLISHED|CANCELLED, PUBLISHED→CLOSED|CANCELLED)", tags: ["Events"], auth: "staff", successStatus: 200 },
+  { method: "put", path: "/v1/organizations/{organizationId}/events/{eventId}/cover", contract: event.setEventCoverRequest, fileUpload: { field: "file", description: "JPEG, PNG or WebP, up to 5 MB, checked by its contents. One file and no other fields." }, summary: "Upload and attach the event's cover image (replaces the current cover; cover.url in the reply is a path under /assets/uploads)", description: "Errors: 400 missing file, extra file or extra field; 413 over 5 MB; 415 not a JPEG, PNG or WebP; 409 CLOSED or CANCELLED event; 503 storage unavailable.", tags: ["Events"], auth: "staff", successStatus: 200 },
+  { method: "delete", path: "/v1/organizations/{organizationId}/events/{eventId}/cover", contract: event.removeEventCoverRequest, summary: "Remove the event's cover image (the event then has cover: null)", tags: ["Events"], auth: "staff", successStatus: 200 },
 
   // --- Ticket types -----------------------------------------------------------------------------
   { method: "post", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types", contract: ticketType.createTicketTypeRequest, bodyComponent: "TicketTypeCreateRequest", summary: "Add a free ticket type (its limit must fit within the event's capacity)", tags: ["Ticket types"], auth: "staff", successStatus: 201 },
@@ -93,7 +97,7 @@ type Operation = {
   tags: string[];
   security: Array<Record<string, string[]>>;
   parameters?: Parameter[];
-  requestBody?: { required: boolean; content: { "application/json": { schema: { $ref: string } } } };
+  requestBody?: { required: boolean; content: Record<string, { schema: JsonSchema }> };
   responses: Record<string, unknown>;
 };
 export type OpenApiDocument = {
@@ -151,7 +155,25 @@ export function buildV1Document(): OpenApiDocument {
       throw new Error(`${label}: bodyComponent must be set exactly when the contract has a body`);
     }
 
+    if (operation.fileUpload && contract.body) throw new Error(`${label}: a file upload cannot also have a JSON body`);
+
     let requestBody: Operation["requestBody"];
+    if (operation.fileUpload) {
+      const { field, description } = operation.fileUpload;
+      requestBody = {
+        required: true,
+        content: {
+          "multipart/form-data": {
+            schema: {
+              type: "object",
+              required: [field],
+              properties: { [field]: { type: "string", format: "binary", description } },
+              additionalProperties: false,
+            },
+          },
+        },
+      };
+    }
     if (contract.body && operation.bodyComponent) {
       const owner = componentOwners.get(operation.bodyComponent);
       if (owner && owner !== contract.body) throw new Error(`Component ${operation.bodyComponent} names two different schemas`);

@@ -8,9 +8,13 @@ import type { PublicEventRow } from "../repositories/event.repository.js";
  */
 export type EventDisplayStatus = EventStatus | "LIVE";
 
+/** The cover image's public URL path (e.g. /assets/uploads/events/covers/<uuid>.png), or null. */
+export type CoverDto = { url: string } | null;
+
 export type EventDto = EventRow & {
   /** LIVE for a published event while starts_at <= now < ends_at; otherwise the stored status. A cancelled event stays CANCELLED. */
   display_status: EventDisplayStatus;
+  cover: CoverDto;
 };
 
 export function eventDisplayStatus(event: Pick<EventRow, "status" | "starts_at" | "ends_at">, now: Date): EventDisplayStatus {
@@ -20,8 +24,8 @@ export function eventDisplayStatus(event: Pick<EventRow, "status" | "starts_at" 
   return event.status;
 }
 
-export function toEventDto(event: EventRow, now: Date = new Date()): EventDto {
-  return { ...event, display_status: eventDisplayStatus(event, now) };
+export function toEventDto(event: EventRow, now: Date = new Date(), cover: CoverDto = null): EventDto {
+  return { ...event, display_status: eventDisplayStatus(event, now), cover };
 }
 
 // --- Public (visitor) shapes, Phase 3c --------------------------------------------------------------
@@ -50,8 +54,7 @@ export type PublicEventCard = {
   timezone: string;
   display_status: EventDisplayStatus;
   category: string | null;
-  /** Arrives with cover upload (3d). */
-  cover: null;
+  cover: CoverDto;
   registration_open: boolean;
   organization: { name: string; slug: string };
   venue: { name: string; address: string | null; city: string | null; country: string | null } | null;
@@ -65,7 +68,7 @@ export type PublicEventDetail = PublicEventCard & {
   ticket_types: Array<{ code: string; name: string }>;
 };
 
-export function toPublicEventCard(event: PublicEventRow, now: Date): PublicEventCard {
+export function toPublicEventCard(event: PublicEventRow, now: Date, cover: CoverDto = null): PublicEventCard {
   return {
     name: event.name,
     slug: event.slug,
@@ -74,7 +77,7 @@ export function toPublicEventCard(event: PublicEventRow, now: Date): PublicEvent
     timezone: event.timezone,
     display_status: eventDisplayStatus(event, now),
     category: event.category,
-    cover: null,
+    cover,
     registration_open: isRegistrationOpen(event, now),
     organization: { name: event.organization.name, slug: event.organization.slug },
     venue: event.venue
@@ -83,9 +86,14 @@ export function toPublicEventCard(event: PublicEventRow, now: Date): PublicEvent
   };
 }
 
-export function toPublicEventDetail(event: PublicEventRow, activeTicketTypes: TicketTypeRow[], now: Date): PublicEventDetail {
+export function toPublicEventDetail(
+  event: PublicEventRow,
+  activeTicketTypes: TicketTypeRow[],
+  now: Date,
+  cover: CoverDto = null,
+): PublicEventDetail {
   return {
-    ...toPublicEventCard(event, now),
+    ...toPublicEventCard(event, now, cover),
     description: event.description,
     registration_opens_at: event.registration_opens_at,
     registration_closes_at: event.registration_closes_at,

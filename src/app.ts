@@ -4,6 +4,7 @@ import express, { type Express } from "express";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import { env } from "./config/env.js";
+import { filesConfig } from "./config/files.js";
 import { errorHandler, notFound } from "./middleware/error-handler.js";
 import "./models/index.js"; // initialize models + associations before any repository runs
 import { rootRouter } from "./routes/index.js";
@@ -48,6 +49,25 @@ export function createApp(): Express {
     }),
   );
   app.use(cors(corsOptions));
+
+  // Uploaded files (event covers) served from FILES_DIR. Names are random UUIDs and never reused, so they can be
+  // cached for a year. CORP cross-origin lets the booking site show them in <img> (helmet's default is same-origin).
+  app.use(
+    filesConfig.publicPath,
+    express.static(filesConfig.rootDir, {
+      index: false,
+      redirect: false, // a folder is a plain 404, never a redirect that reveals it exists
+      dotfiles: "deny",
+      fallthrough: true, // anything not served falls through to the JSON 404
+      immutable: true,
+      maxAge: "365d",
+      setHeaders: (res) => {
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+      },
+    }),
+  );
+
   app.use(express.json({ limit: env.JSON_BODY_LIMIT }));
 
   app.use(rootRouter);

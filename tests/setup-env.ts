@@ -1,7 +1,21 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 /**
  * Loaded with --import before any test file, so config/env.ts parses a complete environment.
  * Real values from the shell (e.g. a CI Postgres service) take precedence.
  */
+
+// Uploads always go to a temporary folder, never a real FILES_DIR from the shell. The runner process creates it and
+// removes it on exit; the per-file child processes inherit EVENTS_TEST_FILES_DIR and reuse it (files run one at a time).
+if (process.env.EVENTS_TEST_FILES_DIR === undefined) {
+  const filesDir = mkdtempSync(join(tmpdir(), "events-api-files-"));
+  process.env.EVENTS_TEST_FILES_DIR = filesDir;
+  process.on("exit", () => rmSync(filesDir, { recursive: true, force: true }));
+}
+process.env.FILES_DIR = process.env.EVENTS_TEST_FILES_DIR;
+
 const defaults: Record<string, string> = {
   NODE_ENV: "test",
   LOG_LEVEL: "silent",

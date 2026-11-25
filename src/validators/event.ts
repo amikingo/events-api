@@ -89,3 +89,8 @@ export const getEventRequest = { params: eventParamsSchema } satisfies RequestCo
 export const updateEventRequest = { params: eventParamsSchema, body: eventUpdateSchema } satisfies RequestContract;
 
 export const changeEventStatusRequest = { params: eventParamsSchema, body: eventStatusChangeSchema } satisfies RequestContract;
+
+/** The image itself arrives as multipart/form-data (field "file"), parsed by middleware/upload.ts after authorization. */
+export const setEventCoverRequest = { params: eventParamsSchema } satisfies RequestContract;
+
+export const removeEventCoverRequest = { params: eventParamsSchema } satisfies RequestContract;

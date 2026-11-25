@@ -401,6 +401,14 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 
 **3c status: done.** Migration `20261125000200-add-event-published-at` was applied to `events_dev`; `TEST_DATABASE=1 npm test` passed 153 of 153 on the real database, none skipped (including matrix rows 32–37 through the public endpoints).
 
+**3d decisions (25 November 2026), detailed in `docs/events.md`:**
+- **Storage:** local disk in `FILES_DIR` (default `/assets/uploads`, a mounted volume in production), covers under `events/covers/<uuid>.<ext>`, behind a `save`/`delete`/`url` interface so a bucket can come later. No S3 SDK.
+- **Upload:** `multipart/form-data` through the API (multer, memory storage), one file in `file` and nothing else; JPEG, PNG or WebP by contents, up to 5 MB, no resizing.
+- **Serving:** `express.static` at `/assets/uploads` with CORP `cross-origin`; `cover: { url }` on staff and public replies.
+- **Records:** one `file` row per upload (`EVENT_COVER`, the event as entity, `uploaded_by`); old files are cleaned up later.
+
+**3d status: built, checks pending.** Migration `20261125000300-add-file-entity-uploader-provider` is written and not applied yet; matrix rows 38–40 are added.
+
 - **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
 - **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.
 - **Event states:** `DRAFT`, `PUBLISHED`, `CLOSED`, `CANCELLED`. *Live* is derived from dates. A new event gets **General Admission** automatically.

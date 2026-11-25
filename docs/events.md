@@ -114,8 +114,8 @@ Every change locks the event first and the ticket type second (the spec's lock o
 
 ### Files
 
-`file` holds tenant-scoped metadata (only `EVENT_COVER` for now). Uploading and the storage provider are 3d; until
-then `cover_file_id` stays empty in practice.
+`file` holds tenant-scoped metadata (only `EVENT_COVER` for now). Uploading and the storage provider arrived in 3d
+(below).
 
 ### Permissions
 
@@ -166,3 +166,68 @@ when it closes or is cancelled. Migration `20261125000200` backfilled existing r
 got `updated_at` as a **fallback**, because no publication time was recorded before (it is never earlier than the
 real first publication, and exact if the event wasn't edited after publishing). Existing CANCELLED events stayed
 NULL, because nothing proves they were ever published, so they stay private.
+
+## 3d: cover images
+
+Covers are stored the way bookings_api stores files: on the API server's disk, served by the API itself.
+
+### Endpoints
+
+| Method and path | Permission | Does |
+|---|---|---|
+| `PUT /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | Uploads an image and makes it the event's cover (replaces the current one) |
+| `DELETE /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | Removes the cover from the event (`cover: null`) |
+
+Both reply with the staff event, which now carries `cover: { url } | null`. The public card and event page carry the
+same `cover`. `url` is a **path** (`/assets/uploads/events/covers/<uuid>.png`); the frontend prefixes the API's
+origin.
+
+### The upload
+
+- `multipart/form-data` with exactly **one file in the field `file`** and nothing else. A second file, any other field,
+  or the file in another field: 400 `validation_error`. No file at all, or a JSON body: 400 (`file_required`).
+- **JPEG, PNG or WebP, up to 5 MB.** The type is read from the file's first bytes, never from its name or the
+  Content-Type the browser sent; anything else is 415 `unsupported_file_type` (SVG and GIF included). Over 5 MB is 413
+  `payload_too_large`. No resizing.
+- The body is parsed **after** authentication and the permission check, and held in memory until the type is
+  confirmed, so a refused upload never touches the disk.
+- A CLOSED or CANCELLED event's cover can no longer change: 409 `invalid_event_state`. DRAFT and PUBLISHED events can.
+- The stored name is a random UUID with the detected extension; the original name is kept only as metadata.
+
+### Storage
+
+- Folder: `FILES_DIR` (optional, absolute path). When unset, `/assets/uploads`, the bookings_api rule. In production
+  this folder is a **mounted volume**, so files survive redeploys; the API never falls back to a folder inside the app.
+  On a Mac for local development set `FILES_DIR` (e.g. `/Users/<you>/events-uploads`), because `/assets/uploads`
+  doesn't exist there.
+- Covers go in the purpose subfolder `events/covers/`. `file.storage_key` is the path inside `FILES_DIR`.
+- Storage sits behind `clients/file-storage.client.ts` (`save`, `delete`, `url`), so a bucket can be added later
+  without touching event code. `file.storage_provider` records where each file lives (`local` today).
+- If the folder is missing or not writable, the upload answers 503 `file_storage_unavailable` and nothing is recorded.
+
+### Recording
+
+One transaction locks the event, checks its status again, inserts a `file` row (`purpose = 'EVENT_COVER'`,
+`entity_type = 'EVENT'`, `entity_id` = the event, `uploaded_by` = the staff member) and sets `event.cover_file_id`.
+If that transaction fails, the file just written is deleted (best effort, logged when it can't be).
+
+Replacing or removing a cover **keeps the old file and its row**; a later clean-up job removes files no event points
+at.
+
+### Serving
+
+`express.static` serves `FILES_DIR` at `/assets/uploads`, without login:
+- `Cross-Origin-Resource-Policy: cross-origin`, so the booking site can show covers in `<img>` (helmet's default
+  `same-origin` would block them);
+- `Cache-Control: public, max-age=31536000, immutable`, because a name is never reused;
+- `X-Content-Type-Options: nosniff`; no folder listings, no redirects for folders, no dotfiles. Anything not served
+  falls through to the usual JSON 404.
+
+### Proof (matrix rows 38–40)
+
+- **38:** Selam's owner uploads a PNG to the published Annual Summit. One `EVENT_COVER` row is recorded. The file is
+  served byte for byte with CORP `cross-origin`, and the staff event, public card and public page show the same path.
+- **39:** a viewer, branch-limited staff, the owner on another tenant's path, a non-image named `.png` (415) and the
+  CLOSED Banking Forum (409) are all refused, with no new file on disk and no new row.
+- **40:** a JPEG replaces the cover, giving a new path. Removing the cover clears the staff and public pages. Both
+  files and both rows remain for the later clean-up.

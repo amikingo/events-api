@@ -2,6 +2,7 @@ import { Router } from "express";
 import { eventController } from "../../controllers/event.controller.js";
 import { requireStaffAuthentication } from "../../middleware/authentication.js";
 import { organizationScopeFromParams, requirePermission } from "../../middleware/permission.js";
+import { coverImageUpload } from "../../middleware/upload.js";
 import { validate } from "../../middleware/validate.js";
 import { MODULE_CODES } from "../../utils/module-codes.js";
 import {
@@ -9,6 +10,8 @@ import {
   createEventRequest,
   getEventRequest,
   listEventsRequest,
+  removeEventCoverRequest,
+  setEventCoverRequest,
   updateEventRequest,
 } from "../../validators/event.js";
 
@@ -58,4 +61,22 @@ eventsRouter.patch(
   validate(changeEventStatusRequest),
   requirePermission({ moduleCode: MODULE_CODES.EVENTS, action: "update", scope: organizationScopeFromParams }),
   eventController.changeEventStatus,
+);
+
+// Cover upload: the multipart body is parsed only after authentication and authorization.
+eventsRouter.put(
+  "/:eventId/cover",
+  requireStaffAuthentication,
+  validate(setEventCoverRequest),
+  requirePermission({ moduleCode: MODULE_CODES.EVENTS, action: "update", scope: organizationScopeFromParams }),
+  coverImageUpload,
+  eventController.setEventCover,
+);
+
+eventsRouter.delete(
+  "/:eventId/cover",
+  requireStaffAuthentication,
+  validate(removeEventCoverRequest),
+  requirePermission({ moduleCode: MODULE_CODES.EVENTS, action: "update", scope: organizationScopeFromParams }),
+  eventController.removeEventCover,
 );

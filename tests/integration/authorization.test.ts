@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createApp } from "../../src/app.js";
+import { filesConfig } from "../../src/config/files.js";
 import { sequelize } from "../../src/db.js";
 import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { migrator } from "../../src/migrator.js";
-import { AppEvent, Branch, CustomerAccount, Organization, UserModuleAccess } from "../../src/models/index.js";
+import { AppEvent, Branch, CustomerAccount, Organization, StoredFile, UserModuleAccess } from "../../src/models/index.js";
 import { eventRepository } from "../../src/repositories/event.repository.js";
 import { moduleRepository } from "../../src/repositories/module.repository.js";
 import { userRoleRepository } from "../../src/repositories/user-role.repository.js";
@@ -13,7 +16,7 @@ import { branchService } from "../../src/services/branch.service.js";
 import { devStaffTokenService } from "../../src/services/dev-staff-token.service.js";
 import { organizationProvisioningService } from "../../src/services/organization-provisioning.service.js";
 import { platformBootstrapService } from "../../src/services/platform-bootstrap.service.js";
-import { call, withServer } from "../helpers/http.js";
+import { call, withServer, type TestResponse } from "../helpers/http.js";
 
 /**
  * Phase 2 authorization matrix against a real, disposable PostgreSQL (TEST_DATABASE=1): the real app, real
@@ -539,4 +542,105 @@ test("row 37: an event leaves the catalog at its exact end time; an inactive org
   await Organization.update({ is_active: false }, { where: { id: fixture.hornId } });
   assert.equal((await publicGet("/v1/public/organizations/horn-health-alliance/events/banking-forum")).status, 404);
   assert.equal((await publicGet("/v1/public/events?organization=horn-health-alliance")).body.meta.count, 0);
+});
+
+// --- Phase 3d: event covers (local disk under FILES_DIR, a temporary folder in tests) -------------------
+
+const PNG_COVER = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("integration cover")]);
+const JPEG_COVER = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("integration cover, second")]);
+const coversFolder = join(filesConfig.rootDir, "events", "covers");
+const coverFixture = { firstUrl: "", firstKey: "" };
+
+function coverForm(bytes: Buffer, name: string): FormData {
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(bytes)]), name);
+  return form;
+}
+
+async function uploadAs(person: Person, path: string, form: FormData): Promise<TestResponse> {
+  const token = tokens.get(person);
+  assert.ok(token, `no token for ${person}`);
+  return withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${path}`, { method: "PUT", headers: { Authorization: `Bearer ${token}` }, body: form });
+    const text = await response.text();
+    return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
+  });
+}
+
+const summitCoverPath = () => `/v1/organizations/${fixture.selamId}/events/${publicFixture.summitId}/cover`;
+const coversOfSummit = () => StoredFile.findAll({ where: { entity_id: publicFixture.summitId }, order: [["created_at", "ASC"]], raw: true });
+const filesOnDisk = () => (existsSync(coversFolder) ? readdirSync(coversFolder).length : 0);
+
+test("row 38: an owner uploads a cover; it is recorded as EVENT_COVER, served publicly, and shown on staff and public pages", { skip }, async () => {
+  const uploaded = await uploadAs("SELAM_OWNER", summitCoverPath(), coverForm(PNG_COVER, "summit.png"));
+  assert.equal(uploaded.status, 200, JSON.stringify(uploaded.body));
+  const url: string = uploaded.body.data.cover.url;
+  assert.match(url, /^\/assets\/uploads\/events\/covers\/[0-9a-f-]{36}\.png$/);
+
+  const [file, ...others] = await coversOfSummit();
+  assert.ok(file && others.length === 0, "one file row");
+  assert.deepEqual(
+    [file.organization_id, file.purpose, file.entity_type, file.storage_provider, file.content_type, file.size_bytes, file.original_name, file.uploaded_by],
+    [fixture.selamId, "EVENT_COVER", "EVENT", "local", "image/png", PNG_COVER.length, "summit.png", PEOPLE.SELAM_OWNER],
+  );
+  assert.equal(`/assets/uploads/${file.storage_key}`, url);
+  assert.equal(uploaded.body.data.cover_file_id, file.id);
+  Object.assign(coverFixture, { firstUrl: url, firstKey: file.storage_key });
+
+  // Served without login, cross-origin, byte for byte.
+  const served = await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${url}`);
+    return { status: response.status, corp: response.headers.get("cross-origin-resource-policy"), bytes: Buffer.from(await response.arrayBuffer()) };
+  });
+  assert.deepEqual([served.status, served.corp], [200, "cross-origin"]);
+  assert.deepEqual(served.bytes, PNG_COVER);
+
+  // Staff read, public card and public page all carry the same path.
+  const staff = await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/events/${publicFixture.summitId}`);
+  assert.deepEqual(staff.body.data.cover, { url });
+  const catalog = await publicGet("/v1/public/events?organization=selam-events");
+  assert.deepEqual(catalog.body.data.find((card: { slug: string }) => card.slug === "annual-summit")?.cover, { url });
+  assert.deepEqual((await publicGet("/v1/public/organizations/selam-events/events/annual-summit")).body.data.cover, { url });
+});
+
+test("row 39: refused uploads write nothing: viewers, branch-limited staff, another tenant, a non-image, a CLOSED event", { skip }, async () => {
+  const diskBefore = filesOnDisk();
+  const rowsBefore = await StoredFile.count();
+
+  assert.equal((await uploadAs("SELAM_VIEWER", summitCoverPath(), coverForm(PNG_COVER, "a.png"))).status, 403);
+  assert.equal((await uploadAs("SELAM_ADDIS", summitCoverPath(), coverForm(PNG_COVER, "a.png"))).status, 403);
+  assert.equal((await as("SELAM_VIEWER", "DELETE", summitCoverPath())).status, 403);
+  const otherTenant = `/v1/organizations/${fixture.hornId}/events/${fixture.forumId}/cover`;
+  assert.equal((await uploadAs("SELAM_OWNER", otherTenant, coverForm(PNG_COVER, "a.png"))).status, 403);
+
+  const notImage = await uploadAs("SELAM_OWNER", summitCoverPath(), coverForm(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>"), "cover.png"));
+  assert.deepEqual([notImage.status, notImage.body.error.code], [415, "unsupported_file_type"]);
+  const closedForum = `/v1/organizations/${fixture.selamId}/events/${fixture.forumId}/cover`;
+  const closed = await uploadAs("SELAM_OWNER", closedForum, coverForm(PNG_COVER, "a.png"));
+  assert.deepEqual([closed.status, closed.body.error.code], [409, "invalid_event_state"]);
+
+  assert.equal(filesOnDisk(), diskBefore, "no file written");
+  assert.equal(await StoredFile.count(), rowsBefore, "no file row recorded");
+  const staff = await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/events/${publicFixture.summitId}`);
+  assert.deepEqual(staff.body.data.cover, { url: coverFixture.firstUrl }, "the cover is unchanged");
+});
+
+test("row 40: a new upload replaces the cover; removing it clears staff and public pages; old files stay for a later clean-up", { skip }, async () => {
+  const replaced = await uploadAs("SELAM_OWNER", summitCoverPath(), coverForm(JPEG_COVER, "summit-2.jpg"));
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  const secondUrl: string = replaced.body.data.cover.url;
+  assert.match(secondUrl, /\.jpg$/);
+  assert.notEqual(secondUrl, coverFixture.firstUrl);
+  assert.equal((await coversOfSummit()).length, 2);
+  assert.ok(existsSync(join(filesConfig.rootDir, coverFixture.firstKey)), "the replaced file is still on disk");
+
+  const removed = await as("SELAM_OWNER", "DELETE", summitCoverPath());
+  assert.deepEqual([removed.status, removed.body.data.cover, removed.body.data.cover_file_id], [200, null, null]);
+  assert.equal((await publicGet("/v1/public/organizations/selam-events/events/annual-summit")).body.data.cover, null);
+  const catalog = await publicGet("/v1/public/events?organization=selam-events");
+  assert.equal(catalog.body.data.find((card: { slug: string }) => card.slug === "annual-summit")?.cover, null);
+
+  assert.equal((await coversOfSummit()).length, 2, "file rows are kept");
+  assert.ok(existsSync(join(filesConfig.rootDir, coverFixture.firstKey)));
+  assert.ok(existsSync(join(filesConfig.rootDir, secondUrl.replace("/assets/uploads/", ""))));
 });

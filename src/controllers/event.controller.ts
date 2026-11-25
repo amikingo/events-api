@@ -1,8 +1,18 @@
 import type { Request, Response } from "express";
+import { ValidationAppError } from "../errors/app-errors.js";
 import { getValidated } from "../middleware/validate.js";
+import { eventCoverService } from "../services/event-cover.service.js";
 import { eventService } from "../services/event.service.js";
 import { sendList, sendSuccess } from "../utils/http.js";
-import { changeEventStatusRequest, createEventRequest, getEventRequest, listEventsRequest, updateEventRequest } from "../validators/event.js";
+import {
+  changeEventStatusRequest,
+  createEventRequest,
+  getEventRequest,
+  listEventsRequest,
+  removeEventCoverRequest,
+  setEventCoverRequest,
+  updateEventRequest,
+} from "../validators/event.js";
 import { getActorId } from "./helpers.js";
 
 async function createEvent(req: Request, res: Response): Promise<void> {
@@ -35,4 +45,26 @@ async function changeEventStatus(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, event, "Event status updated");
 }
 
-export const eventController = { createEvent, listEvents, getEvent, updateEvent, changeEventStatus };
+async function setEventCover(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, setEventCoverRequest);
+  if (!req.file) {
+    throw new ValidationAppError("Request validation failed", {
+      issues: [{ path: "body.file", message: "Attach the image as multipart/form-data in the field 'file'", code: "file_required" }],
+    });
+  }
+  const event = await eventCoverService.setEventCover(
+    params.organizationId,
+    params.eventId,
+    { bytes: req.file.buffer, originalName: req.file.originalname },
+    getActorId(req),
+  );
+  sendSuccess(res, 200, event, "Event cover updated");
+}
+
+async function removeEventCover(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, removeEventCoverRequest);
+  const event = await eventCoverService.removeEventCover(params.organizationId, params.eventId, getActorId(req));
+  sendSuccess(res, 200, event, "Event cover removed");
+}
+
+export const eventController = { createEvent, listEvents, getEvent, updateEvent, changeEventStatus, setEventCover, removeEventCover };

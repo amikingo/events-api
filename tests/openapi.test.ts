@@ -44,11 +44,25 @@ test("every body operation references a named component that exists", () => {
   for (const operation of v1Operations.filter((op) => op.contract.body)) {
     const requestBody = document.paths[operation.path]?.[operation.method]?.requestBody;
     assert.ok(requestBody, `${operation.path} has no requestBody`);
-    assert.deepEqual(requestBody.content["application/json"].schema, { $ref: `#/components/schemas/${operation.bodyComponent}` });
+    assert.deepEqual(requestBody.content["application/json"]?.schema, { $ref: `#/components/schemas/${operation.bodyComponent}` });
     assert.ok(document.components.schemas[operation.bodyComponent ?? ""], `missing component ${operation.bodyComponent}`);
   }
-  for (const operation of v1Operations.filter((op) => !op.contract.body)) {
+  for (const operation of v1Operations.filter((op) => !op.contract.body && !op.fileUpload)) {
     assert.equal(document.paths[operation.path]?.[operation.method]?.requestBody, undefined, `${operation.path} must stay bodyless`);
+  }
+});
+
+test("a file upload operation documents one multipart field and no JSON body", () => {
+  const document = buildV1Document();
+  const uploads = v1Operations.filter((op) => op.fileUpload);
+  assert.ok(uploads.length > 0);
+  for (const operation of uploads) {
+    const requestBody = document.paths[operation.path]?.[operation.method]?.requestBody;
+    assert.ok(requestBody, `${operation.path} has no requestBody`);
+    assert.equal(requestBody.content["application/json"], undefined);
+    const schema = requestBody.content["multipart/form-data"]?.schema as { required?: string[]; additionalProperties?: boolean } | undefined;
+    assert.deepEqual(schema?.required, [operation.fileUpload?.field]);
+    assert.equal(schema?.additionalProperties, false);
   }
 });
 

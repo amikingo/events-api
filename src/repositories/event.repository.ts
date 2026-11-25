@@ -1,7 +1,8 @@
 import { col, fn, Op, where as sqlWhere, type CreationAttributes, type Includeable, type Transaction } from "sequelize";
 import type { EventRow, EventStatus, EventVisibility } from "../models/event.js";
-import { AppEvent, Organization, Venue } from "../models/index.js";
+import { AppEvent, Organization, StoredFile, Venue } from "../models/index.js";
 import type { OrganizationRow } from "../models/organization.js";
+import type { StoredFileRow } from "../models/stored-file.js";
 import type { VenueRow } from "../models/venue.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
 import { acquireAdvisoryXactLock, lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
@@ -113,6 +114,7 @@ async function updateByOrganizationAndId(
 export type PublicEventRow = EventRow & {
   organization: Pick<OrganizationRow, "name" | "slug">;
   venue: Pick<VenueRow, "name" | "address" | "city" | "country"> | null;
+  coverFile: Pick<StoredFileRow, "storage_provider" | "storage_key"> | null;
 };
 
 /** Only active organizations are public; the organization filter (by slug) goes into the same join. */
@@ -126,6 +128,7 @@ function publicIncludes(organizationSlug: string | undefined): Includeable[] {
       where: { is_active: true, ...(organizationSlug === undefined ? {} : { slug: organizationSlug }) },
     },
     { model: Venue, as: "venue", required: false, attributes: ["name", "address", "city", "country"] },
+    { model: StoredFile, as: "coverFile", required: false, attributes: ["storage_provider", "storage_key"] },
   ];
 }
 

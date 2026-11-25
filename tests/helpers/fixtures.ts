@@ -8,6 +8,7 @@ import type { VenueRow } from "../../src/models/venue.js";
 import type { ModuleRow } from "../../src/models/module.js";
 import type { OrganizationRow } from "../../src/models/organization.js";
 import type { RoleRow } from "../../src/models/role.js";
+import type { StoredFileRow } from "../../src/models/stored-file.js";
 import type { AssignmentRow } from "../../src/repositories/user-role.repository.js";
 import { authTokenService } from "../../src/services/auth-token.service.js";
 
@@ -25,6 +26,7 @@ export const IDS = {
   venue: "99999999-9999-4999-8999-999999999991",
   event: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
   ticketType: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+  file: "dddddddd-dddd-4ddd-8ddd-ddddddddddd1",
 } as const;
 
 const audit = {
@@ -133,6 +135,24 @@ export function ticketTypeRow(overrides: Partial<TicketTypeRow> = {}): TicketTyp
     capacity: null,
     display_order: 0,
     is_active: true,
+    ...audit,
+    ...overrides,
+  };
+}
+
+export function fileRow(overrides: Partial<StoredFileRow> = {}): StoredFileRow {
+  return {
+    id: IDS.file,
+    organization_id: IDS.orgA,
+    purpose: "EVENT_COVER",
+    entity_type: "EVENT",
+    entity_id: IDS.event,
+    storage_provider: "local",
+    storage_key: "events/covers/0b8f1c1e-6d1f-4a51-9c3e-2f5b7a9d4e10.png",
+    content_type: "image/png",
+    size_bytes: 1024,
+    original_name: "cover.png",
+    uploaded_by: IDS.user,
     ...audit,
     ...overrides,
   };

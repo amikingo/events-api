@@ -15,6 +15,7 @@ references without FKs.
 13. grants: `EVENTS` + `CUSTOMERS` for existing `OWNER`/`VIEWER` roles
 14. `organization` defaults (columns) 15. `file` 16. `event` 17. `ticket_type`
 18. `event.published_at` (column, with backfill)
+19. `file` entity, uploader and storage provider (columns)
 
 ## Tables
 
@@ -118,3 +119,15 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
   set once, kept after closing or cancelling. Public direct links require it.
 - Backfill: PUBLISHED/CLOSED rows got `updated_at` (fallback: no earlier record); CANCELLED and DRAFT rows stay NULL.
 - Constraint: `ck_event_published_at_consistent` (DRAFT → NULL; PUBLISHED/CLOSED → NOT NULL; CANCELLED → either)
+
+### `file` entity, uploader and storage provider (Phase 3d)
+- Columns added by `20261125000300-add-file-entity-uploader-provider`:
+  - `entity_type` (`EVENT`, nullable), `entity_id` (UUID, nullable): what the file belongs to;
+  - `uploaded_by` (UUID, nullable): the staff member's Central Auth user id;
+  - `storage_provider` (NOT NULL, default `'local'`): where the bytes live. The only NOT NULL addition, and the
+    default fills any existing rows.
+- Constraints: `ck_file_storage_provider` (`local` only for now), `ck_file_event_cover_entity` (an `EVENT_COVER` row
+  names an `EVENT` and its id)
+- Indexes: `idx_file_organization_entity` (`organization_id`, `entity_type`, `entity_id`)
+- `storage_key` is the path inside `FILES_DIR` (e.g. `events/covers/<uuid>.png`). The bytes are on disk, not in the
+  database. Replaced covers keep their row until a later clean-up.

@@ -28,6 +28,7 @@ You need Node 24 and a local PostgreSQL (15 or newer).
 | `AUTH_REFRESH_TRUSTED_ORIGINS` | The same origin(s). Refresh and logout refuse any other site (`403 refresh_origin_not_allowed`). |
 | `CENTRAL_AUTH_API`, `APP_AUTH_TOKEN`, `CENTRAL_AUTH_SERVICE_ID` | Real auth-cheche values, from the project owner. `CENTRAL_AUTH_API` has **no** `/v1` at the end. Without them, login returns `503 central_auth_unavailable`. |
 | `LOG_LEVEL` | `info` or `debug`, so you can see why a request was refused. |
+| `FILES_DIR` | An absolute folder for uploaded covers, e.g. `/Users/<you>/events-uploads`. On a Mac this is needed, because the default `/assets/uploads` doesn't exist there; without it, cover uploads return `503 file_storage_unavailable`. |
 
 **Working without auth-cheche (development only).** Until the auth-cheche values arrive, you can still build the
 staff screens. Create an organization and a person locally, then print a normal staff token for them:
@@ -237,7 +238,10 @@ Usage: `await api("/v1/organizations/<id>/branches?page=1")`, or
 | `not_found`, `route_not_found` | 404 | No such record, or no such URL | |
 | `conflict` | 409 | Duplicate, e.g. branch code or organization slug already used | Show the message next to the field (`details.field` when present) |
 | `invalid_branch_state` | 409 | E.g. deactivating the default branch | Show the message |
-| `payload_too_large` | 413 | Body over the size limit | |
+| `payload_too_large` | 413 | Body over the size limit (a cover over 5 MB) | "The image must be 5 MB or smaller" |
+| `unsupported_file_type` | 415 | The cover isn't a JPEG, PNG or WebP (checked by its contents, not its name) | "Upload a JPEG, PNG or WebP image" |
+| `invalid_event_state` | 409 | The event is CLOSED or CANCELLED, so it can't change (including its cover) | Show the message; disable editing |
+| `file_storage_unavailable` | 503 | The server couldn't store the upload | "Upload failed, try again later", and report it with the `X-Request-Id` |
 
 ---
 
@@ -275,17 +279,40 @@ The permission column shows what the signed-in role needs: module code and actio
 | `GET /v1/organizations/{organizationId}/events/{eventId}/ticket-types` | `EVENTS.view` | Ordered by `display_order`. |
 | `PATCH /v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}` | `EVENTS.update` | Any of `{ code, name, capacity, display_order }`. |
 | `PATCH /v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}/status` | `EVENTS.update` | `{ is_active }`. A published event keeps at least one active ticket type (`409`). |
+| `PUT /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | `multipart/form-data` with **one file in the field `file`** and nothing else (see *Cover images* below). Replaces the current cover. Replies with the event. |
+| `DELETE /v1/organizations/{organizationId}/events/{eventId}/cover` | `EVENTS.update` | No body. Removes the cover; the event comes back with `cover: null`. |
 
 **Event dates and times.** Send instants with an offset or `Z` (`2027-03-12T09:00:00+03:00`); the API answers in
 UTC (`…Z`). Show them in the event's own `timezone`. Show `display_status` for the badge: it is `LIVE` while a
 published event is running; a cancelled event shows `CANCELLED` even during its hours. `CLOSED` and `CANCELLED`
 events can't be edited (`409 invalid_event_state`).
 
+**Cover images.** Every staff event reply, public card and public page has `cover`: `{ url }` or `null`. `url` is a
+**path** such as `/assets/uploads/events/covers/<uuid>.png`, so put the API's origin in front of it
+(`<img src={API_ORIGIN + event.cover.url}>`). The image is public and needs no token. To upload, send the file with
+`FormData` and **don't set `Content-Type` yourself**; the browser adds it with the boundary:
+
+```ts
+const form = new FormData();
+form.append("file", input.files[0]); // JPEG, PNG or WebP, up to 5 MB
+const response = await fetch(`${API_ORIGIN}/v1/organizations/${organizationId}/events/${eventId}/cover`, {
+  method: "PUT",
+  headers: { Authorization: `Bearer ${accessToken}` },
+  body: form,
+});
+// 200: { data: event } with event.cover.url. 400: not exactly one file in "file". 413: over 5 MB.
+// 415: not a JPEG/PNG/WebP. 409: the event is CLOSED or CANCELLED.
+```
+
+Check the size and type in the browser too, for a quicker message, but the API's check is the one that counts.
+Don't send any other form field with the file; it is refused. `cover_file_id` on the event is the stored file's
+id. Use the cover endpoints to change it rather than sending `cover_file_id` in the event body.
+
 **Public pages (no login, no token).** For the visitor site:
 
 | Call | Notes |
 |---|---|
-| `GET /v1/public/events` | The catalog: upcoming and live published `PUBLIC` events, soonest first. `?page&pageSize&category&organization` (`category` exact, ignoring case; `organization` = organization slug). Each card: `name`, `slug`, `organization { name, slug }`, `starts_at`, `ends_at`, `timezone`, `display_status`, `category`, `venue` (or null), `cover` (null until 3d), `registration_open`. Link a card to `/{organization.slug}/{slug}`. |
+| `GET /v1/public/events` | The catalog: upcoming and live published `PUBLIC` events, soonest first. `?page&pageSize&category&organization` (`category` exact, ignoring case; `organization` = organization slug). Each card: `name`, `slug`, `organization { name, slug }`, `starts_at`, `ends_at`, `timezone`, `display_status`, `category`, `venue` (or null), `cover` (`{ url }` or null; see *Cover images*), `registration_open`. Link a card to `/{organization.slug}/{slug}`. |
 | `GET /v1/public/organizations/{organizationSlug}/events/{eventSlug}` | The event page. Works for `UNLISTED` events too (share the link), and keeps working after the event ends, closes or is cancelled (show `display_status`). Adds `description`, `registration_opens_at`, `registration_closes_at`, `ticket_types [{ code, name }]`. `404` for drafts. |
 
 Use `registration_open` to show or hide the sign-up button; sign-up itself arrives in Phase 4. Public routes are
@@ -311,7 +338,6 @@ are organization-level: branch-limited staff get `403` for now.
 
 ## 7. Not available yet
 
-- **Cover upload:** Phase 3d (clients, venues, events, ticket types and the public pages are available now).
 - **Registrations and the guest list:** Phase 4.
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.
