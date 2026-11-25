@@ -29,7 +29,8 @@ internet. The database is published on purpose, so teammates' local events-api a
 |---|---|---|
 | events-api | `Dockerfile`, `.dockerignore` | builds the API image (stays after this deployment is removed) |
 | events-web | `Dockerfile`, `.dockerignore` | builds the web image (stays after this deployment is removed) |
-| events-api | `deploy/contabo-temp/` (this folder) | runs both on this server: compose, nginx, these steps |
+| events-api | `deploy/contabo-temp/` (this folder) | runs both on this server: compose, nginx, deploy script, these steps |
+| events-api, events-web | `.github/workflows/deploy-contabo-temp.yml` | deploys `main` automatically (temporary) |
 
 ## Layout on the server
 
@@ -240,14 +241,98 @@ The server API restarts with the new password. Then share the new one (`grep POS
 
 ## Updating to newer code
 
+Normally automatic (next section). By hand, the same thing:
+
 ```bash
-cd ~/events/events-api && git pull
-cd ~/events/events-web && git pull
-cd ~/events/events-api/deploy/contabo-temp
-sudo docker compose build
-sudo docker compose run --rm api node dist/scripts/migrate.js up
-sudo docker compose up -d
+sudo events-deploy api   # pull events-api, back up the database, build, migrate, restart
+sudo events-deploy web   # pull events-web, build, restart
 ```
+
+## Automatic deploys (CI/CD)
+
+Every push to `main` (merged PRs included) deploys that repo: events-api runs `events-deploy api`,
+events-web runs `events-deploy web`. Workflow: `.github/workflows/deploy-contabo-temp.yml` in each repo;
+results in each repo's **Actions** tab, where "Run workflow" also starts a deploy by hand.
+
+How it is locked down:
+
+- `/usr/local/bin/events-deploy` (this folder's `events-deploy.sh`) is owned by root and accepts only `api` or
+  `web`. One deploy runs at a time; a second one waits.
+- GitHub holds an SSH key that can run that script and nothing else: no shell, no port forwarding.
+- `joedee` may run that one script with sudo without a password (GitHub can't type one). Nothing else.
+- Every api deploy backs up the database first, to `~/events/backups/` (newest 20 kept).
+
+Migrations now run automatically on every events-api merge to `main`; see the migration rules above.
+
+### One-time setup on the server (as joedee)
+
+1. Install the script (root-owned, so neither GitHub nor joedee can change what it does):
+
+   ```bash
+   cd ~/events/events-api && git pull
+   sudo install -o root -g root -m 755 ~/events/events-api/deploy/contabo-temp/events-deploy.sh /usr/local/bin/events-deploy
+   ```
+
+2. Allow joedee to run only that script without a password, and check the rule:
+
+   ```bash
+   echo 'joedee ALL=(root) NOPASSWD: /usr/local/bin/events-deploy' | sudo tee /etc/sudoers.d/events-deploy
+   sudo chmod 440 /etc/sudoers.d/events-deploy
+   sudo visudo -cf /etc/sudoers.d/events-deploy
+   ```
+
+   `visudo` must say `parsed OK`. If it doesn't, remove the file (`sudo rm /etc/sudoers.d/events-deploy`).
+
+3. Try it by hand once:
+
+   ```bash
+   sudo events-deploy api
+   ```
+
+   It should end with `done: api`.
+
+4. Create GitHub's key and lock it to the script:
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "github-actions-events-deploy" -f ~/events/github-deploy-key
+   opts='restrict,command="sudo -n /usr/local/bin/events-deploy \"$SSH_ORIGINAL_COMMAND\""'
+   echo "$opts $(cat ~/events/github-deploy-key.pub)" >> ~/.ssh/authorized_keys
+   tail -1 ~/.ssh/authorized_keys
+   ```
+
+   The last line must start with `restrict,command="sudo -n /usr/local/bin/events-deploy`.
+
+5. The three values for the secrets:
+
+   ```bash
+   cat ~/events/github-deploy-key                                                        # CONTABO_DEPLOY_KEY
+   echo "169.58.247.85 $(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"           # CONTABO_KNOWN_HOSTS
+   echo 169.58.247.85                                                                  # CONTABO_HOST
+   ```
+
+   Send `CONTABO_DEPLOY_KEY` privately (never a group chat). Once Amir has added it, delete the private key
+   from the server: `rm ~/events/github-deploy-key` (the `.pub` file can stay).
+
+### Secrets (a repo admin, in both repos)
+
+GitHub → repo → **Settings → Secrets and variables → Actions → New repository secret**, in **both**
+`amikingo/events-api` and `amikingo/events-web`:
+
+| Name | Value |
+|---|---|
+| `CONTABO_DEPLOY_KEY` | the whole private key, from `-----BEGIN` to `-----END ... KEY-----` |
+| `CONTABO_KNOWN_HOSTS` | the `169.58.247.85 ssh-ed25519 AAAA…` line |
+| `CONTABO_HOST` | `169.58.247.85` |
+
+Then **Actions → Deploy to Contabo (temporary) → Run workflow** in each repo to test.
+
+### Changing the script later
+
+Edit `events-deploy.sh` in the repo, merge, then install it again (step 1). An api deploy prints a NOTE when
+the repo copy changed but the installed one wasn't updated.
+
+To turn automatic deploys off: delete the key's line from `~/.ssh/authorized_keys`. To remove everything:
+also `sudo rm /etc/sudoers.d/events-deploy /usr/local/bin/events-deploy` and delete the two workflow files.
 
 ## Removing it
 
@@ -260,6 +345,7 @@ sudo docker compose down -v --rmi local
 rm -rf ~/events
 ```
 
-Then remove the events block from `/etc/caddy/Caddyfile` (validate and reload as in "Caddy"), delete the
+Then turn off automatic deploys (end of "Automatic deploys"), remove the events block from
+`/etc/caddy/Caddyfile` (validate and reload as in "Caddy"), delete the
 `eventra-dev` domain on duckdns.org, and delete this `deploy/contabo-temp/` folder from the repo. The two
 Dockerfiles stay: the real setup can build from them.
