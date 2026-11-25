@@ -76,7 +76,7 @@ Every reply uses the existing envelope: `data`, `message`, and on errors `error:
 
      - **Row labels:** use `module_name` from the Owner role's `grants` (it holds every module above).
      - **Ticking Create or Update also ticks View;** unticking View clears the row.
-     - **Hide the Branches row when the organization's `has_branches` is false.**
+     - **Hide the Branches row when the organization's `has_branches` is false,** but when saving, still send the Branches grant the role already holds. `grants` replaces the whole set, so leaving it out would remove it.
      - **Send** one entry per module, all three booleans, and only for rows with at least one box ticked.
    - **Buttons:** *Create role* or *Save changes*.
 

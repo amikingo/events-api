@@ -1,0 +1,19 @@
+node_modules
+dist
+coverage
+tests
+docs
+deploy
+.git
+.github
+.vscode
+.idea
+.claude
+*.log
+*.md
+cookies*.txt
+*.pem
+*.key
+# Secrets never enter the image
+.env
+.env.*
