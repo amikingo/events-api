@@ -30,6 +30,8 @@ export class AppEvent extends Model<InferAttributes<AppEvent>, InferCreationAttr
   declare registration_closes_at: Date | null;
   declare visibility: CreationOptional<EventVisibility>;
   declare category: string | null;
+  /** Server-managed: set once when first published, kept after closing or cancelling. Public links need it. */
+  declare published_at: CreationOptional<Date | null>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
   declare created_by: string | null;
@@ -58,6 +60,7 @@ AppEvent.init(
     registration_closes_at: { type: DataTypes.DATE, allowNull: true },
     visibility: { type: DataTypes.STRING(20), allowNull: false, defaultValue: "UNLISTED" },
     category: { type: DataTypes.STRING(80), allowNull: true },
+    published_at: { type: DataTypes.DATE, allowNull: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,
     created_by: { type: DataTypes.UUID, allowNull: true },

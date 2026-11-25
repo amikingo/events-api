@@ -391,7 +391,15 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 - events start as DRAFT and UNLISTED, and category is free text;
 - `branch_id = NULL` means organization-wide, any active branch of the organization may be chosen, and branch-only staff get 403.
 
-**3b status: built; checks pending your yes; then the owner's `db:migrate` and `TEST_DATABASE=1 npm test`.**
+**3b status: done.** The 4 migrations (`20261125000100` to `…103`) were applied to `events_dev`; `TEST_DATABASE=1 npm test` passed 145 of 145 on the real database, none skipped (including matrix rows 26–31); committed separately. Four product rules were accepted on 25 November 2026 (see `docs/events.md`).
+
+**3c decisions (25 November 2026):**
+- **Catalog:** upcoming and live `PUBLISHED` + `PUBLIC` events of active organizations (`now < ends_at`), by `starts_at` then id. Filters: exact, case-insensitive `category`, and `organization` (an organization slug).
+- **Direct links:** any event published at least once (`published_at` set) stays reachable by both slugs, including UNLISTED, ended, CLOSED or CANCELLED-after-publication events. Drafts, never-published cancellations and inactive organizations get 404.
+- **Visitor fields:** the commissioning client, staff, internal ids and audit fields stay private.
+- **`registration_open`:** a PUBLISHED event that hasn't ended and is inside its window. The opening time is inclusive, the closing time exclusive, and an unset boundary adds no limit. Capacity joins in Phase 4.
+
+**3c status: built; awaiting the owner's `db:migrate` and `TEST_DATABASE=1 npm test`.**
 
 - **Tables:** `customer_account`, `venue`, `event`, `ticket_type`, plus `file` for cover images.
 - **Permission modules** (seeded by migration, added to `OWNER`, read-only for `VIEWER`): `CUSTOMERS`, `EVENTS`.

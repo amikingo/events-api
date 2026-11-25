@@ -4,7 +4,8 @@ import { createApp } from "../../src/app.js";
 import { sequelize } from "../../src/db.js";
 import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { migrator } from "../../src/migrator.js";
-import { AppEvent, Branch, CustomerAccount, UserModuleAccess } from "../../src/models/index.js";
+import { AppEvent, Branch, CustomerAccount, Organization, UserModuleAccess } from "../../src/models/index.js";
+import { eventRepository } from "../../src/repositories/event.repository.js";
 import { moduleRepository } from "../../src/repositories/module.repository.js";
 import { userRoleRepository } from "../../src/repositories/user-role.repository.js";
 import { authTokenService } from "../../src/services/auth-token.service.js";
@@ -406,4 +407,136 @@ test("row 31: tenant safety, viewer read-only, explicit branch choice, and the o
   assert.equal((await as("SELAM_OWNER", "PATCH", `/v1/organizations/${fixture.selamId}`, { timezone: "Europe/London" })).status, 200);
   assert.equal((await as("SELAM_OWNER", "GET", `${selamEvents}/${workshop.body.data.id}`)).body.data.timezone, "Africa/Addis_Ababa");
   assert.equal((await as("SELAM_OWNER", "POST", selamEvents, { name: "London Roadshow" })).body.data.timezone, "Europe/London");
+});
+
+// --- Phase 3c: the public catalog and event pages (no login) ----------------------------------------
+
+const publicGet = (path: string) => withServer(app, (baseUrl) => call(baseUrl, "GET", path));
+
+async function createAndPublish(person: Person, organizationId: string, body: Record<string, unknown>): Promise<{ id: string; slug: string }> {
+  const created = await as(person, "POST", `/v1/organizations/${organizationId}/events`, body);
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const published = await as(person, "PATCH", `/v1/organizations/${organizationId}/events/${created.body.data.id}/status`, { status: "PUBLISHED" });
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  return created.body.data;
+}
+
+const publicFixture = { summitId: "", summitEndsAt: new Date("2027-06-01T14:00:00Z") };
+
+test("rows 32–34: the catalog lists upcoming PUBLISHED + PUBLIC events with visitor fields; filters; closing sign-ups keeps an event listed", { skip }, async () => {
+  const venues = await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/venues`);
+  const hall = venues.body.data.find((venue: { name: string }) => venue.name === "Millennium Hall");
+  assert.ok(hall, "Millennium Hall was recorded in row 22");
+
+  const summit = await createAndPublish("SELAM_OWNER", fixture.selamId, {
+    name: "Annual Summit",
+    starts_at: "2027-06-01T09:00:00+03:00",
+    ends_at: publicFixture.summitEndsAt.toISOString(),
+    visibility: "PUBLIC",
+    category: "Conference",
+    venue_id: hall.id,
+  });
+  publicFixture.summitId = summit.id;
+  await createAndPublish("SELAM_OWNER", fixture.selamId, {
+    name: "Partner Workshop",
+    starts_at: "2027-07-01T09:00:00+03:00",
+    ends_at: "2027-07-01T12:00:00+03:00",
+  }); // UNLISTED by default
+  await createAndPublish("SELAM_OWNER", fixture.selamId, {
+    name: "Past Meetup",
+    starts_at: "2026-01-10T15:00:00+03:00",
+    ends_at: "2026-01-10T18:00:00+03:00",
+    visibility: "PUBLIC",
+  }); // already ended
+
+  // Row 32: only the upcoming PUBLIC event is listed (not the unlisted one, the ended one, the closed forum or drafts).
+  const catalog = await publicGet("/v1/public/events?organization=selam-events");
+  assert.equal(catalog.status, 200);
+  assert.deepEqual(catalog.body.data.map((card: { name: string }) => card.name), ["Annual Summit"]);
+  assert.equal(catalog.body.meta.count, 1, "the total count follows the same rules");
+  const card = catalog.body.data[0];
+  assert.deepEqual([card.slug, card.organization.slug, card.venue.name, card.category, card.cover, card.registration_open], [
+    "annual-summit",
+    "selam-events",
+    "Millennium Hall",
+    "Conference",
+    null,
+    true,
+  ]);
+  assert.ok(!("id" in card) && !("organization_id" in card) && !("customer_account_id" in card), "no internal ids");
+
+  // Row 33: the category filter is exact and ignores case.
+  assert.equal((await publicGet("/v1/public/events?organization=selam-events&category=conference")).body.meta.count, 1);
+  assert.equal((await publicGet("/v1/public/events?organization=selam-events&category=conf")).body.meta.count, 0);
+
+  // Row 34: stopping sign-ups early keeps the event in the catalog, with registration_open false.
+  const closedSignUps = await as("SELAM_OWNER", "PATCH", `/v1/organizations/${fixture.selamId}/events/${summit.id}`, {
+    registration_closes_at: "2026-11-01T00:00:00+03:00",
+  });
+  assert.equal(closedSignUps.status, 200);
+  const after = await publicGet("/v1/public/events?organization=selam-events");
+  assert.deepEqual(after.body.data.map((item: { name: string; registration_open: boolean }) => [item.name, item.registration_open]), [
+    ["Annual Summit", false],
+  ]);
+});
+
+test("rows 35–36: direct links open any event published at least once, by both slugs; drafts and never-published cancellations are 404", { skip }, async () => {
+  // Row 35: unlisted, ended and closed events open by link; detail has the description and active ticket types.
+  const unlisted = await publicGet("/v1/public/organizations/selam-events/events/partner-workshop");
+  assert.equal(unlisted.status, 200);
+  assert.deepEqual(unlisted.body.data.ticket_types, [{ code: "GA", name: "General Admission" }]);
+  assert.ok("description" in unlisted.body.data);
+  const ended = await publicGet("/v1/public/organizations/selam-events/events/past-meetup");
+  assert.deepEqual([ended.status, ended.body.data.registration_open], [200, false]);
+  const closedForum = await publicGet("/v1/public/organizations/selam-events/events/banking-forum");
+  assert.deepEqual([closedForum.status, closedForum.body.data.display_status], [200, "CLOSED"]);
+  const clients = await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/customer-accounts`);
+  const abcBank = clients.body.data.find((client: { name: string }) => client.name === "ABC Bank");
+  assert.ok(!JSON.stringify(closedForum.body).includes(abcBank.id), "the commissioning client stays private");
+
+  // Both cancellation cases: published then cancelled stays reachable (shows CANCELLED); cancelled as a draft is 404.
+  const gala = await createAndPublish("SELAM_OWNER", fixture.selamId, {
+    name: "Gala Night",
+    starts_at: "2027-08-01T18:00:00+03:00",
+    ends_at: "2027-08-01T23:00:00+03:00",
+    visibility: "PUBLIC",
+  });
+  assert.equal((await as("SELAM_OWNER", "PATCH", `/v1/organizations/${fixture.selamId}/events/${gala.id}/status`, { status: "CANCELLED" })).status, 200);
+  const cancelled = await publicGet("/v1/public/organizations/selam-events/events/gala-night");
+  assert.deepEqual([cancelled.status, cancelled.body.data.display_status, cancelled.body.data.registration_open], [200, "CANCELLED", false]);
+  assert.ok(!(await publicGet("/v1/public/events?organization=selam-events")).body.data.some((item: { slug: string }) => item.slug === "gala-night"));
+  assert.equal((await publicGet("/v1/public/organizations/selam-events/events/banking-forum-2")).status, 404, "cancelled while still a draft");
+  assert.equal((await publicGet("/v1/public/organizations/selam-events/events/london-roadshow")).status, 404, "a draft");
+
+  // Row 36: two organizers may use the same event slug; each link resolves its own event.
+  await createAndPublish("HORN_OWNER", fixture.hornId, {
+    name: "Banking Forum",
+    starts_at: "2027-09-01T09:00:00+03:00",
+    ends_at: "2027-09-01T17:00:00+03:00",
+    visibility: "PUBLIC",
+  });
+  const horn = await publicGet("/v1/public/organizations/horn-health-alliance/events/banking-forum");
+  assert.deepEqual([horn.status, horn.body.data.organization.slug, horn.body.data.display_status], [200, "horn-health-alliance", "PUBLISHED"]);
+  const selam = await publicGet("/v1/public/organizations/selam-events/events/banking-forum");
+  assert.deepEqual([selam.body.data.organization.slug, selam.body.data.display_status], ["selam-events", "CLOSED"]);
+  const hornCatalog = await publicGet("/v1/public/events?organization=horn-health-alliance");
+  assert.deepEqual(hornCatalog.body.data.map((item: { name: string }) => item.name), ["Banking Forum"]);
+});
+
+test("row 37: an event leaves the catalog at its exact end time; an inactive organization disappears", { skip }, async () => {
+  // The exact boundary, on the real database: listed 1 ms before ends_at, gone at ends_at (now < ends_at).
+  const justBefore = await eventRepository.listPublicCatalog({
+    now: new Date(publicFixture.summitEndsAt.getTime() - 1),
+    organizationSlug: "selam-events",
+    limit: 20,
+    offset: 0,
+  });
+  assert.ok(justBefore.rows.some((row) => row.id === publicFixture.summitId));
+  const atEnd = await eventRepository.listPublicCatalog({ now: publicFixture.summitEndsAt, organizationSlug: "selam-events", limit: 20, offset: 0 });
+  assert.ok(!atEnd.rows.some((row) => row.id === publicFixture.summitId));
+
+  // An inactive organization's events vanish from the catalog and their links answer 404.
+  await Organization.update({ is_active: false }, { where: { id: fixture.hornId } });
+  assert.equal((await publicGet("/v1/public/organizations/horn-health-alliance/events/banking-forum")).status, 404);
+  assert.equal((await publicGet("/v1/public/events?organization=horn-health-alliance")).body.meta.count, 0);
 });

@@ -6,6 +6,7 @@ import * as branch from "../validators/branch.js";
 import * as customerAccount from "../validators/customer-account.js";
 import * as event from "../validators/event.js";
 import * as organization from "../validators/organization.js";
+import * as publicEvent from "../validators/public-event.js";
 import * as ticketType from "../validators/ticket-type.js";
 import * as venue from "../validators/venue.js";
 
@@ -74,6 +75,10 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types", contract: ticketType.listTicketTypesRequest, summary: "List an event's ticket types", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}", contract: ticketType.updateTicketTypeRequest, bodyComponent: "TicketTypeUpdateRequest", summary: "Update a ticket type (PATCH semantics)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}/status", contract: ticketType.changeTicketTypeStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a ticket type (a published event keeps at least one active)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
+
+  // --- Public (no login) ------------------------------------------------------------------------
+  { method: "get", path: "/v1/public/events", contract: publicEvent.listPublicEventsRequest, summary: "Public catalog: upcoming and live PUBLISHED + PUBLIC events of active organizations, by start time (filters: exact category, organization slug)", tags: ["Public"], auth: "public", successStatus: 200 },
+  { method: "get", path: "/v1/public/organizations/{organizationSlug}/events/{eventSlug}", contract: publicEvent.getPublicEventRequest, summary: "Public event page by both slugs: any event published at least once (also UNLISTED, ended, closed or cancelled); 404 for drafts", tags: ["Public"], auth: "public", successStatus: 200 },
 ];
 
 // ---------------------------------------------------------------------------------------------

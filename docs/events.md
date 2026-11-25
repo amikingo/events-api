@@ -121,3 +121,48 @@ then `cover_file_id` stays empty in practice.
 
 No new grants: events and ticket types use `EVENTS` (granted to `OWNER`/`VIEWER` in 3a), the organization's
 defaults use `ORGANIZATIONS.update` (already `OWNER`'s). Branch-limited staff still get 403 for the back office.
+
+## 3c: public catalog and event pages (no login)
+
+Decisions of 25 November 2026. Both routes are rate limited per IP (`publicReadLimiter`, 120 requests a minute).
+
+### `GET /v1/public/events`: the catalog
+
+- Lists **upcoming and live** events: `status = PUBLISHED`, `visibility = PUBLIC`, organization active, and
+  `now < ends_at`. An event leaves the catalog at its exact end time.
+- Sorted by `starts_at`, then id, so pages are stable. `?page&pageSize` as everywhere.
+- Filters: `?category=` (exact, ignoring case) and `?organization=` (an organization slug). The filters and
+  `meta.count` follow the same rules as the list.
+- Each card carries what a clickable card needs: `name`, `slug`, `organization { name, slug }`, `starts_at`, `ends_at`,
+  `timezone`, `display_status`, `category`, `venue { name, address, city, country }` or null, `cover` (null until 3d),
+  and `registration_open`.
+
+### `GET /v1/public/organizations/{organizationSlug}/events/{eventSlug}`: the event page
+
+- Resolved by **both** slugs, so two organizers may use the same event slug.
+- Opens any event **published at least once** (`published_at` set): PUBLISHED events of either visibility (so
+  UNLISTED events work by link), and events that have since ended, closed or been cancelled (they show
+  `display_status`, e.g. `CANCELLED`).
+- **404** for drafts, events cancelled before they were ever published, and events of an inactive organization.
+- Adds `description`, `registration_opens_at`, `registration_closes_at`, and the **active** ticket types by
+  `code` and `name`.
+
+### `registration_open`
+
+`true` only for a `PUBLISHED` event that has not ended (`now < ends_at`) and is inside its registration window:
+the opening time is inclusive, the closing time exclusive, and an unset boundary adds no restriction. Stopping
+sign-ups early (`registration_closes_at` in the past) keeps the event in the catalog with `registration_open = false`.
+Capacity joins this check in Phase 4.
+
+### What stays private
+
+The commissioning client, staff, internal ids (`id`, `organization_id`, `branch_id`, …), `published_at` and audit
+fields are never returned by public routes (`mappers/event.mapper.ts`).
+
+### `published_at`
+
+Server-managed, never accepted from clients. Set once, in the transaction that first publishes the event, and kept
+when it closes or is cancelled. Migration `20261125000200` backfilled existing rows: PUBLISHED and CLOSED events
+got `updated_at` as a **fallback**, because no publication time was recorded before (it is never earlier than the
+real first publication, and exact if the event wasn't edited after publishing). Existing CANCELLED events stayed
+NULL, because nothing proves they were ever published, so they stay private.

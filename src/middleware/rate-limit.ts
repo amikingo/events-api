@@ -19,6 +19,13 @@ export const authLoginLimiter = createJsonRateLimiter({
   message: "Too many login attempts",
 });
 
+/** Public, no-login reads (catalog and event pages): generous, but bounded per IP. */
+export const publicReadLimiter = createJsonRateLimiter({
+  windowMs: 60_000,
+  limit: 120,
+  message: "Too many requests",
+});
+
 export const authRefreshLimiter = createJsonRateLimiter({
   windowMs: 60_000,
   limit: 20,

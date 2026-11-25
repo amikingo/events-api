@@ -281,6 +281,17 @@ UTC (`…Z`). Show them in the event's own `timezone`. Show `display_status` for
 published event is running; a cancelled event shows `CANCELLED` even during its hours. `CLOSED` and `CANCELLED`
 events can't be edited (`409 invalid_event_state`).
 
+**Public pages (no login, no token).** For the visitor site:
+
+| Call | Notes |
+|---|---|
+| `GET /v1/public/events` | The catalog: upcoming and live published `PUBLIC` events, soonest first. `?page&pageSize&category&organization` (`category` exact, ignoring case; `organization` = organization slug). Each card: `name`, `slug`, `organization { name, slug }`, `starts_at`, `ends_at`, `timezone`, `display_status`, `category`, `venue` (or null), `cover` (null until 3d), `registration_open`. Link a card to `/{organization.slug}/{slug}`. |
+| `GET /v1/public/organizations/{organizationSlug}/events/{eventSlug}` | The event page. Works for `UNLISTED` events too (share the link), and keeps working after the event ends, closes or is cancelled (show `display_status`). Adds `description`, `registration_opens_at`, `registration_closes_at`, `ticket_types [{ code, name }]`. `404` for drafts. |
+
+Use `registration_open` to show or hide the sign-up button; sign-up itself arrives in Phase 4. Public routes are
+rate limited (`429 rate_limited` after 120 requests a minute per IP). The visitor site's origin must be in
+`CORS_ALLOWED_ORIGINS`.
+
 The menu gains *Event Management › Events* (`/events`) and *Clients* (`/clients`), above *Administration*. Venues
 have no menu item of their own: reach them from the Events area (they use the `EVENTS` permission). These routes
 are organization-level: branch-limited staff get `403` for now.
@@ -300,7 +311,7 @@ are organization-level: branch-limited staff get `403` for now.
 
 ## 7. Not available yet
 
-- **Public event pages and cover upload:** Phases 3c and 3d (clients, venues, events and ticket types are available now).
+- **Cover upload:** Phase 3d (clients, venues, events, ticket types and the public pages are available now).
 - **Registrations and the guest list:** Phase 4.
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.

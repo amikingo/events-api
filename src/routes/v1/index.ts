@@ -6,6 +6,7 @@ import { customerAccountsRouter } from "./customer-accounts.js";
 import { docsRouter } from "./docs.js";
 import { eventsRouter } from "./events.js";
 import { organizationsRouter } from "./organizations.js";
+import { publicEventsRouter } from "./public-events.js";
 import { ticketTypesRouter } from "./ticket-types.js";
 import { venuesRouter } from "./venues.js";
 
@@ -19,6 +20,7 @@ router.use("/organizations/:organizationId/customer-accounts", customerAccountsR
 router.use("/organizations/:organizationId/venues", venuesRouter);
 router.use("/organizations/:organizationId/events", eventsRouter);
 router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticketTypesRouter);
+router.use("/public", publicEventsRouter); // no login: catalog and event pages
 
 if (env.API_DOCS_ENABLED) {
   router.use(docsRouter); // GET /v1/openapi.json, /v1/docs

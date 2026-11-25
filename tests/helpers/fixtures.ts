@@ -117,6 +117,7 @@ export function eventRow(overrides: Partial<EventRow> = {}): EventRow {
     registration_closes_at: null,
     visibility: "UNLISTED",
     category: null,
+    published_at: null,
     ...audit,
     ...overrides,
   };

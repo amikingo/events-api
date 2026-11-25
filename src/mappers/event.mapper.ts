@@ -1,4 +1,6 @@
 import type { EventRow, EventStatus } from "../models/event.js";
+import type { TicketTypeRow } from "../models/ticket-type.js";
+import type { PublicEventRow } from "../repositories/event.repository.js";
 
 /**
  * Pure response shaping for events, shared by staff (3b) and public (3c) endpoints. No queries, no HTTP.
@@ -20,4 +22,73 @@ export function eventDisplayStatus(event: Pick<EventRow, "status" | "starts_at" 
 
 export function toEventDto(event: EventRow, now: Date = new Date()): EventDto {
   return { ...event, display_status: eventDisplayStatus(event, now) };
+}
+
+// --- Public (visitor) shapes, Phase 3c --------------------------------------------------------------
+
+/**
+ * Open for sign-ups: a PUBLISHED event that has not ended and is inside its registration window. The opening time
+ * is inclusive, the closing time exclusive; an unset boundary adds no restriction. Capacity joins in Phase 4.
+ */
+export function isRegistrationOpen(
+  event: Pick<EventRow, "status" | "ends_at" | "registration_opens_at" | "registration_closes_at">,
+  now: Date,
+): boolean {
+  if (event.status !== "PUBLISHED") return false;
+  if (!event.ends_at || now >= event.ends_at) return false;
+  if (event.registration_opens_at && now < event.registration_opens_at) return false;
+  if (event.registration_closes_at && now >= event.registration_closes_at) return false;
+  return true;
+}
+
+/** A catalog card: enough to render and link it (both slugs). No client, staff, internal ids or audit fields. */
+export type PublicEventCard = {
+  name: string;
+  slug: string;
+  starts_at: Date | null;
+  ends_at: Date | null;
+  timezone: string;
+  display_status: EventDisplayStatus;
+  category: string | null;
+  /** Arrives with cover upload (3d). */
+  cover: null;
+  registration_open: boolean;
+  organization: { name: string; slug: string };
+  venue: { name: string; address: string | null; city: string | null; country: string | null } | null;
+};
+
+export type PublicEventDetail = PublicEventCard & {
+  description: string | null;
+  registration_opens_at: Date | null;
+  registration_closes_at: Date | null;
+  /** Active ticket types only, by code and name. */
+  ticket_types: Array<{ code: string; name: string }>;
+};
+
+export function toPublicEventCard(event: PublicEventRow, now: Date): PublicEventCard {
+  return {
+    name: event.name,
+    slug: event.slug,
+    starts_at: event.starts_at,
+    ends_at: event.ends_at,
+    timezone: event.timezone,
+    display_status: eventDisplayStatus(event, now),
+    category: event.category,
+    cover: null,
+    registration_open: isRegistrationOpen(event, now),
+    organization: { name: event.organization.name, slug: event.organization.slug },
+    venue: event.venue
+      ? { name: event.venue.name, address: event.venue.address, city: event.venue.city, country: event.venue.country }
+      : null,
+  };
+}
+
+export function toPublicEventDetail(event: PublicEventRow, activeTicketTypes: TicketTypeRow[], now: Date): PublicEventDetail {
+  return {
+    ...toPublicEventCard(event, now),
+    description: event.description,
+    registration_opens_at: event.registration_opens_at,
+    registration_closes_at: event.registration_closes_at,
+    ticket_types: activeTicketTypes.map((ticketType) => ({ code: ticketType.code, name: ticketType.name })),
+  };
 }

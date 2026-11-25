@@ -4,7 +4,7 @@ import { toEventDto, type EventDto } from "../mappers/event.mapper.js";
 import type { EventRow, EventStatus } from "../models/event.js";
 import { branchRepository } from "../repositories/branch.repository.js";
 import { customerAccountRepository } from "../repositories/customer-account.repository.js";
-import { eventRepository } from "../repositories/event.repository.js";
+import { eventRepository, type EventUpdateValues } from "../repositories/event.repository.js";
 import { fileRepository } from "../repositories/file.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
@@ -273,12 +273,11 @@ async function changeEventStatus(
       assertPublishable(current, await ticketTypeRepository.countActiveByEvent(organizationId, eventId, { transaction }));
     }
 
-    const updated = await eventRepository.updateByOrganizationAndId(
-      organizationId,
-      eventId,
-      { status: target, updated_by: actorId },
-      { transaction },
-    );
+    const values: EventUpdateValues = { status: target, updated_by: actorId };
+    // published_at is set once, in the transaction that first publishes the event, and never changed afterwards.
+    if (target === "PUBLISHED" && current.published_at === null) values.published_at = new Date();
+
+    const updated = await eventRepository.updateByOrganizationAndId(organizationId, eventId, values, { transaction });
     return toEventDto(ensureFound(updated, "Event not found"));
   });
 }

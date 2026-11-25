@@ -118,8 +118,24 @@ test("publishing needs dates in order and an active ticket type; a ready draft i
   mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
 
   const update = arrangeStatus(eventRow());
+  const before = Date.now();
   await eventService.changeEventStatus(IDS.orgA, IDS.event, "PUBLISHED", IDS.user);
-  assert.deepEqual(update.mock.calls[0]?.arguments.slice(2), [{ status: "PUBLISHED", updated_by: IDS.user }, { transaction: FAKE_TX }]);
+  const [, , values, options] = update.mock.calls[0]?.arguments ?? [];
+  assert.equal(values?.status, "PUBLISHED");
+  assert.ok(values?.published_at instanceof Date && values.published_at.getTime() >= before, "published_at is set in the same write");
+  assert.deepEqual(options, { transaction: FAKE_TX });
+});
+
+test("published_at is set only by the first publication and kept when the event closes or is cancelled", async () => {
+  const firstPublished = new Date("2026-11-20T10:00:00Z");
+  for (const target of ["CLOSED", "CANCELLED"] as const) {
+    const update = arrangeStatus(eventRow({ status: "PUBLISHED", published_at: firstPublished }));
+    await eventService.changeEventStatus(IDS.orgA, IDS.event, target, IDS.user);
+    const [, , values] = update.mock.calls[0]?.arguments ?? [];
+    assert.deepEqual(values, { status: target, updated_by: IDS.user }, `${target} does not touch published_at`);
+    mock.restoreAll();
+    mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+  }
 });
 
 test("allowed transitions: DRAFT→PUBLISHED|CANCELLED, PUBLISHED→CLOSED|CANCELLED; CLOSED and CANCELLED are terminal", async () => {

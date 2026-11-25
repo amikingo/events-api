@@ -14,6 +14,7 @@ references without FKs.
 10. `customer_account` 11. `venue` 12. seed: `EVENTS` + `CUSTOMERS` modules and menu
 13. grants: `EVENTS` + `CUSTOMERS` for existing `OWNER`/`VIEWER` roles
 14. `organization` defaults (columns) 15. `file` 16. `event` 17. `ticket_type`
+18. `event.published_at` (column, with backfill)
 
 ## Tables
 
@@ -111,3 +112,9 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
   `ck_ticket_type_code_format`, `ck_ticket_type_capacity_positive`, `ck_ticket_type_display_order_non_negative`
 - Indexes: `idx_ticket_type_organization_event`
 - Triggers: none
+
+### `event.published_at` (Phase 3c)
+- Column added by `20261125000200-add-event-published-at`: when the event was first published; server-managed,
+  set once, kept after closing or cancelling. Public direct links require it.
+- Backfill: PUBLISHED/CLOSED rows got `updated_at` (fallback: no earlier record); CANCELLED and DRAFT rows stay NULL.
+- Constraint: `ck_event_published_at_consistent` (DRAFT → NULL; PUBLISHED/CLOSED → NOT NULL; CANCELLED → either)

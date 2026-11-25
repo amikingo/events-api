@@ -65,6 +65,19 @@ async function listByEvent(organizationId: string, eventId: string, options: Rep
   return toPlainList<TicketTypeRow>(rows);
 }
 
+async function listActiveByEvent(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<TicketTypeRow[]> {
+  const rows = await TicketType.findAll({
+    where: { organization_id: organizationId, event_id: eventId, is_active: true },
+    attributes: [...attributes],
+    order: [
+      ["display_order", "ASC"],
+      ["code", "ASC"],
+    ],
+    ...txOptions(options),
+  });
+  return toPlainList<TicketTypeRow>(rows);
+}
+
 async function countActiveByEvent(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<number> {
   return TicketType.count({ where: { organization_id: organizationId, event_id: eventId, is_active: true }, ...txOptions(options) });
 }
@@ -100,6 +113,7 @@ export const ticketTypeRepository = {
   findByEventAndId,
   findByEventAndCode,
   listByEvent,
+  listActiveByEvent,
   countActiveByEvent,
   maxCapacityByEvent,
   maxDisplayOrderByEvent,

@@ -1,6 +1,8 @@
-import { Op, type CreationAttributes, type Transaction } from "sequelize";
+import { col, fn, Op, where as sqlWhere, type CreationAttributes, type Includeable, type Transaction } from "sequelize";
 import type { EventRow, EventStatus, EventVisibility } from "../models/event.js";
-import { AppEvent } from "../models/index.js";
+import { AppEvent, Organization, Venue } from "../models/index.js";
+import type { OrganizationRow } from "../models/organization.js";
+import type { VenueRow } from "../models/venue.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
 import { acquireAdvisoryXactLock, lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
 
@@ -24,6 +26,7 @@ const attributes = [
   "registration_closes_at",
   "visibility",
   "category",
+  "published_at",
   "created_at",
   "updated_at",
   "created_by",
@@ -104,6 +107,76 @@ async function updateByOrganizationAndId(
   return findByOrganizationAndId(organizationId, eventId, options);
 }
 
+// --- Public reads (Phase 3c) ---------------------------------------------------------------------
+
+/** An event with only the organizer and venue fields a visitor may see (no client, no staff, no ids). */
+export type PublicEventRow = EventRow & {
+  organization: Pick<OrganizationRow, "name" | "slug">;
+  venue: Pick<VenueRow, "name" | "address" | "city" | "country"> | null;
+};
+
+/** Only active organizations are public; the organization filter (by slug) goes into the same join. */
+function publicIncludes(organizationSlug: string | undefined): Includeable[] {
+  return [
+    {
+      model: Organization,
+      as: "organization",
+      required: true,
+      attributes: ["name", "slug"],
+      where: { is_active: true, ...(organizationSlug === undefined ? {} : { slug: organizationSlug }) },
+    },
+    { model: Venue, as: "venue", required: false, attributes: ["name", "address", "city", "country"] },
+  ];
+}
+
+/**
+ * The public catalog: upcoming and live PUBLISHED + PUBLIC events of active organizations (now < ends_at, so an
+ * event leaves the catalog at its exact end time). The filters and the total count share these rules. Ordered by
+ * start time, then id, so pages are stable.
+ */
+async function listPublicCatalog(
+  filters: { now: Date; category?: string | undefined; organizationSlug?: string | undefined; limit: number; offset: number },
+  options: RepoOptions = {},
+): Promise<{ rows: PublicEventRow[]; count: number }> {
+  const { rows, count } = await AppEvent.findAndCountAll({
+    where: {
+      status: "PUBLISHED",
+      visibility: "PUBLIC",
+      ends_at: { [Op.gt]: filters.now },
+      // Exact, case-insensitive category match (no wildcards).
+      ...(filters.category === undefined
+        ? {}
+        : { [Op.and]: [sqlWhere(fn("lower", col("AppEvent.category")), filters.category.toLowerCase())] }),
+    },
+    include: publicIncludes(filters.organizationSlug),
+    attributes: [...attributes],
+    order: [
+      ["starts_at", "ASC"],
+      ["id", "ASC"],
+    ],
+    limit: filters.limit,
+    offset: filters.offset,
+    distinct: true,
+    ...txOptions(options),
+  });
+  return { rows: toPlainList<PublicEventRow>(rows), count };
+}
+
+/**
+ * A direct link: both slugs, and the event must have been published at least once. So UNLISTED, ended, CLOSED and
+ * CANCELLED-after-publication events resolve; drafts and never-published cancellations do not, nor do events of an
+ * inactive organization.
+ */
+async function findPublishedBySlugs(organizationSlug: string, eventSlug: string, options: RepoOptions = {}): Promise<PublicEventRow | null> {
+  const row = await AppEvent.findOne({
+    where: { slug: eventSlug, published_at: { [Op.ne]: null } },
+    include: publicIncludes(organizationSlug),
+    attributes: [...attributes],
+    ...txOptions(options),
+  });
+  return toPlain<PublicEventRow>(row);
+}
+
 export const eventRepository = {
   create,
   findByOrganizationAndId,
@@ -112,4 +185,6 @@ export const eventRepository = {
   lockSlugsOfOrganization,
   listByOrganization,
   updateByOrganizationAndId,
+  listPublicCatalog,
+  findPublishedBySlugs,
 };
