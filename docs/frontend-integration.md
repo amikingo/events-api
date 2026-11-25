@@ -337,7 +337,7 @@ Use `registration_open` to show or hide the sign-up button.
   - create a new UUID (`crypto.randomUUID()`) when the visitor presses *Register*;
   - reuse it if you retry that same submission automatically, after a network error or timeout;
   - make a new one if they change the form and submit again. The same key with a different form gets `409 idempotency_key_reused`.
-- **Success:** both **201** (registered) and **200** (that same submission was already processed) are success. Show `data.code`: it's the guest's registration code, also sent by SMS from Phase 4c.
+- **Success:** both **201** (registered) and **200** (that same submission was already processed) are success. Show `data.code`: it's the guest's registration code, also sent by SMS.
 - **Refusals:** `registration_closed` and `capacity_reached` as for staff (section 4), `privacy_notice_outdated` (reload the page), `rate_limited` (10 submissions a minute per IP), and 404 when the event isn't public.
 - **What the reply contains:** only what the visitor needs: `code`, `status`, `ticket_type`, `event`, `organization`, `guest.first_name`. No ids.
 
@@ -363,7 +363,9 @@ rate limited (`429 rate_limited` after 120 requests a minute per IP). The visito
 Registration follows the same rules for staff as for the public form: the event must be **published**, not ended,
 inside its registration window, with an active ticket type and a free place. Show `registration_closed` and
 `capacity_reached` (see section 4) instead of a generic error. A guest with an Ethiopian mobile gets a confirmation
-SMS with their code (sending starts in Phase 4c).
+SMS with their code. Each staff registration reply has `confirmation: { status, sent_at } | null`. The status is
+`PENDING` (being sent), `SENT`, `FAILED` (gave up after 5 tries) or `SKIPPED` (too many to one number, or the daily
+limit). `null` means there was no Ethiopian mobile, so no SMS. Show it as a small badge on the guest list.
 
 The menu gains *Event Management › Events* (`/events`) and *Clients* (`/clients`), above *Administration*. Venues
 have no menu item of their own: reach them from the Events area (they use the `EVENTS` permission). These routes
@@ -384,6 +386,5 @@ are organization-level: branch-limited staff get `403` for now.
 
 ## 7. Not available yet
 
-- **Confirmation SMS sending:** Phase 4c (staff and public registrations already queue them).
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.

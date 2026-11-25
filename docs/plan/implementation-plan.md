@@ -447,6 +447,10 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 - only successful registrations store a key;
 - the privacy notice version starts as `2026-11-26`.
 
+**4c status: done.** There's no migration. `TEST_DATABASE=1 npm test` passed 237 of 237 on the real database, none skipped. That includes matrix row 50: the outbox worker, using the log sender, sends every due confirmation exactly once and leaves leased messages alone, and staff see `SENT`. `npm run check` passed beforehand, with the OpenAPI snapshot unchanged. Settings: `SMS_DELIVERY` (default `log`), `PLATFORM_SMS_AFROMESSAGE_TOKEN`, `PLATFORM_SMS_AFROMESSAGE_FROM_ID` and `PLATFORM_SMS_SENDER` (required for `afromessage`), plus the worker settings.
+
+**Phase 4 status: done (25 November 2026).** Staff entry, public registration with retry keys, and confirmation SMS work through one registration service. The outline's three proofs pass on PostgreSQL: the race for the last place (row 42), the retried submission (row 47), and cancelling to free a place (row 43). Not verified yet: a real AfroMessage send, which needs your token. Do that by hand with your own number.
+
 ### Phase 5 — Pilot walkthrough
 
 Connect the staff and public screens to the API and run the full flow against PostgreSQL: a guest discovers an event, registers, receives a code, and appears once on the staff guest list.

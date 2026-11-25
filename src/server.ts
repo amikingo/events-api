@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
+import { smsConfig } from "./config/sms.js";
 import { sequelize } from "./db.js";
+import { startOutboxWorker } from "./jobs/outbox-worker.js";
 import { lifecycle } from "./utils/lifecycle.js";
 import { logger } from "./utils/logger.js";
 
@@ -12,6 +14,12 @@ const server = createServer(createApp());
 server.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "API listening");
 });
+
+// Confirmation SMS delivery (Phase 4c). In log mode nothing leaves the server: say so loudly in production.
+if (env.NODE_ENV === "production" && smsConfig.delivery === "log") {
+  logger.warn("SMS_DELIVERY=log in production: confirmation SMS are only logged, never sent");
+}
+const outboxWorker = startOutboxWorker();
 
 async function shutdown(reason: string, exitCode: number): Promise<void> {
   if (lifecycle.shuttingDown) return;
@@ -29,6 +37,7 @@ async function shutdown(reason: string, exitCode: number): Promise<void> {
     server.close(() => resolve());
     server.closeIdleConnections();
   });
+  await outboxWorker.stop();
   await sequelize.close();
   process.exit(exitCode);
 }

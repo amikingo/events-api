@@ -1,3 +1,4 @@
+import type { MessageStatus } from "../models/message-outbox.js";
 import type { PersonRow } from "../models/person.js";
 import type { RegistrationSource, RegistrationStatus } from "../models/registration.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
@@ -18,11 +19,15 @@ export type RegistrationDto = {
   ticket_type: { id: string; code: string; name: string };
   /** The privacy notice the public form showed (null for staff entries). */
   privacy_notice: { version: string; shown_at: Date } | null;
+  /** The latest confirmation SMS: PENDING, SENT, FAILED or SKIPPED; null when none was queued (no Ethiopian mobile). */
+  confirmation: ConfirmationDto;
   created_at: Date;
   updated_at: Date;
 };
 
-export function toRegistrationDto(row: RegistrationWithDetails): RegistrationDto {
+export type ConfirmationDto = { status: MessageStatus; sent_at: Date | null } | null;
+
+export function toRegistrationDto(row: RegistrationWithDetails, confirmation: ConfirmationDto = null): RegistrationDto {
   return {
     id: row.id,
     event_id: row.event_id,
@@ -45,6 +50,7 @@ export function toRegistrationDto(row: RegistrationWithDetails): RegistrationDto
       row.privacy_notice_version !== null && row.privacy_notice_shown_at !== null
         ? { version: row.privacy_notice_version, shown_at: row.privacy_notice_shown_at }
         : null,
+    confirmation,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { Op } from "sequelize";
 import { createApp } from "../../src/app.js";
 import { filesConfig } from "../../src/config/files.js";
 import { PRIVACY_NOTICE_VERSION } from "../../src/config/privacy.js";
@@ -29,6 +30,7 @@ import { authTokenService } from "../../src/services/auth-token.service.js";
 import { branchService } from "../../src/services/branch.service.js";
 import { devStaffTokenService } from "../../src/services/dev-staff-token.service.js";
 import { organizationProvisioningService } from "../../src/services/organization-provisioning.service.js";
+import { outboxDeliveryService } from "../../src/services/outbox-delivery.service.js";
 import { platformBootstrapService } from "../../src/services/platform-bootstrap.service.js";
 import { call, withServer, type TestResponse } from "../helpers/http.js";
 
@@ -949,4 +951,39 @@ test("row 49: an unlisted event registers by link with privacy evidence; drafts,
   const closedSignUps = await postWithKey("/v1/public/organizations/selam-events/events/annual-summit/registrations", workshopForm("Yared", "0912000006"), randomUUID());
   assert.deepEqual([closedSignUps.status, closedSignUps.body.error.details.reason], [409, "CLOSED"]);
   assert.deepEqual([await PersonModel.count(), await SubmissionKey.count()], [people, keys], "nothing written for a refusal");
+});
+
+// --- Phase 4c: sending confirmations (log sender in tests: nothing leaves the machine) -------------------
+
+test("row 50: the worker sends every due confirmation exactly once, leaves leased ones alone, and staff see SENT", { skip }, async () => {
+  const pending = await MessageOutbox.count({ where: { status: "PENDING" } });
+  assert.ok(pending >= 10, `rows 41–49 queued confirmations (${pending})`);
+
+  // One message is still leased by "another worker": it must not be claimed. Taken from outside Guest Night, so
+  // that event's guest list can show every confirmation as SENT below.
+  const nightRegistrations = await Registration.findAll({ where: { event_id: guestFixture.nightId }, attributes: ["id"], raw: true });
+  const leased = await MessageOutbox.findOne({
+    where: { status: "PENDING", registration_id: { [Op.notIn]: nightRegistrations.map((row) => row.id) } },
+    attributes: ["id"],
+    raw: true,
+  });
+  assert.ok(leased);
+  await MessageOutbox.update({ next_attempt_at: new Date(Date.now() + 60 * 60_000) }, { where: { id: leased.id } });
+
+  let sent = 0;
+  for (let run = 0; run < 10; run += 1) {
+    const summary = await outboxDeliveryService.processDue();
+    assert.deepEqual([summary.failed, summary.skipped, summary.retried], [0, 0, 0]);
+    sent += summary.sent;
+    if (summary.claimed === 0) break;
+  }
+  assert.equal(sent, pending - 1, "every due message, once");
+  assert.equal(await MessageOutbox.count({ where: { status: "PENDING" } }), 1, "only the leased one waits");
+  assert.equal(await MessageOutbox.count({ where: { status: "SENT", sent_at: { [Op.ne]: null }, attempts: 1 } }), pending - 1, "each sent on its first attempt");
+  assert.equal((await outboxDeliveryService.processDue()).claimed, 0, "a second run sends nothing");
+
+  const hana = await as("SELAM_OWNER", "GET", `${guestFixture.nightPath}/${guestFixture.hanaRegistrationId}`);
+  assert.equal(hana.body.data.confirmation.status, "SENT", "staff see the delivery");
+  const list = await as("SELAM_OWNER", "GET", guestFixture.nightPath);
+  assert.ok(list.body.data.every((row: { confirmation: { status: string } | null }) => row.confirmation === null || row.confirmation.status === "SENT"));
 });

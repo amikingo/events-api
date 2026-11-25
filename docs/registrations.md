@@ -155,3 +155,69 @@ All three rows use Partner Workshop, the UNLISTED event.
   - A draft and an inactive organization's event answer 404.
   - An outdated notice gets 409, and closed sign-ups get 409 `CLOSED`.
   - No profile or key is written for any refusal.
+
+## 4c: sending confirmations
+
+Every place taken writes a `PENDING` row to `message_outbox` in the same transaction. This happens for staff entry, the public form and reactivations, but only when the guest has an Ethiopian mobile. The **outbox worker** delivers those rows after commit. A failed delivery is retried without touching the registration, and it never takes another place.
+
+### The message
+
+The text is in English, with the Ethiopian date and Ethiopian-clock time first, then the Gregorian date with a 12-hour time. It's computed in the **event's own timezone** (`src/utils/confirmation-message.ts`):
+
+> Selam Events: You're registered for Banking Forum, Megabit 3, 2019 at 3:00 in the morning (Mar 12, 2027, 9:00 AM). Your code: K7M2Q9XP
+
+- **The calendar** is ported from `events-web/lib/calendar.ts`, with the same conversion and month spellings, so web and SMS agree (`src/utils/ethiopian-calendar.ts`).
+- **The Ethiopian clock** counts from 6 AM and 6 PM:
+
+  | Hours | Shown as |
+  |---|---|
+  | 6 AM to noon | "in the morning" (9:00 AM is "3:00 in the morning") |
+  | Noon to 6 PM | "in the afternoon" |
+  | 6 PM to midnight | "in the evening" |
+  | Midnight to 6 AM | "at night" |
+
+- **A long event name** is shortened to 60 characters with plain `...`, so the message stays within 2 SMS segments. An ellipsis character (`…`) would switch the SMS to a costlier encoding.
+
+### Senders (`src/clients/sms/`)
+
+| `SMS_DELIVERY` | Effect |
+|---|---|
+| `log` (the default) | Logs the masked phone (`+2519****4567`) and the text. **Nothing is sent.** In production the API warns about this at startup. |
+| `afromessage` | Sends through Cheche's platform AfroMessage account, with the same request as bookings_api. It needs `PLATFORM_SMS_AFROMESSAGE_TOKEN`, `PLATFORM_SMS_AFROMESSAGE_FROM_ID` and `PLATFORM_SMS_SENDER`; startup refuses it without them, naming only the keys. |
+
+- **The token** sits only in the `Authorization` header. It never appears in the URL, an error, `last_error` or a log line.
+- **Another provider** (for example Raven) is one new sender implementing `send({ to, text })`, plus one case in `src/clients/sms/index.ts`.
+
+### The worker (`src/jobs/outbox-worker.ts`, `src/services/outbox-delivery.service.ts`)
+
+- **Start and stop:** it runs every `OUTBOX_POLL_INTERVAL_MS` (default 10 seconds) and never overlaps itself. It's started by `server.ts`, never by tests, and stopped on shutdown before the database pool closes. `OUTBOX_WORKER_ENABLED=false` turns it off.
+- **Each tick:**
+  1. **Claim:** it claims up to 20 due `PENDING` messages in one statement with `FOR UPDATE SKIP LOCKED`. Each claimed message gets `attempts + 1` and a **5-minute lease**, so several API instances never send the same message at once.
+  2. **Caps:** more than **5 SMS to one number in an hour**, or the platform-wide **`SMS_DAILY_LIMIT`** (default 2000 in a rolling 24 hours), marks the message `SKIPPED`, with the reason in `last_error`. The registration still stands.
+  3. **Send:** success marks it `SENT`, with `sent_at` and `provider_message_id`. A failure retries it after **1, 5, 15 and then 60 minutes**, and the 5th failure marks it `FAILED`.
+- **Delivery is at least once.** If the process crashes after sending but before recording `SENT`, the lease expires and that SMS may go out a second time. That is the accepted trade-off: losing a confirmation would be worse.
+
+### What staff see
+
+Staff registration replies carry `confirmation: { status, sent_at } | null`, taken from the registration's latest message. The status is `PENDING`, `SENT`, `FAILED` or `SKIPPED`; `null` means no SMS was queued, because the guest has no Ethiopian mobile.
+
+### Settings
+
+| Setting | Default |
+|---|---|
+| `SMS_DELIVERY` | `log` |
+| `PLATFORM_SMS_AFROMESSAGE_TOKEN` | — |
+| `PLATFORM_SMS_AFROMESSAGE_FROM_ID` | — |
+| `PLATFORM_SMS_SENDER` | — |
+| `SMS_TIMEOUT_MS` | `10000` |
+| `SMS_DAILY_LIMIT` | `2000` |
+| `OUTBOX_WORKER_ENABLED` | `true` |
+| `OUTBOX_POLL_INTERVAL_MS` | `10000` |
+
+### Proof (matrix row 50)
+
+The test runs with the log sender on the real database:
+- The worker turns every due confirmation queued by rows 41–49 into `SENT`, each on its first attempt.
+- A message still leased by "another worker" is left alone.
+- A second run sends nothing.
+- Staff see `confirmation.status = SENT`.

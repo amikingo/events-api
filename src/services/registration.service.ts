@@ -295,8 +295,10 @@ async function registerOnce(input: RegisterInput, submission: SubmissionRequest,
 }
 
 async function toDto(organizationId: string, eventId: string, registrationId: string, transaction?: Transaction): Promise<RegistrationDto> {
-  const details = await registrationRepository.findDetailsByEventAndId(organizationId, eventId, registrationId, { transaction: transaction ?? null });
-  return toRegistrationDto(ensureFound(details, "Registration not found"));
+  const options = { transaction: transaction ?? null };
+  const details = ensureFound(await registrationRepository.findDetailsByEventAndId(organizationId, eventId, registrationId, options), "Registration not found");
+  const confirmations = await messageOutboxRepository.latestByRegistrations(organizationId, [registrationId], options);
+  return toRegistrationDto(details, confirmations.get(registrationId) ?? null);
 }
 
 /** Staff entry: an existing guest (`person_id`) or a new one (`person`); an optional Idempotency-Key makes it safe to retry. */
@@ -384,7 +386,11 @@ async function listRegistrations(organizationId: string, eventId: string, query:
     limit,
     offset,
   });
-  return { rows: rows.map(toRegistrationDto), count };
+  const confirmations = await messageOutboxRepository.latestByRegistrations(
+    organizationId,
+    rows.map((row) => row.id),
+  );
+  return { rows: rows.map((row) => toRegistrationDto(row, confirmations.get(row.id) ?? null)), count };
 }
 
 async function getRegistration(organizationId: string, eventId: string, registrationId: string): Promise<RegistrationDto> {

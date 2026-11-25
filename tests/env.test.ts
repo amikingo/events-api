@@ -50,3 +50,29 @@ test("AUTH_CENTRAL_SESSION_TTL_SECONDS defaults to 6 hours, accepts 0 (off), rej
   assert.equal(parseEnv({ ...BASE, AUTH_CENTRAL_SESSION_TTL_SECONDS: "0" }).AUTH_CENTRAL_SESSION_TTL_SECONDS, 0);
   assert.deepEqual(rejectedKeys({ ...BASE, AUTH_CENTRAL_SESSION_TTL_SECONDS: "-1" }), ["AUTH_CENTRAL_SESSION_TTL_SECONDS"]);
 });
+
+test("SMS defaults to log mode; afromessage needs the token, from id and sender, and errors name only the keys", () => {
+  const parsed = parseEnv(BASE);
+  assert.deepEqual([parsed.SMS_DELIVERY, parsed.OUTBOX_WORKER_ENABLED, parsed.SMS_DAILY_LIMIT], ["log", true, 2000]);
+
+  assert.deepEqual(rejectedKeys({ ...BASE, SMS_DELIVERY: "afromessage" }).sort(), [
+    "PLATFORM_SMS_AFROMESSAGE_FROM_ID",
+    "PLATFORM_SMS_AFROMESSAGE_TOKEN",
+    "PLATFORM_SMS_SENDER",
+  ]);
+  const secret = "afro-secret-value";
+  try {
+    parseEnv({ ...BASE, SMS_DELIVERY: "afromessage", PLATFORM_SMS_AFROMESSAGE_TOKEN: secret });
+    assert.fail("expected a refusal");
+  } catch (error) {
+    assert.ok(error instanceof StartupConfigError && !error.message.includes(secret), "the token never appears in the error");
+  }
+  const full = parseEnv({
+    ...BASE,
+    SMS_DELIVERY: "afromessage",
+    PLATFORM_SMS_AFROMESSAGE_TOKEN: secret,
+    PLATFORM_SMS_AFROMESSAGE_FROM_ID: "from-id",
+    PLATFORM_SMS_SENDER: "CHECHE",
+  });
+  assert.equal(full.SMS_DELIVERY, "afromessage");
+});

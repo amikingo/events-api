@@ -103,6 +103,7 @@ function arrange(options: Arrange = {}) {
     })),
     findOrganization: mock.method(organizationRepository, "findById", async () => organizationRow({ name: "Selam Events" })),
     queue: mock.method(messageOutboxRepository, "create", async (_values: Partial<MessageOutboxRow>, _options?: unknown) => ({}) as never),
+    latest: mock.method(messageOutboxRepository, "latestByRegistrations", async () => new Map([[IDS.registration, { status: "PENDING" as const, sent_at: null }]])),
   };
 }
 
@@ -456,4 +457,11 @@ test("the request hash ignores field order and unsent fields, and changes with a
   assert.match(base, /^[0-9a-f]{64}$/);
   assert.notEqual(base, requestHash({ event_id: IDS.event, body: { first_name: "Liyu", phone: "+251912000001" } }));
   assert.notEqual(base, requestHash({ event_id: "another-event", body: { first_name: "Liya", phone: "+251912000001" } }));
+});
+
+test("staff replies show the latest confirmation SMS of the registration", async () => {
+  const calls = arrange();
+  const { registration } = await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.deepEqual(registration.confirmation, { status: "PENDING", sent_at: null });
+  assert.deepEqual(calls.latest.mock.calls[0]?.arguments, [IDS.orgA, [IDS.registration], { transaction: FAKE_TX }], "read inside the transaction that queued it");
 });

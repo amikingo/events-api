@@ -60,6 +60,24 @@ const EnvSchema = z.object({
     .trim()
     .refine((value) => isAbsolute(value), "must be an absolute path, e.g. /assets/uploads (never a folder inside the app)")
     .optional(),
+
+  // Confirmation SMS (Phase 4c). `log` (the default) only logs the text; `afromessage` sends through Cheche's
+  // platform AfroMessage account and then needs the three PLATFORM_SMS_* values (same names as bookings_api; no
+  // defaults in code; the token is never logged).
+  SMS_DELIVERY: z.enum(["log", "afromessage"]).default("log"),
+  PLATFORM_SMS_AFROMESSAGE_TOKEN: z.string().min(1).optional(),
+  PLATFORM_SMS_AFROMESSAGE_FROM_ID: z.string().min(1).optional(),
+  PLATFORM_SMS_SENDER: z.string().min(1).optional(),
+  SMS_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(10_000),
+  // Platform-wide cap on SMS sent in a rolling 24 hours; over it, messages are SKIPPED (registrations still stand).
+  SMS_DAILY_LIMIT: z.coerce.number().int().min(1).max(1_000_000).default(2000),
+  OUTBOX_WORKER_ENABLED: z.stringbool().default(true),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(1000).max(600_000).default(10_000),
+}).superRefine((value, ctx) => {
+  if (value.SMS_DELIVERY !== "afromessage") return;
+  for (const key of ["PLATFORM_SMS_AFROMESSAGE_TOKEN", "PLATFORM_SMS_AFROMESSAGE_FROM_ID", "PLATFORM_SMS_SENDER"] as const) {
+    if (value[key] === undefined) ctx.addIssue({ code: "custom", path: [key], message: "required when SMS_DELIVERY=afromessage" });
+  }
 });
 
 export type Env = z.output<typeof EnvSchema>;
