@@ -14,7 +14,7 @@ export const VIEWER_ROLE_CODE = "VIEWER";
 /**
  * The roles every new organization starts with (created by provisionOrganizer). Existing module codes only:
  * later phases add their modules here and extend existing organizations through migrations (EVENTS and CUSTOMERS:
- * 20261125000003-grant-events-and-customers-to-default-roles). No delete action: records are deactivated instead.
+ * 20261125000003-grant-events-and-customers-to-default-roles; REGISTRATIONS: 20261126000004). No delete action: records are deactivated instead.
  * Never grant a platform-only module (MODULES, ROLE_TEMPLATES) to a tenant role.
  */
 export const DEFAULT_TENANT_ROLES = [
@@ -29,6 +29,7 @@ export const DEFAULT_TENANT_ROLES = [
       { moduleCode: MODULE_CODES.USER_ROLES, actions: ["view"] },
       { moduleCode: MODULE_CODES.EVENTS, actions: ["view", "create", "update"] },
       { moduleCode: MODULE_CODES.CUSTOMERS, actions: ["view", "create", "update"] },
+      { moduleCode: MODULE_CODES.REGISTRATIONS, actions: ["view", "create", "update"] },
     ],
   },
   {
@@ -40,6 +41,7 @@ export const DEFAULT_TENANT_ROLES = [
       { moduleCode: MODULE_CODES.BRANCHES, actions: ["view"] },
       { moduleCode: MODULE_CODES.EVENTS, actions: ["view"] },
       { moduleCode: MODULE_CODES.CUSTOMERS, actions: ["view"] },
+      { moduleCode: MODULE_CODES.REGISTRATIONS, actions: ["view"] },
     ],
   },
 ] as const satisfies readonly DefaultRoleTemplate[];

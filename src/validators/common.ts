@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeEthiopianMobile } from "../utils/mobile.js";
 import { canonicalTimeZone } from "../utils/time-zone.js";
 
 export const uuidSchema = z.uuid();
@@ -54,6 +55,35 @@ export function nullableText(maxLength: number) {
     .optional()
     .transform((value) => (value === "" ? null : value));
 }
+
+/** Optional email: "" or null clears it. */
+export const contactEmailSchema = z
+  .union([z.literal(""), z.email().max(254)])
+  .nullable()
+  .optional()
+  .transform((value) => (value === "" ? null : value));
+
+/**
+ * Optional phone, local or international: digits, spaces, +, -, ( and ). Ethiopian mobiles are stored as +251…;
+ * any other number is kept as typed. "" or null clears it.
+ */
+export const contactPhoneSchema = z
+  .union([
+    z.literal(""),
+    z
+      .string()
+      .trim()
+      .min(7)
+      .max(32)
+      .regex(/^\+?[0-9][0-9 ()-]*$/, "Use digits, spaces, +, -, ( and ) only"),
+  ])
+  .nullable()
+  .optional()
+  .transform((value) => {
+    if (value === "") return null;
+    if (typeof value !== "string") return value; // null clears, undefined keeps
+    return normalizeEthiopianMobile(value) ?? value;
+  });
 
 /** Money/decimal as a string to keep precision end to end (Postgres NUMERIC comes back as string). */
 export const decimalStringSchema = z

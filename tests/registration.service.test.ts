@@ -1,0 +1,363 @@
+import assert from "node:assert/strict";
+import { afterEach, beforeEach, mock, test } from "node:test";
+import type { Transaction } from "sequelize";
+import {
+  AlreadyRegisteredError,
+  CapacityReachedError,
+  InvalidEventStateError,
+  NotFoundError,
+  PersonInactiveError,
+  RegistrationClosedError,
+  TicketTypeInactiveError,
+  TicketTypeRequiredError,
+} from "../src/errors/app-errors.js";
+import type { EventRow } from "../src/models/event.js";
+import type { MessageOutboxRow } from "../src/models/message-outbox.js";
+import type { PersonRow } from "../src/models/person.js";
+import type { RegistrationRow } from "../src/models/registration.js";
+import type { TicketTypeRow } from "../src/models/ticket-type.js";
+import { eventRepository } from "../src/repositories/event.repository.js";
+import { messageOutboxRepository } from "../src/repositories/message-outbox.repository.js";
+import { organizationRepository } from "../src/repositories/organization.repository.js";
+import { personRepository } from "../src/repositories/person.repository.js";
+import { registrationRepository } from "../src/repositories/registration.repository.js";
+import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
+import { transactionManager } from "../src/services/helpers.js";
+import { registrationService } from "../src/services/registration.service.js";
+import { generateRegistrationCode, REGISTRATION_CODE_PATTERN } from "../src/utils/registration-code.js";
+import { eventRow, IDS, organizationRow, personRow, registrationRow, ticketTypeRow } from "./helpers/fixtures.js";
+
+/** The registration service against mocked repositories and a fake transaction: no database needed. */
+const FAKE_TX = { id: "fake-transaction" } as unknown as Transaction;
+const PUBLISHED = { status: "PUBLISHED" as const, published_at: new Date("2026-11-01T00:00:00Z") };
+const NEW_GUEST = {
+  first_name: "Hana",
+  last_name: "Bekele",
+  email: undefined,
+  phone: "+251911234567",
+  affiliation_name: undefined,
+  country: undefined,
+};
+
+type Arrange = {
+  event?: EventRow | null;
+  ticketTypes?: TicketTypeRow[];
+  person?: PersonRow | null;
+  existing?: RegistrationRow | null;
+  eventTaken?: number;
+  ticketTypeTaken?: number;
+};
+
+/** Records every repository call in order, so the lock order can be checked. */
+function arrange(options: Arrange = {}) {
+  const calls: string[] = [];
+  const event = options.event === undefined ? eventRow({ ...PUBLISHED, capacity: 100 }) : options.event;
+  const ticketTypes = options.ticketTypes ?? [ticketTypeRow()];
+  const person = options.person === undefined ? personRow() : options.person;
+  const existing = options.existing ?? null;
+  const record = (name: string, repoOptions?: { lock?: boolean }) => calls.push(repoOptions?.lock ? `${name}:lock` : name);
+
+  return {
+    calls,
+    findEvent: mock.method(eventRepository, "findByOrganizationAndId", async (_o: string, _e: string, repoOptions?: { lock?: boolean }) => {
+      record("event", repoOptions);
+      return event;
+    }),
+    listActive: mock.method(ticketTypeRepository, "listActiveByEvent", async () => ticketTypes.filter((ticketType) => ticketType.is_active)),
+    findTicketType: mock.method(
+      ticketTypeRepository,
+      "findByEventAndId",
+      async (_o: string, _e: string, id: string, repoOptions?: { lock?: boolean }) => {
+        record("ticket_type", repoOptions);
+        return ticketTypes.find((ticketType) => ticketType.id === id) ?? null;
+      },
+    ),
+    findPerson: mock.method(personRepository, "findByOrganizationAndId", async () => person),
+    createPerson: mock.method(personRepository, "create", async (_values: Partial<PersonRow>, _options?: unknown) => personRow({ id: "new-person" })),
+    findExisting: mock.method(
+      registrationRepository,
+      "findByEventAndPerson",
+      async (_o: string, _e: string, _p: string, repoOptions?: { lock?: boolean }) => {
+        record("registration", repoOptions);
+        return existing;
+      },
+    ),
+    countEvent: mock.method(registrationRepository, "countConfirmedByEvent", async () => options.eventTaken ?? 0),
+    countTicketType: mock.method(registrationRepository, "countConfirmedByTicketType", async () => options.ticketTypeTaken ?? 0),
+    codeExists: mock.method(registrationRepository, "codeExists", async () => false),
+    create: mock.method(registrationRepository, "create", async (values: Partial<RegistrationRow>, _options?: unknown) =>
+      registrationRow({ ...values, id: IDS.registration }),
+    ),
+    update: mock.method(
+      registrationRepository,
+      "updateByEventAndId",
+      async (_o: string, _e: string, _id: string, values: Partial<RegistrationRow>, _options?: unknown) => registrationRow({ ...existing, ...values }),
+    ),
+    findDetails: mock.method(registrationRepository, "findDetailsByEventAndId", async () => ({
+      ...registrationRow(),
+      person: personRow(),
+      ticketType: ticketTypeRow(),
+    })),
+    findOrganization: mock.method(organizationRepository, "findById", async () => organizationRow({ name: "Selam Events" })),
+    queue: mock.method(messageOutboxRepository, "create", async (_values: Partial<MessageOutboxRow>, _options?: unknown) => ({}) as never),
+  };
+}
+
+beforeEach(() => {
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+});
+afterEach(() => mock.restoreAll());
+
+function resetTransaction() {
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+}
+
+// --- Taking a place -------------------------------------------------------------------------------
+
+test("a new guest is registered CONFIRMED by staff; the event, ticket type and registration are locked in that order", async () => {
+  const calls = arrange();
+
+  const { outcome } = await registrationService.registerGuest(IDS.orgA, IDS.event, { person: NEW_GUEST }, IDS.user);
+
+  assert.equal(outcome, "CREATED");
+  assert.deepEqual(calls.calls, ["event:lock", "ticket_type:lock", "registration:lock"], "lock order: event, ticket type, registration");
+  const [personValues, personOptions] = calls.createPerson.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([personValues?.organization_id, personValues?.first_name, personValues?.phone, personValues?.user_id], [IDS.orgA, "Hana", "+251911234567", null]);
+  assert.deepEqual(personOptions, { transaction: FAKE_TX });
+
+  const [values, options] = calls.create.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(
+    [values?.status, values?.source, values?.registered_by, values?.person_id, values?.ticket_type_id, values?.cancelled_at],
+    ["CONFIRMED", "STAFF", IDS.user, "new-person", IDS.ticketType, null],
+  );
+  assert.match(String(values?.code), REGISTRATION_CODE_PATTERN);
+  assert.deepEqual([values?.privacy_notice_version, values?.consent_purpose], [null, null], "a staff entry records no consent evidence");
+  assert.deepEqual(options, { transaction: FAKE_TX });
+});
+
+test("the confirmation SMS is queued in the same transaction, for an Ethiopian mobile only", async () => {
+  const calls = arrange({ event: eventRow({ ...PUBLISHED, name: "Banking Forum" }) });
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+
+  const [message, options] = calls.queue.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(
+    [message?.kind, message?.channel, message?.recipient, message?.registration_id, message?.organization_id],
+    ["REGISTRATION_CONFIRMATION", "SMS", "+251911234567", IDS.registration, IDS.orgA],
+  );
+  assert.deepEqual(message?.payload, {
+    first_name: "Hana",
+    organization_name: "Selam Events",
+    event_name: "Banking Forum",
+    starts_at: "2027-03-12T06:00:00.000Z",
+    timezone: "Africa/Addis_Ababa",
+    code: calls.create.mock.calls[0]?.arguments[0]?.code,
+  });
+  assert.deepEqual(options, { transaction: FAKE_TX });
+  resetTransaction();
+
+  for (const phone of [null, "+44 20 7946 0958"]) {
+    const noSms = arrange({ person: personRow({ phone }) });
+    await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+    assert.equal(noSms.create.mock.callCount(), 1, "the place is still taken");
+    assert.equal(noSms.queue.mock.callCount(), 0, `no SMS for ${String(phone)}`);
+    resetTransaction();
+  }
+});
+
+test("an event that isn't taking registrations is refused with its reason, before anything is written", async () => {
+  const past = new Date("2026-01-01T00:00:00Z");
+  const future = new Date("2027-01-01T00:00:00Z");
+  const cases: Array<[Partial<EventRow>, string]> = [
+    [{ status: "DRAFT" }, "NOT_PUBLISHED"],
+    [{ status: "CANCELLED" }, "CANCELLED"],
+    [{ ...PUBLISHED, status: "CLOSED" }, "CLOSED"],
+    [{ ...PUBLISHED, ends_at: past, starts_at: new Date("2025-12-31T00:00:00Z") }, "ENDED"],
+    [{ ...PUBLISHED, registration_opens_at: future }, "NOT_OPEN_YET"],
+    [{ ...PUBLISHED, registration_closes_at: past }, "CLOSED"],
+  ];
+  for (const [overrides, reason] of cases) {
+    const calls = arrange({ event: eventRow(overrides) });
+    await assert.rejects(
+      registrationService.registerGuest(IDS.orgA, IDS.event, { person: NEW_GUEST }, IDS.user),
+      (error: unknown) => error instanceof RegistrationClosedError && (error.details as { reason: string }).reason === reason,
+      reason,
+    );
+    assert.deepEqual([calls.createPerson.mock.callCount(), calls.create.mock.callCount(), calls.queue.mock.callCount()], [0, 0, 0], reason);
+    resetTransaction();
+  }
+});
+
+test("a full event or a full ticket type is refused; only CONFIRMED registrations are counted", async () => {
+  const fullEvent = arrange({ event: eventRow({ ...PUBLISHED, capacity: 100 }), eventTaken: 100 });
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user),
+    (error: unknown) => error instanceof CapacityReachedError && (error.details as { scope: string }).scope === "EVENT",
+  );
+  assert.equal(fullEvent.create.mock.callCount(), 0);
+  assert.deepEqual(fullEvent.countEvent.mock.calls[0]?.arguments, [IDS.orgA, IDS.event, { transaction: FAKE_TX }]);
+  resetTransaction();
+
+  const fullTicket = arrange({ ticketTypes: [ticketTypeRow({ code: "VIP", capacity: 10 })], ticketTypeTaken: 10 });
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user),
+    (error: unknown) =>
+      error instanceof CapacityReachedError && JSON.stringify(error.details) === JSON.stringify({ scope: "TICKET_TYPE", ticket_type_code: "VIP", capacity: 10 }),
+  );
+  assert.equal(fullTicket.create.mock.callCount(), 0);
+  resetTransaction();
+
+  const unlimited = arrange({ event: eventRow({ ...PUBLISHED, capacity: null }) });
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.equal(unlimited.countEvent.mock.callCount(), 0, "no limit, no count");
+  assert.equal(unlimited.create.mock.callCount(), 1);
+});
+
+test("the only active ticket type is used by default; several need a choice; an inactive one is refused", async () => {
+  const vip = ticketTypeRow({ id: "vip-id", code: "VIP", name: "VIP" });
+  const several = arrange({ ticketTypes: [ticketTypeRow(), vip] });
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user),
+    (error: unknown) => error instanceof TicketTypeRequiredError && JSON.stringify(error.details) === JSON.stringify({ ticket_types: ["GA", "VIP"] }),
+  );
+  assert.equal(several.create.mock.callCount(), 0);
+
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person, ticket_type_id: "vip-id" }, IDS.user);
+  assert.equal(several.create.mock.calls[0]?.arguments[0]?.ticket_type_id, "vip-id");
+  resetTransaction();
+
+  const inactive = arrange({ ticketTypes: [ticketTypeRow(), ticketTypeRow({ id: "old-id", code: "OLD", is_active: false })] });
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person, ticket_type_id: "old-id" }, IDS.user),
+    TicketTypeInactiveError,
+  );
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person, ticket_type_id: "another-events-type" }, IDS.user),
+    NotFoundError,
+    "a ticket type of another event is not found within this event",
+  );
+  assert.equal(inactive.create.mock.callCount(), 0);
+});
+
+test("an unknown or deactivated guest profile can't be registered", async () => {
+  const missing = arrange({ person: null });
+  await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user), NotFoundError);
+  assert.deepEqual(missing.findPerson.mock.calls[0]?.arguments, [IDS.orgA, IDS.person, { transaction: FAKE_TX }], "looked up within the organization");
+  resetTransaction();
+
+  const inactive = arrange({ person: personRow({ is_active: false }) });
+  await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user), PersonInactiveError);
+  assert.equal(inactive.create.mock.callCount(), 0);
+});
+
+// --- The same guest again -------------------------------------------------------------------------
+
+test("the same guest again: same ticket type is a harmless repeat; another ticket type is refused", async () => {
+  const repeat = arrange({ existing: registrationRow() });
+  const { outcome } = await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.equal(outcome, "UNCHANGED");
+  assert.deepEqual([repeat.create.mock.callCount(), repeat.update.mock.callCount(), repeat.queue.mock.callCount()], [0, 0, 0], "no second place, no second SMS");
+  resetTransaction();
+
+  const other = arrange({ ticketTypes: [ticketTypeRow(), ticketTypeRow({ id: "vip-id", code: "VIP" })], existing: registrationRow() });
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person, ticket_type_id: "vip-id" }, IDS.user),
+    AlreadyRegisteredError,
+  );
+  assert.equal(other.update.mock.callCount(), 0);
+});
+
+test("a cancelled guest registering again reactivates the same row and code, after the capacity checks", async () => {
+  const cancelled = registrationRow({ status: "CANCELLED", cancelled_at: new Date("2026-12-02T00:00:00Z") });
+  const full = arrange({ existing: cancelled, eventTaken: 100 });
+  await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user), CapacityReachedError);
+  assert.equal(full.update.mock.callCount(), 0, "a full event refuses the reactivation too");
+  resetTransaction();
+
+  const calls = arrange({ existing: cancelled, eventTaken: 99 });
+  const before = new Date();
+  const { outcome } = await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.equal(outcome, "REACTIVATED");
+  assert.equal(calls.create.mock.callCount(), 0, "the same row, not a new one");
+  const [, , id, values, options] = calls.update.mock.calls[0]?.arguments ?? [];
+  assert.equal(id, IDS.registration);
+  assert.deepEqual([values?.status, values?.cancelled_at, values?.registered_by], ["CONFIRMED", null, IDS.user]);
+  assert.ok(values?.registered_at instanceof Date && values.registered_at >= before, "registered_at is renewed");
+  assert.ok(!("code" in (values ?? {})), "the code stays the same");
+  assert.deepEqual(options, { transaction: FAKE_TX });
+  assert.equal(calls.queue.mock.callCount(), 1, "a new confirmation is queued");
+});
+
+// --- Cancelling and reactivating through the status endpoint --------------------------------------
+
+function arrangeStatus(registration: RegistrationRow, options: Arrange = {}) {
+  const calls = arrange({ existing: registration, ...options });
+  mock.method(
+    registrationRepository,
+    "findByEventAndId",
+    async (_o: string, _e: string, _id: string, repoOptions?: { lock?: boolean }) => {
+      calls.calls.push(repoOptions?.lock ? "registration:lock" : "registration");
+      return registration;
+    },
+  );
+  return calls;
+}
+
+test("cancelling frees the place: CANCELLED with cancelled_at, locking the event, ticket type and registration first", async () => {
+  const calls = arrangeStatus(registrationRow());
+  await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user);
+
+  assert.deepEqual(calls.calls, ["event:lock", "registration", "ticket_type:lock", "registration:lock"]);
+  const [, , , values, options] = calls.update.mock.calls[0]?.arguments ?? [];
+  assert.equal(values?.status, "CANCELLED");
+  assert.ok(values?.cancelled_at instanceof Date);
+  assert.deepEqual(options, { transaction: FAKE_TX });
+  assert.equal(calls.queue.mock.callCount(), 0, "no SMS on cancel in MVP 1");
+});
+
+test("cancelling is for PUBLISHED or CLOSED events; asking for the current status again changes nothing", async () => {
+  for (const status of ["DRAFT", "CANCELLED"] as const) {
+    const calls = arrangeStatus(registrationRow(), { event: eventRow({ status }) });
+    await assert.rejects(registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user), InvalidEventStateError);
+    assert.equal(calls.update.mock.callCount(), 0, status);
+    resetTransaction();
+  }
+
+  const closed = arrangeStatus(registrationRow(), { event: eventRow({ ...PUBLISHED, status: "CLOSED" }) });
+  await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user);
+  assert.equal(closed.update.mock.callCount(), 1, "a CLOSED event's registration can still be cancelled");
+  resetTransaction();
+
+  const same = arrangeStatus(registrationRow({ status: "CANCELLED", cancelled_at: new Date() }));
+  await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user);
+  assert.equal(same.update.mock.callCount(), 0);
+});
+
+test("reactivating through the status endpoint repeats every registration check", async () => {
+  const cancelled = registrationRow({ status: "CANCELLED", cancelled_at: new Date("2026-12-02T00:00:00Z") });
+  const full = arrangeStatus(cancelled, { eventTaken: 100 });
+  await assert.rejects(registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user), CapacityReachedError);
+  assert.equal(full.update.mock.callCount(), 0);
+  resetTransaction();
+
+  const ended = arrangeStatus(cancelled, { event: eventRow({ ...PUBLISHED, status: "CLOSED" }) });
+  await assert.rejects(registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user), RegistrationClosedError);
+  assert.equal(ended.update.mock.callCount(), 0);
+  resetTransaction();
+
+  const ok = arrangeStatus(cancelled);
+  await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user);
+  assert.equal(ok.update.mock.calls[0]?.arguments[3]?.status, "CONFIRMED");
+  assert.equal(ok.queue.mock.callCount(), 1);
+});
+
+// --- Codes ----------------------------------------------------------------------------------------
+
+test("registration codes are 8 characters without look-alikes (no 0, O, 1, I or L)", () => {
+  const codes = new Set(Array.from({ length: 2000 }, () => generateRegistrationCode()));
+  for (const code of codes) {
+    assert.match(code, REGISTRATION_CODE_PATTERN);
+    assert.doesNotMatch(code, /[0O1IL]/);
+  }
+  assert.ok(codes.size > 1990, "random, practically never repeated");
+});

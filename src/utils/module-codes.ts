@@ -17,6 +17,8 @@ export const MODULE_CODES = {
   EVENTS: "EVENTS",
   /** customer_account: the clients commissioning events (menu label "Clients"); not attendees. */
   CUSTOMERS: "CUSTOMERS",
+  /** Guest profiles (`person`) and registrations (menu label "Guests"). */
+  REGISTRATIONS: "REGISTRATIONS",
 } as const;
 
 export type ModuleCode = (typeof MODULE_CODES)[keyof typeof MODULE_CODES];

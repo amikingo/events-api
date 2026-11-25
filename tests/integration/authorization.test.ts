@@ -7,7 +7,17 @@ import { filesConfig } from "../../src/config/files.js";
 import { sequelize } from "../../src/db.js";
 import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
 import { migrator } from "../../src/migrator.js";
-import { AppEvent, Branch, CustomerAccount, Organization, StoredFile, UserModuleAccess } from "../../src/models/index.js";
+import {
+  AppEvent,
+  Branch,
+  CustomerAccount,
+  MessageOutbox,
+  Organization,
+  Person as PersonModel,
+  Registration,
+  StoredFile,
+  UserModuleAccess,
+} from "../../src/models/index.js";
 import { eventRepository } from "../../src/repositories/event.repository.js";
 import { moduleRepository } from "../../src/repositories/module.repository.js";
 import { userRoleRepository } from "../../src/repositories/user-role.repository.js";
@@ -279,10 +289,14 @@ test("rows 22–25: clients and venues are tenant-scoped, read-only for viewers,
   assert.equal((await as("HORN_OWNER", "GET", clients)).status, 403);
   assert.equal((await as("HORN_OWNER", "GET", `/v1/organizations/${fixture.hornId}/venues/${venue.body.data.id}`)).status, 404);
 
-  // Row 25: the menu shows Event Management › Events, Clients.
+  // Row 25: the menu shows Event Management › Events, Clients (and Guests, since Phase 4a).
   const me = await as("SELAM_VIEWER", "GET", "/v1/auth/staff/me");
   const navigation: Array<{ code: string; children: Array<{ code: string }> }> = me.body.data.navigation;
-  assert.deepEqual(navigation.find((node) => node.code === "EVENT_MANAGEMENT")?.children.map((child) => child.code), ["EVENTS", "CUSTOMERS"]);
+  assert.deepEqual(navigation.find((node) => node.code === "EVENT_MANAGEMENT")?.children.map((child) => child.code), [
+    "EVENTS",
+    "CUSTOMERS",
+    "REGISTRATIONS",
+  ]);
 });
 
 // --- Phase 3b: events and ticket types -----------------------------------------------------------
@@ -643,4 +657,185 @@ test("row 40: a new upload replaces the cover; removing it clears staff and publ
   assert.equal((await coversOfSummit()).length, 2, "file rows are kept");
   assert.ok(existsSync(join(filesConfig.rootDir, coverFixture.firstKey)));
   assert.ok(existsSync(join(filesConfig.rootDir, secondUrl.replace("/assets/uploads/", ""))));
+});
+
+// --- Phase 4a: guest profiles and staff registration ---------------------------------------------------
+
+const guestFixture = { nightId: "", nightPath: "", gaId: "", hanaPersonId: "", hanaRegistrationId: "", hanaCode: "" };
+const newGuest = (first_name: string, phone: string) => ({ person: { first_name, last_name: "Guest", phone } });
+
+test("row 41: staff register a new guest: CONFIRMED, STAFF, the owner as registered_by, a code and one queued SMS", { skip }, async () => {
+  const night = await createAndPublish("SELAM_OWNER", fixture.selamId, {
+    name: "Guest Night",
+    starts_at: "2027-10-01T18:00:00+03:00",
+    ends_at: "2027-10-01T22:00:00+03:00",
+    capacity: 2,
+  });
+  guestFixture.nightId = night.id;
+  guestFixture.nightPath = `/v1/organizations/${fixture.selamId}/events/${night.id}/registrations`;
+  const tickets = await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/events/${night.id}/ticket-types`);
+  guestFixture.gaId = tickets.body.data[0].id;
+
+  const created = await as("SELAM_OWNER", "POST", guestFixture.nightPath, {
+    person: { first_name: "Hana", last_name: "Bekele", phone: "0911 234 567", email: "hana@example.et" },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const hana = created.body.data;
+  assert.deepEqual(
+    [hana.status, hana.source, hana.registered_by, hana.ticket_type.code, hana.person.phone, hana.privacy_notice],
+    ["CONFIRMED", "STAFF", PEOPLE.SELAM_OWNER, "GA", "+251911234567", null],
+  );
+  assert.match(hana.code, /^[A-HJKMNP-Z2-9]{8}$/);
+  Object.assign(guestFixture, { hanaPersonId: hana.person.id, hanaRegistrationId: hana.id, hanaCode: hana.code });
+
+  const queued = await MessageOutbox.findAll({ where: { registration_id: hana.id }, raw: true });
+  assert.deepEqual(
+    queued.map((message) => [message.kind, message.channel, message.recipient, message.status, message.payload.code]),
+    [["REGISTRATION_CONFIRMATION", "SMS", "+251911234567", "PENDING", hana.code]],
+  );
+});
+
+test("row 42: several guests race for the last place at the same time; exactly one wins and one SMS is queued for it", { skip }, async () => {
+  const racers = ["Abel", "Bethel", "Chala", "Dawit", "Eden"].map((name, index) => newGuest(name, `+25191100000${index}`));
+  const results = await Promise.all(racers.map((body) => as("SELAM_OWNER", "POST", guestFixture.nightPath, body)));
+
+  const statuses = results.map((response) => response.status).sort();
+  assert.deepEqual(statuses, [201, 409, 409, 409, 409], JSON.stringify(results.map((response) => response.body)));
+  for (const loser of results.filter((response) => response.status === 409)) {
+    assert.deepEqual([loser.body.error.code, loser.body.error.details.scope], ["capacity_reached", "EVENT"]);
+  }
+  assert.equal(await Registration.count({ where: { event_id: guestFixture.nightId, status: "CONFIRMED" } }), 2);
+  const registrationIds = (await Registration.findAll({ where: { event_id: guestFixture.nightId }, attributes: ["id"], raw: true })).map((row) => row.id);
+  assert.equal(registrationIds.length, 2, "the losers left no registration behind");
+  assert.equal(await MessageOutbox.count({ where: { registration_id: registrationIds } }), 2, "one SMS per place taken");
+  assert.equal(await PersonModel.count({ where: { organization_id: fixture.selamId, last_name: "Guest" } }), 1, "the losers' new profiles were rolled back too");
+
+  const summary = await as("SELAM_OWNER", "GET", `${guestFixture.nightPath}/summary`);
+  assert.deepEqual([summary.body.data.capacity, summary.body.data.confirmed, summary.body.data.remaining], [2, 2, 0]);
+});
+
+test("row 43: cancelling frees the place; the cancelled guest comes back on the same row and code once there is room", { skip }, async () => {
+  const hanaStatus = `${guestFixture.nightPath}/${guestFixture.hanaRegistrationId}/status`;
+  const cancelled = await as("SELAM_OWNER", "PATCH", hanaStatus, { status: "CANCELLED" });
+  assert.deepEqual([cancelled.status, cancelled.body.data.status], [200, "CANCELLED"]);
+  assert.ok(cancelled.body.data.cancelled_at);
+
+  const newcomer = await as("SELAM_OWNER", "POST", guestFixture.nightPath, newGuest("Fikir", "+251911000099"));
+  assert.equal(newcomer.status, 201, "the freed place is taken");
+
+  const whileFull = await as("SELAM_OWNER", "POST", guestFixture.nightPath, { person_id: guestFixture.hanaPersonId });
+  assert.deepEqual([whileFull.status, whileFull.body.error.code], [409, "capacity_reached"]);
+
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${guestFixture.nightPath}/${newcomer.body.data.id}/status`, { status: "CANCELLED" })).status, 200);
+  const back = await as("SELAM_OWNER", "POST", guestFixture.nightPath, { person_id: guestFixture.hanaPersonId });
+  assert.deepEqual([back.status, back.body.message], [201, "Registration reactivated"]);
+  assert.deepEqual([back.body.data.id, back.body.data.code, back.body.data.status, back.body.data.cancelled_at], [
+    guestFixture.hanaRegistrationId,
+    guestFixture.hanaCode,
+    "CONFIRMED",
+    null,
+  ]);
+  const again = await as("SELAM_OWNER", "POST", guestFixture.nightPath, { person_id: guestFixture.hanaPersonId });
+  assert.deepEqual([again.status, again.body.message], [200, "Guest is already registered"], "a repeat takes no second place");
+  assert.equal(await Registration.count({ where: { event_id: guestFixture.nightId, person_id: guestFixture.hanaPersonId } }), 1, "one row per guest per event");
+});
+
+test("row 44: drafts, closed sign-ups, inactive or foreign ticket types and another organization's guest are refused", { skip }, async () => {
+  const selamEvents = `/v1/organizations/${fixture.selamId}/events`;
+  const draft = await as("SELAM_OWNER", "POST", selamEvents, { name: "Unpublished Mixer" });
+  const toDraft = await as("SELAM_OWNER", "POST", `${selamEvents}/${draft.body.data.id}/registrations`, { person_id: guestFixture.hanaPersonId });
+  assert.deepEqual([toDraft.status, toDraft.body.error.code, toDraft.body.error.details.reason], [409, "registration_closed", "NOT_PUBLISHED"]);
+
+  // The Annual Summit stopped sign-ups early in row 34.
+  const summit = await as("SELAM_OWNER", "POST", `${selamEvents}/${publicFixture.summitId}/registrations`, { person_id: guestFixture.hanaPersonId });
+  assert.deepEqual([summit.status, summit.body.error.details.reason], [409, "CLOSED"]);
+
+  const vip = await as("SELAM_OWNER", "POST", `${selamEvents}/${guestFixture.nightId}/ticket-types`, { code: "VIP", name: "VIP" });
+  await as("SELAM_OWNER", "PATCH", `${selamEvents}/${guestFixture.nightId}/ticket-types/${vip.body.data.id}/status`, { is_active: false });
+  const inactive = await as("SELAM_OWNER", "POST", guestFixture.nightPath, { ...newGuest("Gelila", "+251911000098"), ticket_type_id: vip.body.data.id });
+  assert.deepEqual([inactive.status, inactive.body.error.code], [409, "ticket_type_inactive"]);
+
+  const summitTickets = await as("SELAM_OWNER", "GET", `${selamEvents}/${publicFixture.summitId}/ticket-types`);
+  const foreignTicket = await as("SELAM_OWNER", "POST", guestFixture.nightPath, {
+    ...newGuest("Hiwot", "+251911000097"),
+    ticket_type_id: summitTickets.body.data[0].id,
+  });
+  assert.equal(foreignTicket.status, 404, "another event's ticket type is not found within this event");
+
+  const hornGuest = await PersonModel.create({
+    organization_id: fixture.hornId,
+    first_name: "Abel",
+    last_name: null,
+    email: null,
+    phone: null,
+    affiliation_name: null,
+    country: null,
+    user_id: null,
+    created_by: null,
+    updated_by: null,
+  });
+  assert.equal((await as("SELAM_OWNER", "POST", guestFixture.nightPath, { person_id: hornGuest.id })).status, 404, "another organization's guest");
+
+  // PostgreSQL itself rejects both shortcuts: another event's ticket type and another organization's guest. The
+  // walk-in has no registration yet, so the one-row-per-guest unique key can't refuse the insert first.
+  const walkIn = await PersonModel.create({
+    organization_id: fixture.selamId,
+    first_name: "Walk-in",
+    last_name: null,
+    email: null,
+    phone: null,
+    affiliation_name: null,
+    country: null,
+    user_id: null,
+    created_by: null,
+    updated_by: null,
+  });
+  const direct = {
+    organization_id: fixture.selamId,
+    event_id: guestFixture.nightId,
+    status: "CONFIRMED" as const,
+    source: "STAFF" as const,
+    registered_by: PEOPLE.SELAM_OWNER,
+    registered_at: new Date(),
+    cancelled_at: null,
+    code: "ABCDEFGH",
+    privacy_notice_version: null,
+    privacy_notice_shown_at: null,
+    consent_purpose: null,
+    consent_version: null,
+    consented_at: null,
+    created_by: null,
+    updated_by: null,
+  };
+  const isForeignKeyError = (error: unknown) => error instanceof Error && error.name === "SequelizeForeignKeyConstraintError";
+  await assert.rejects(
+    Registration.create({ ...direct, person_id: walkIn.id, ticket_type_id: summitTickets.body.data[0].id }),
+    isForeignKeyError,
+  );
+  await assert.rejects(Registration.create({ ...direct, person_id: hornGuest.id, ticket_type_id: guestFixture.gaId }), isForeignKeyError);
+});
+
+test("row 45: a viewer reads the guest list but can't register or cancel; branch-limited staff and another tenant get 403", { skip }, async () => {
+  const list = await as("SELAM_VIEWER", "GET", `${guestFixture.nightPath}?status=CONFIRMED`);
+  assert.equal(list.status, 200);
+  assert.equal(list.body.meta.count, 2, "Hana and the winner of the race");
+  assert.ok(list.body.data.some((row: { person: { first_name: string } }) => row.person.first_name === "Hana"));
+  assert.equal((await as("SELAM_VIEWER", "GET", `${guestFixture.nightPath}?q=0911234567`)).body.data[0].person.first_name, "Hana", "search by local mobile");
+  assert.equal((await as("SELAM_VIEWER", "GET", `/v1/organizations/${fixture.selamId}/persons/${guestFixture.hanaPersonId}`)).body.data.registrations.length, 1);
+
+  assert.equal((await as("SELAM_VIEWER", "POST", guestFixture.nightPath, newGuest("Iman", "+251911000096"))).status, 403);
+  assert.equal((await as("SELAM_VIEWER", "PATCH", `${guestFixture.nightPath}/${guestFixture.hanaRegistrationId}/status`, { status: "CANCELLED" })).status, 403);
+  assert.equal((await as("SELAM_ADDIS", "GET", guestFixture.nightPath)).status, 403);
+  assert.equal((await as("HORN_OWNER", "GET", guestFixture.nightPath)).status, 403);
+});
+
+test("row 46: the event's or a ticket type's capacity can't drop below its confirmed registrations", { skip }, async () => {
+  const eventPath = `/v1/organizations/${fixture.selamId}/events/${guestFixture.nightId}`;
+  const lower = await as("SELAM_OWNER", "PATCH", eventPath, { capacity: 1 });
+  assert.deepEqual([lower.status, lower.body.error.code, lower.body.error.details.confirmed], [409, "capacity_below_registrations", 2]);
+
+  const lowerTicket = await as("SELAM_OWNER", "PATCH", `${eventPath}/ticket-types/${guestFixture.gaId}`, { capacity: 1 });
+  assert.deepEqual([lowerTicket.status, lowerTicket.body.error.code], [409, "capacity_below_registrations"]);
+
+  assert.equal((await as("SELAM_OWNER", "PATCH", eventPath, { capacity: 3 })).status, 200, "raising it is fine");
 });

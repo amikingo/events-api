@@ -3,7 +3,10 @@ import { Branch } from "./branch.js";
 import { CustomerAccount } from "./customer-account.js";
 import { AppEvent } from "./event.js";
 import { initAssociations } from "./init-associations.js";
+import { MessageOutbox } from "./message-outbox.js";
 import { Organization } from "./organization.js";
+import { Person } from "./person.js";
+import { Registration } from "./registration.js";
 import { Role } from "./role.js";
 import { RoleModuleAccess } from "./role-module-access.js";
 import { StoredFile } from "./stored-file.js";
@@ -25,6 +28,9 @@ initAssociations({
   StoredFile,
   AppEvent,
   TicketType,
+  Person,
+  Registration,
+  MessageOutbox,
 });
 
 export {
@@ -32,7 +38,10 @@ export {
   AppModule,
   Branch,
   CustomerAccount,
+  MessageOutbox,
   Organization,
+  Person,
+  Registration,
   Role,
   RoleModuleAccess,
   StoredFile,

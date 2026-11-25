@@ -6,7 +6,9 @@ import * as branch from "../validators/branch.js";
 import * as customerAccount from "../validators/customer-account.js";
 import * as event from "../validators/event.js";
 import * as organization from "../validators/organization.js";
+import * as person from "../validators/person.js";
 import * as publicEvent from "../validators/public-event.js";
+import * as registration from "../validators/registration.js";
 import * as ticketType from "../validators/ticket-type.js";
 import * as venue from "../validators/venue.js";
 
@@ -79,6 +81,20 @@ export const v1Operations: readonly ApiOperation[] = [
   { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types", contract: ticketType.listTicketTypesRequest, summary: "List an event's ticket types", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}", contract: ticketType.updateTicketTypeRequest, bodyComponent: "TicketTypeUpdateRequest", summary: "Update a ticket type (PATCH semantics)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
   { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}/status", contract: ticketType.changeTicketTypeStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a ticket type (a published event keeps at least one active)", tags: ["Ticket types"], auth: "staff", successStatus: 200 },
+
+  // --- Guests (person: reusable attendee profiles) -------------------------------------------------
+  { method: "post", path: "/v1/organizations/{organizationId}/persons", contract: person.createPersonRequest, bodyComponent: "PersonCreateRequest", summary: "Create a guest profile (only first_name is required; Ethiopian mobiles are stored as +251…)", tags: ["Guests"], auth: "staff", successStatus: 201 },
+  { method: "get", path: "/v1/organizations/{organizationId}/persons", contract: person.listPersonsRequest, summary: "Search guest profiles (q matches names, email and phone)", tags: ["Guests"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/persons/{personId}", contract: person.getPersonRequest, summary: "Read a guest profile with their registrations in this organization (to confirm a returning guest)", tags: ["Guests"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/persons/{personId}", contract: person.updatePersonRequest, bodyComponent: "PersonUpdateRequest", summary: "Update a guest profile (PATCH semantics)", tags: ["Guests"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/persons/{personId}/status", contract: person.changePersonStatusRequest, bodyComponent: "StatusChangeRequest", summary: "Activate or deactivate a guest profile (a deactivated guest can't be registered)", tags: ["Guests"], auth: "staff", successStatus: 200 },
+
+  // --- Registrations (an event's guest list) --------------------------------------------------------
+  { method: "post", path: "/v1/organizations/{organizationId}/events/{eventId}/registrations", contract: registration.createRegistrationRequest, bodyComponent: "RegistrationCreateRequest", summary: "Register a guest (person_id or a new person); 201 when a place was taken, 200 when already registered", description: "Same rules as the public form: a PUBLISHED event, not ended, inside its registration window, an active ticket type and a free place at both the event and the ticket type. Errors: 409 registration_closed (details.reason), 409 capacity_reached (details.scope), 409 already_registered, 409 ticket_type_inactive, 409 person_inactive, 400 ticket_type_required.", tags: ["Registrations"], auth: "staff", successStatus: 201 },
+  { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}/registrations", contract: registration.listRegistrationsRequest, summary: "The event's guest list, newest first (q searches the guest's names, email and phone)", tags: ["Registrations"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}/registrations/summary", contract: registration.getRegistrationSummaryRequest, summary: "Places confirmed and left, for the event and each ticket type", tags: ["Registrations"], auth: "staff", successStatus: 200 },
+  { method: "get", path: "/v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}", contract: registration.getRegistrationRequest, summary: "Read a registration", tags: ["Registrations"], auth: "staff", successStatus: 200 },
+  { method: "patch", path: "/v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}/status", contract: registration.changeRegistrationStatusRequest, bodyComponent: "RegistrationStatusChangeRequest", summary: "Cancel a registration (frees the place) or reactivate it (every registration check again)", tags: ["Registrations"], auth: "staff", successStatus: 200 },
 
   // --- Public (no login) ------------------------------------------------------------------------
   { method: "get", path: "/v1/public/events", contract: publicEvent.listPublicEventsRequest, summary: "Public catalog: upcoming and live PUBLISHED + PUBLIC events of active organizations, by start time (filters: exact category, organization slug)", tags: ["Public"], auth: "public", successStatus: 200 },

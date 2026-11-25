@@ -1,8 +1,9 @@
 import type { Transaction } from "sequelize";
-import { ConflictError, InvalidEventStateError, ValidationAppError } from "../errors/app-errors.js";
+import { CapacityBelowRegistrationsError, ConflictError, InvalidEventStateError, ValidationAppError } from "../errors/app-errors.js";
 import type { EventRow } from "../models/event.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { eventRepository } from "../repositories/event.repository.js";
+import { registrationRepository } from "../repositories/registration.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { pickDefined } from "../utils/patch.js";
 import type { TicketTypeCreateInput, TicketTypeUpdateInput } from "../validators/ticket-type.js";
@@ -93,6 +94,15 @@ async function updateTicketType(
     const patch = pickDefined(input, UPDATABLE_FIELDS);
     if (patch.code !== undefined) await assertCodeFree(organizationId, eventId, patch.code, transaction, ticketTypeId);
     assertFitsEventCapacity(patch.capacity, event);
+    if (patch.capacity !== undefined && patch.capacity !== null) {
+      const confirmed = await registrationRepository.countConfirmedByTicketType(organizationId, eventId, ticketTypeId, { transaction });
+      if (confirmed > patch.capacity) {
+        throw new CapacityBelowRegistrationsError(
+          `This ticket type's limit can't be lower than its confirmed registrations (${confirmed}). Cancel registrations first.`,
+          { field: "capacity", confirmed },
+        );
+      }
+    }
 
     const updated = await ticketTypeRepository.updateByEventAndId(
       organizationId,

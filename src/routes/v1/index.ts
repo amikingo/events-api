@@ -6,7 +6,9 @@ import { customerAccountsRouter } from "./customer-accounts.js";
 import { docsRouter } from "./docs.js";
 import { eventsRouter } from "./events.js";
 import { organizationsRouter } from "./organizations.js";
+import { personsRouter } from "./persons.js";
 import { publicEventsRouter } from "./public-events.js";
+import { registrationsRouter } from "./registrations.js";
 import { ticketTypesRouter } from "./ticket-types.js";
 import { venuesRouter } from "./venues.js";
 
@@ -20,6 +22,8 @@ router.use("/organizations/:organizationId/customer-accounts", customerAccountsR
 router.use("/organizations/:organizationId/venues", venuesRouter);
 router.use("/organizations/:organizationId/events", eventsRouter);
 router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticketTypesRouter);
+router.use("/organizations/:organizationId/events/:eventId/registrations", registrationsRouter);
+router.use("/organizations/:organizationId/persons", personsRouter);
 router.use("/public", publicEventsRouter); // no login: catalog and event pages
 
 if (env.API_DOCS_ENABLED) {

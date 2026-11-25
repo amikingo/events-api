@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
-import { ConflictError, EventNotPublishableError, InvalidEventStateError, ValidationAppError } from "../src/errors/app-errors.js";
+import {
+  CapacityBelowRegistrationsError,
+  ConflictError,
+  EventNotPublishableError,
+  InvalidEventStateError,
+  ValidationAppError,
+} from "../src/errors/app-errors.js";
 import { customerAccountRepository } from "../src/repositories/customer-account.repository.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
+import { registrationRepository } from "../src/repositories/registration.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { venueRepository } from "../src/repositories/venue.repository.js";
 import { eventService } from "../src/services/event.service.js";
@@ -168,10 +175,14 @@ test("allowed transitions: DRAFT→PUBLISHED|CANCELLED, PUBLISHED→CLOSED|CANCE
 
 // --- Editing --------------------------------------------------------------------------------------
 
-function arrangeUpdate(current: ReturnType<typeof eventRow>, options: { activeTicketTypes?: number; largestTicketLimit?: number | null } = {}) {
+function arrangeUpdate(
+  current: ReturnType<typeof eventRow>,
+  options: { activeTicketTypes?: number; largestTicketLimit?: number | null; confirmed?: number } = {},
+) {
   mock.method(eventRepository, "findByOrganizationAndId", async () => current);
   mock.method(ticketTypeRepository, "countActiveByEvent", async () => options.activeTicketTypes ?? 1);
   mock.method(ticketTypeRepository, "maxCapacityByEvent", async () => options.largestTicketLimit ?? null);
+  mock.method(registrationRepository, "countConfirmedByEvent", async () => options.confirmed ?? 0);
   return mock.method(eventRepository, "updateByOrganizationAndId", async () => current);
 }
 
@@ -226,4 +237,18 @@ test("the event capacity can't drop below a ticket type's own limit", async () =
 
   await eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: 50 }, IDS.user);
   assert.equal(update.mock.callCount(), 1, "a capacity equal to the largest ticket limit fits");
+});
+
+test("the event capacity can't drop below its confirmed registrations", async () => {
+  const update = arrangeUpdate(eventRow({ capacity: 500 }), { confirmed: 120 });
+
+  await assert.rejects(
+    eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: 100 }, IDS.user),
+    (error: unknown) => error instanceof CapacityBelowRegistrationsError && (error.details as { confirmed: number }).confirmed === 120,
+  );
+  assert.equal(update.mock.callCount(), 0);
+
+  await eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: 120 }, IDS.user);
+  await eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: null }, IDS.user);
+  assert.equal(update.mock.callCount(), 2, "exactly the confirmed count fits, and no limit always fits");
 });

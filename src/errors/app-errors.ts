@@ -228,3 +228,54 @@ export class InvalidBranchStateError extends AppError {
 // `code`. Split into errors/<feature>-errors.ts only when this file becomes
 // hard to scan (roughly 40+ classes); keep every class extending AppError.
 // ---------------------------------------------------------------------------
+
+// --- Registrations (Phase 4) ---------------------------------------------------------------
+
+/** The event is not taking registrations: `details.reason` is NOT_PUBLISHED, NOT_OPEN_YET, CLOSED or ENDED. */
+export class RegistrationClosedError extends AppError {
+  constructor(message = "This event is not taking registrations", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "registration_closed", details, cause: options?.cause });
+  }
+}
+
+/** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
+export class CapacityReachedError extends AppError {
+  constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "capacity_reached", details, cause: options?.cause });
+  }
+}
+
+/** The person already holds a confirmed place at this event with another ticket type. */
+export class AlreadyRegisteredError extends AppError {
+  constructor(message = "This person is already registered for the event", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "already_registered", details, cause: options?.cause });
+  }
+}
+
+/** A capacity can't drop below the places already confirmed against it. */
+export class CapacityBelowRegistrationsError extends AppError {
+  constructor(message = "The capacity can't be lower than the confirmed registrations", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "capacity_below_registrations", details, cause: options?.cause });
+  }
+}
+
+/** The event offers several active ticket types, so the registration must name one. */
+export class TicketTypeRequiredError extends AppError {
+  constructor(message = "Choose a ticket type", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 400, code: "ticket_type_required", details, cause: options?.cause });
+  }
+}
+
+/** The chosen ticket type is switched off. */
+export class TicketTypeInactiveError extends AppError {
+  constructor(message = "This ticket type is not available", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "ticket_type_inactive", details, cause: options?.cause });
+  }
+}
+
+/** The guest profile is deactivated, so it can't be registered. */
+export class PersonInactiveError extends AppError {
+  constructor(message = "This guest profile is deactivated", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "person_inactive", details, cause: options?.cause });
+  }
+}

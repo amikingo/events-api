@@ -30,19 +30,29 @@ export function toEventDto(event: EventRow, now: Date = new Date(), cover: Cover
 
 // --- Public (visitor) shapes, Phase 3c --------------------------------------------------------------
 
+/** Why an event is not taking registrations right now (Phase 4 answers it as 409 registration_closed). */
+export type RegistrationClosedReason = "NOT_PUBLISHED" | "CANCELLED" | "CLOSED" | "ENDED" | "NOT_OPEN_YET";
+
+type RegistrationTiming = Pick<EventRow, "status" | "ends_at" | "registration_opens_at" | "registration_closes_at">;
+
 /**
- * Open for sign-ups: a PUBLISHED event that has not ended and is inside its registration window. The opening time
- * is inclusive, the closing time exclusive; an unset boundary adds no restriction. Capacity joins in Phase 4.
+ * null while the event takes sign-ups: a PUBLISHED event that has not ended and is inside its registration window.
+ * The opening time is inclusive, the closing time exclusive; an unset boundary adds no restriction. CLOSED covers
+ * both a closed event and a closed registration window. Capacity is checked separately, by the registration service.
  */
-export function isRegistrationOpen(
-  event: Pick<EventRow, "status" | "ends_at" | "registration_opens_at" | "registration_closes_at">,
-  now: Date,
-): boolean {
-  if (event.status !== "PUBLISHED") return false;
-  if (!event.ends_at || now >= event.ends_at) return false;
-  if (event.registration_opens_at && now < event.registration_opens_at) return false;
-  if (event.registration_closes_at && now >= event.registration_closes_at) return false;
-  return true;
+export function registrationClosedReason(event: RegistrationTiming, now: Date): RegistrationClosedReason | null {
+  if (event.status === "DRAFT") return "NOT_PUBLISHED";
+  if (event.status === "CANCELLED") return "CANCELLED";
+  if (event.status === "CLOSED") return "CLOSED";
+  if (!event.ends_at || now >= event.ends_at) return "ENDED";
+  if (event.registration_opens_at && now < event.registration_opens_at) return "NOT_OPEN_YET";
+  if (event.registration_closes_at && now >= event.registration_closes_at) return "CLOSED";
+  return null;
+}
+
+/** Open for sign-ups (the public `registration_open` flag): see registrationClosedReason. */
+export function isRegistrationOpen(event: RegistrationTiming, now: Date): boolean {
+  return registrationClosedReason(event, now) === null;
 }
 
 /** A catalog card: enough to render and link it (both slugs). No client, staff, internal ids or audit fields. */

@@ -16,6 +16,8 @@ references without FKs.
 14. `organization` defaults (columns) 15. `file` 16. `event` 17. `ticket_type`
 18. `event.published_at` (column, with backfill)
 19. `file` entity, uploader and storage provider (columns)
+20. `person` 21. `registration` 22. `message_outbox`
+23. seed: `REGISTRATIONS` module and menu 24. grants: `REGISTRATIONS` for existing `OWNER`/`VIEWER` roles
 
 ## Tables
 
@@ -131,3 +133,40 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
 - Indexes: `idx_file_organization_entity` (`organization_id`, `entity_type`, `entity_id`)
 - `storage_key` is the path inside `FILES_DIR` (e.g. `events/covers/<uuid>.png`). The bytes are on disk, not in the
   database. Replaced covers keep their row until a later clean-up.
+
+### `person` (Phase 4a)
+- Columns: `first_name`, `last_name`, `email`, `phone`, `affiliation_name`, `country`, `is_active`, `user_id` (Central
+  Auth user, logical reference, never set by staff)
+- Constraints: `fk_person_organization_id` (RESTRICT), `uq_person_organization_id_id` (for registrations),
+  `uq_person_organization_user_id` (partial: non-null `user_id`), `ck_person_country_format`
+- Indexes: `idx_person_organization_phone`, `idx_person_organization_email` (on `lower(email)`),
+  `idx_person_organization_active`
+
+### `registration` (Phase 4a)
+- Columns: `event_id`, `person_id`, `ticket_type_id`, `status`, `source`, `registered_by`, `registered_at`,
+  `cancelled_at`, `code`, `privacy_notice_version`, `privacy_notice_shown_at`, `consent_purpose`, `consent_version`,
+  `consented_at`
+- Constraints:
+  - composite FKs `fk_registration_organization_event` → `event (organization_id, id)`,
+    `fk_registration_organization_person` → `person (organization_id, id)`, and
+    `fk_registration_organization_event_ticket_type` → `ticket_type (organization_id, event_id, id)`, so a ticket
+    type of another event is rejected (spec rule 2);
+  - `uq_registration_organization_event_person` (one row per guest per event), `uq_registration_code`,
+    `uq_registration_organization_id_id`;
+  - `ck_registration_status` (`CONFIRMED`, `CANCELLED`), `ck_registration_source` (`STAFF`, `PUBLIC`),
+    `ck_registration_registered_by_source` (STAFF rows have `registered_by`, PUBLIC rows don't),
+    `ck_registration_cancelled_at_status`, `ck_registration_privacy_notice_pair`, `ck_registration_consent_triple`,
+    `ck_registration_code_format`
+- Indexes: `idx_registration_event_status`, `idx_registration_ticket_type_status` (the capacity counts),
+  `idx_registration_person`
+
+### `message_outbox` (Phase 4a; sent from 4c)
+- Columns: `registration_id`, `kind` (`REGISTRATION_CONFIRMATION`), `channel` (`SMS`), `recipient`, `payload` (JSONB:
+  first name, organization and event names, `starts_at`, `timezone`, code), `status` (`PENDING`, `SENT`, `FAILED`,
+  `SKIPPED`), `attempts`, `next_attempt_at`, `last_error`, `sent_at`, `provider_message_id`
+- Constraints: composite `fk_message_outbox_organization_registration`, `ck_message_outbox_kind`,
+  `ck_message_outbox_channel`, `ck_message_outbox_status`, `ck_message_outbox_attempts_non_negative`,
+  `ck_message_outbox_sent_at_status`
+- Indexes: `idx_message_outbox_due` (partial: `PENDING` rows by `next_attempt_at`), `idx_message_outbox_registration`
+- Written in the same transaction as the registration it confirms (spec rule 5). Supporting infrastructure, not one
+  of the eight business tables.

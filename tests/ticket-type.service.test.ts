@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
-import { ConflictError, InvalidEventStateError, ValidationAppError } from "../src/errors/app-errors.js";
+import { CapacityBelowRegistrationsError, ConflictError, InvalidEventStateError, ValidationAppError } from "../src/errors/app-errors.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
+import { registrationRepository } from "../src/repositories/registration.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { ticketTypeService } from "../src/services/ticket-type.service.js";
@@ -73,4 +74,22 @@ test("a CLOSED or CANCELLED event's ticket types can no longer change", async ()
     await assert.rejects(ticketTypeService.createTicketType(IDS.orgA, IDS.event, { ...VIP }, IDS.user), InvalidEventStateError, status);
     assert.equal(create.mock.callCount(), 0);
   }
+});
+
+test("a ticket type's limit can't drop below its confirmed registrations; the count is read under the event lock", async () => {
+  const findEvent = mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED", capacity: null }));
+  mock.method(ticketTypeRepository, "findByEventAndId", async () => ticketTypeRow({ capacity: 50 }));
+  const count = mock.method(registrationRepository, "countConfirmedByTicketType", async () => 30);
+  const update = mock.method(ticketTypeRepository, "updateByEventAndId", async () => ticketTypeRow({ capacity: 30 }));
+
+  await assert.rejects(
+    ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { capacity: 20 }, IDS.user),
+    CapacityBelowRegistrationsError,
+  );
+  assert.equal(update.mock.callCount(), 0);
+  assert.deepEqual(findEvent.mock.calls[0]?.arguments.slice(2), [{ transaction: FAKE_TX, lock: true }]);
+  assert.deepEqual(count.mock.calls[0]?.arguments, [IDS.orgA, IDS.event, IDS.ticketType, { transaction: FAKE_TX }]);
+
+  await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { capacity: 30 }, IDS.user);
+  assert.equal(update.mock.callCount(), 1, "exactly the confirmed count fits");
 });

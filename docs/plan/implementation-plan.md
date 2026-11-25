@@ -424,6 +424,24 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 - **One registration service** behind staff entry and public entry: lock the event, then the ticket type; check status, registration window and both capacities; store `CONFIRMED`, source, actor and a random code; record the privacy notice shown; queue the confirmation in the same transaction; an outbox worker sends it.
 - **Proof:** two guests race for the last seat and only one wins; a retried submission returns the original registration with one confirmation in total; cancelling frees the seat.
 
+**Split (25 November 2026), built and verified one at a time like 3a–3d** (feature doc: `docs/registrations.md`):
+- **4a:** guest profiles (`person`), staff registration and the guest list. Adds `registration`, `message_outbox` and the `REGISTRATIONS` module ("Guests"). The one registration service locks the event, then the ticket type, then the registration. Confirmations are queued in the same transaction.
+- **4b:** public registration without login. The `submission_key` table makes an `Idempotency-Key` retry return the original result. Privacy-notice evidence is recorded, and the public POST gets its own rate limit.
+- **4c:** sending. An SMS sender interface (`log` and AfroMessage; the token only from `PLATFORM_SMS_AFROMESSAGE_TOKEN`), the outbox worker, the Ethiopian calendar, the English message text (Ethiopian date and clock first, then Gregorian 12-hour), and abuse caps.
+
+**Phase 4 decisions (25 November 2026):**
+- Staff follow the public form's rules: published, not ended, inside the window, an active ticket type and room.
+- One registration per guest per event: a repeat is harmless, another ticket type gets 409, and a cancelled guest is reactivated on the same row and code.
+- Public guests always get a new, unlinked profile; retries are recognised only by `Idempotency-Key`.
+- Codes are 8 characters with no look-alikes, unique across the platform.
+- Only `CONFIRMED` registrations count, and a capacity can't drop below them.
+- Cancelling is staff only, for PUBLISHED or CLOSED events, with no SMS.
+- `VIEWER` reads the guest list.
+- The privacy notice version is a platform constant, and staff entries record no consent.
+- SMS in English through AfroMessage, with `log` mode by default.
+
+**4a status: done.** Migrations `20261126000000` to `…004` (`person`, `registration`, `message_outbox`, the `REGISTRATIONS` module and its grants) were applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 202 of 202 on the real database, none skipped. That includes matrix rows 41–46: row 42 has five guests racing for the last place, and exactly one wins. `npm run check` passed beforehand, with the OpenAPI snapshot up to date.
+
 ### Phase 5 — Pilot walkthrough
 
 Connect the staff and public screens to the API and run the full flow against PostgreSQL: a guest discovers an event, registers, receives a code, and appears once on the staff guest list.

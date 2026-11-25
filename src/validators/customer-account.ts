@@ -1,41 +1,20 @@
 import { z } from "zod";
 import type { RequestContract } from "../middleware/validate.js";
 import type { CustomerAccountKind } from "../models/customer-account.js";
-import { normalizeEthiopianMobile } from "../utils/mobile.js";
-import { booleanQuerySchema, nullableText, organizationIdParamsSchema, paginationQuerySchema, statusChangeSchema, uuidSchema } from "./common.js";
+import {
+  booleanQuerySchema,
+  contactEmailSchema,
+  contactPhoneSchema,
+  nullableText,
+  organizationIdParamsSchema,
+  paginationQuerySchema,
+  statusChangeSchema,
+  uuidSchema,
+} from "./common.js";
 
 const kindSchema = z.enum(["ORGANIZATION", "INDIVIDUAL"] as const satisfies readonly CustomerAccountKind[]);
 
 const INDIVIDUAL_TYPE_MESSAGE = "type describes an organization's sector; leave it empty for an individual";
-
-/** Optional email: "" or null clears it. */
-const contactEmailSchema = z
-  .union([z.literal(""), z.email().max(254)])
-  .nullable()
-  .optional()
-  .transform((value) => (value === "" ? null : value));
-
-/**
- * Optional phone, local or international: digits, spaces, +, -, ( and ). Ethiopian mobiles are stored as +251…;
- * any other number is kept as typed. "" or null clears it.
- */
-const contactPhoneSchema = z
-  .union([
-    z.literal(""),
-    z
-      .string()
-      .trim()
-      .min(7)
-      .max(32)
-      .regex(/^\+?[0-9][0-9 ()-]*$/, "Use digits, spaces, +, -, ( and ) only"),
-  ])
-  .nullable()
-  .optional()
-  .transform((value) => {
-    if (value === "") return null;
-    if (typeof value !== "string") return value; // null clears, undefined keeps
-    return normalizeEthiopianMobile(value) ?? value;
-  });
 
 export const customerAccountCreateSchema = z
   .strictObject({

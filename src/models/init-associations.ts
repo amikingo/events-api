@@ -2,7 +2,10 @@ import type { AppModule } from "./module.js";
 import type { Branch } from "./branch.js";
 import type { CustomerAccount } from "./customer-account.js";
 import type { AppEvent } from "./event.js";
+import type { MessageOutbox } from "./message-outbox.js";
 import type { Organization } from "./organization.js";
+import type { Person } from "./person.js";
+import type { Registration } from "./registration.js";
 import type { Role } from "./role.js";
 import type { RoleModuleAccess } from "./role-module-access.js";
 import type { StoredFile } from "./stored-file.js";
@@ -24,6 +27,9 @@ type Models = {
   StoredFile: typeof StoredFile;
   AppEvent: typeof AppEvent;
   TicketType: typeof TicketType;
+  Person: typeof Person;
+  Registration: typeof Registration;
+  MessageOutbox: typeof MessageOutbox;
 };
 
 /** Every association is declared here, once, with an explicit `as` alias and foreign key. */
@@ -41,6 +47,9 @@ export function initAssociations(models: Models): void {
     StoredFile,
     AppEvent,
     TicketType,
+    Person,
+    Registration,
+    MessageOutbox,
   } = models;
 
   Organization.hasMany(Branch, { foreignKey: "organization_id", as: "branches" });
@@ -72,4 +81,12 @@ export function initAssociations(models: Models): void {
   AppEvent.belongsTo(StoredFile, { foreignKey: "cover_file_id", as: "coverFile" });
   AppEvent.hasMany(TicketType, { foreignKey: "event_id", as: "ticketTypes" });
   TicketType.belongsTo(AppEvent, { foreignKey: "event_id", as: "event" });
+
+  Person.belongsTo(Organization, { foreignKey: "organization_id", as: "organization" });
+  Person.hasMany(Registration, { foreignKey: "person_id", as: "registrations" });
+  Registration.belongsTo(AppEvent, { foreignKey: "event_id", as: "event" });
+  Registration.belongsTo(Person, { foreignKey: "person_id", as: "person" });
+  Registration.belongsTo(TicketType, { foreignKey: "ticket_type_id", as: "ticketType" });
+  Registration.hasMany(MessageOutbox, { foreignKey: "registration_id", as: "messages" });
+  MessageOutbox.belongsTo(Registration, { foreignKey: "registration_id", as: "registration" });
 }

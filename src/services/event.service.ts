@@ -1,6 +1,12 @@
 import type { Transaction } from "sequelize";
 import { fileStorageClient } from "../clients/file-storage.client.js";
-import { ConflictError, EventNotPublishableError, InvalidEventStateError, ValidationAppError } from "../errors/app-errors.js";
+import {
+  CapacityBelowRegistrationsError,
+  ConflictError,
+  EventNotPublishableError,
+  InvalidEventStateError,
+  ValidationAppError,
+} from "../errors/app-errors.js";
 import { toEventDto, type EventDto } from "../mappers/event.mapper.js";
 import type { EventRow, EventStatus } from "../models/event.js";
 import { branchRepository } from "../repositories/branch.repository.js";
@@ -8,6 +14,7 @@ import { customerAccountRepository } from "../repositories/customer-account.repo
 import { eventRepository, type EventUpdateValues } from "../repositories/event.repository.js";
 import { fileRepository } from "../repositories/file.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
+import { registrationRepository } from "../repositories/registration.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { venueRepository } from "../repositories/venue.repository.js";
 import { buildPagination } from "../utils/pagination.js";
@@ -249,6 +256,14 @@ async function updateEvent(organizationId: string, eventId: string, input: Event
         throw new InvalidEventStateError(
           `The event capacity can't be lower than a ticket type's own limit (${largestTicketLimit}). Lower that ticket type first.`,
           { field: "capacity", largest_ticket_type_capacity: largestTicketLimit },
+        );
+      }
+      // Places already confirmed stay valid (the event is locked, so no registration can slip in meanwhile).
+      const confirmed = await registrationRepository.countConfirmedByEvent(organizationId, eventId, { transaction });
+      if (confirmed > patch.capacity) {
+        throw new CapacityBelowRegistrationsError(
+          `The event capacity can't be lower than its confirmed registrations (${confirmed}). Cancel registrations first.`,
+          { field: "capacity", confirmed },
         );
       }
     }

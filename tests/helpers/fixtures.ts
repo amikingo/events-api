@@ -7,6 +7,8 @@ import type { TicketTypeRow } from "../../src/models/ticket-type.js";
 import type { VenueRow } from "../../src/models/venue.js";
 import type { ModuleRow } from "../../src/models/module.js";
 import type { OrganizationRow } from "../../src/models/organization.js";
+import type { PersonRow } from "../../src/models/person.js";
+import type { RegistrationRow } from "../../src/models/registration.js";
 import type { RoleRow } from "../../src/models/role.js";
 import type { StoredFileRow } from "../../src/models/stored-file.js";
 import type { AssignmentRow } from "../../src/repositories/user-role.repository.js";
@@ -27,6 +29,8 @@ export const IDS = {
   event: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
   ticketType: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
   file: "dddddddd-dddd-4ddd-8ddd-ddddddddddd1",
+  person: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1",
+  registration: "ffffffff-ffff-4fff-8fff-fffffffffff1",
 } as const;
 
 const audit = {
@@ -135,6 +139,46 @@ export function ticketTypeRow(overrides: Partial<TicketTypeRow> = {}): TicketTyp
     capacity: null,
     display_order: 0,
     is_active: true,
+    ...audit,
+    ...overrides,
+  };
+}
+
+export function personRow(overrides: Partial<PersonRow> = {}): PersonRow {
+  return {
+    id: IDS.person,
+    organization_id: IDS.orgA,
+    first_name: "Hana",
+    last_name: "Bekele",
+    email: "hana@example.et",
+    phone: "+251911234567",
+    affiliation_name: null,
+    country: "ET",
+    is_active: true,
+    user_id: null,
+    ...audit,
+    ...overrides,
+  };
+}
+
+export function registrationRow(overrides: Partial<RegistrationRow> = {}): RegistrationRow {
+  return {
+    id: IDS.registration,
+    organization_id: IDS.orgA,
+    event_id: IDS.event,
+    person_id: IDS.person,
+    ticket_type_id: IDS.ticketType,
+    status: "CONFIRMED",
+    source: "STAFF",
+    registered_by: IDS.user,
+    registered_at: new Date("2026-11-01T08:00:00Z"),
+    cancelled_at: null,
+    code: "K7M2Q9XP",
+    privacy_notice_version: null,
+    privacy_notice_shown_at: null,
+    consent_purpose: null,
+    consent_version: null,
+    consented_at: null,
     ...audit,
     ...overrides,
   };

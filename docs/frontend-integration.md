@@ -242,6 +242,12 @@ Usage: `await api("/v1/organizations/<id>/branches?page=1")`, or
 | `unsupported_file_type` | 415 | The cover isn't a JPEG, PNG or WebP (checked by its contents, not its name) | "Upload a JPEG, PNG or WebP image" |
 | `invalid_event_state` | 409 | The event is CLOSED or CANCELLED, so it can't change (including its cover) | Show the message; disable editing |
 | `file_storage_unavailable` | 503 | The server couldn't store the upload | "Upload failed, try again later", and report it with the `X-Request-Id` |
+| `registration_closed` | 409 | The event isn't taking registrations; `details.reason` is `NOT_PUBLISHED`, `CANCELLED`, `CLOSED`, `ENDED` or `NOT_OPEN_YET` | Say why, e.g. "Registration has closed" or "Registration opens on …" |
+| `capacity_reached` | 409 | No place left; `details.scope` is `EVENT` or `TICKET_TYPE` (with `details.ticket_type_code`) | "This event is full" or "No places left for this ticket type" |
+| `already_registered` | 409 | The guest already holds a place at this event with another ticket type | Open their existing registration (`details.registration_id`) |
+| `ticket_type_required` | 400 | The event has several active ticket types and none was chosen (`details.ticket_types`) | Ask which ticket type |
+| `ticket_type_inactive`, `person_inactive` | 409 | The chosen ticket type or guest profile is switched off | Show the message |
+| `capacity_below_registrations` | 409 | A capacity edit would go below the confirmed registrations (`details.confirmed`) | "N guests are already confirmed; cancel some first" |
 
 ---
 
@@ -315,9 +321,28 @@ id. Use the cover endpoints to change it rather than sending `cover_file_id` in 
 | `GET /v1/public/events` | The catalog: upcoming and live published `PUBLIC` events, soonest first. `?page&pageSize&category&organization` (`category` exact, ignoring case; `organization` = organization slug). Each card: `name`, `slug`, `organization { name, slug }`, `starts_at`, `ends_at`, `timezone`, `display_status`, `category`, `venue` (or null), `cover` (`{ url }` or null; see *Cover images*), `registration_open`. Link a card to `/{organization.slug}/{slug}`. |
 | `GET /v1/public/organizations/{organizationSlug}/events/{eventSlug}` | The event page. Works for `UNLISTED` events too (share the link), and keeps working after the event ends, closes or is cancelled (show `display_status`). Adds `description`, `registration_opens_at`, `registration_closes_at`, `ticket_types [{ code, name }]`. `404` for drafts. |
 
-Use `registration_open` to show or hide the sign-up button; sign-up itself arrives in Phase 4. Public routes are
+Use `registration_open` to show or hide the sign-up button; the public sign-up form arrives in Phase 4b. Public routes are
 rate limited (`429 rate_limited` after 120 requests a minute per IP). The visitor site's origin must be in
 `CORS_ALLOWED_ORIGINS`.
+
+**Guests and registrations (Phase 4a, staff).** The menu gains *Event Management › Guests* (`/guests`, module
+`REGISTRATIONS`: owners view, create and update; viewers view). Details in `docs/registrations.md`.
+
+| Call | Permission | Body / query |
+|---|---|---|
+| `POST /v1/organizations/{organizationId}/persons` | `REGISTRATIONS.create` | A guest profile: `{ first_name, last_name?, email?, phone?, affiliation_name?, country?, is_active? }`. Only `first_name` is required; Ethiopian mobiles come back as `+251…`. |
+| `GET /v1/organizations/{organizationId}/persons` | `REGISTRATIONS.view` | `?q&is_active&page&pageSize`. `q` searches names, email and phone (`09…` also finds `+251…`). Use it to find a returning guest. |
+| `GET /v1/organizations/{organizationId}/persons/{personId}` | `REGISTRATIONS.view` | The profile with `registrations[]` (event, ticket type, status, code) in this organization: show them so staff can confirm it's the same person before selecting the profile. |
+| `PATCH /v1/organizations/{organizationId}/persons/{personId}` and `…/status` | `REGISTRATIONS.update` | Edit fields (`null` clears), or `{ is_active }`. |
+| `POST /v1/organizations/{organizationId}/events/{eventId}/registrations` | `REGISTRATIONS.create` | `{ person_id }` for a confirmed returning guest, **or** `{ person: {...} }` for a new one; plus `ticket_type_id` when the event has several active ticket types. **201** = a place was taken (new or reactivated; check `message`), **200** = this guest was already registered with that ticket type (nothing changed). |
+| `GET /v1/organizations/{organizationId}/events/{eventId}/registrations` | `REGISTRATIONS.view` | The guest list, newest first: `?status&ticket_type_id&q&page&pageSize`. Each row: `code`, `status`, `source`, `registered_at`, `person {…}`, `ticket_type {…}`. |
+| `GET /v1/organizations/{organizationId}/events/{eventId}/registrations/summary` | `REGISTRATIONS.view` | `{ capacity, confirmed, remaining, ticket_types[] }` for a "12 of 50 places taken" display (`remaining: null` = no limit). |
+| `PATCH /v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}/status` | `REGISTRATIONS.update` | `{ status: "CANCELLED" }` frees the place; `{ status: "CONFIRMED" }` brings a cancelled guest back if there is room. |
+
+Registration follows the same rules for staff as for the public form: the event must be **published**, not ended,
+inside its registration window, with an active ticket type and a free place. Show `registration_closed` and
+`capacity_reached` (see section 4) instead of a generic error. A guest with an Ethiopian mobile gets a confirmation
+SMS with their code (sending starts in Phase 4c).
 
 The menu gains *Event Management › Events* (`/events`) and *Clients* (`/clients`), above *Administration*. Venues
 have no menu item of their own: reach them from the Events area (they use the `EVENTS` permission). These routes
@@ -338,6 +363,6 @@ are organization-level: branch-limited staff get `403` for now.
 
 ## 7. Not available yet
 
-- **Registrations and the guest list:** Phase 4.
+- **Public registration** (the visitor sign-up form): Phase 4b. **Confirmation SMS sending:** Phase 4c (staff registrations already queue them).
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.
