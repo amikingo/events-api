@@ -247,6 +247,8 @@ Usage: `await api("/v1/organizations/<id>/branches?page=1")`, or
 | `already_registered` | 409 | The guest already holds a place at this event with another ticket type | Open their existing registration (`details.registration_id`) |
 | `ticket_type_required` | 400 | The event has several active ticket types and none was chosen (`details.ticket_types`) | Ask which ticket type |
 | `ticket_type_inactive`, `person_inactive` | 409 | The chosen ticket type or guest profile is switched off | Show the message |
+| `privacy_notice_outdated` | 409 | The form showed an older privacy notice (`details.current` is the current version) | Reload the event page and show the current notice |
+| `idempotency_key_reused` | 409 | The same `Idempotency-Key` came with a different form | Make a new key for the changed form (a bug if you see it) |
 | `capacity_below_registrations` | 409 | A capacity edit would go below the confirmed registrations (`details.confirmed`) | "N guests are already confirmed; cancel some first" |
 
 ---
@@ -321,7 +323,26 @@ id. Use the cover endpoints to change it rather than sending `cover_file_id` in 
 | `GET /v1/public/events` | The catalog: upcoming and live published `PUBLIC` events, soonest first. `?page&pageSize&category&organization` (`category` exact, ignoring case; `organization` = organization slug). Each card: `name`, `slug`, `organization { name, slug }`, `starts_at`, `ends_at`, `timezone`, `display_status`, `category`, `venue` (or null), `cover` (`{ url }` or null; see *Cover images*), `registration_open`. Link a card to `/{organization.slug}/{slug}`. |
 | `GET /v1/public/organizations/{organizationSlug}/events/{eventSlug}` | The event page. Works for `UNLISTED` events too (share the link), and keeps working after the event ends, closes or is cancelled (show `display_status`). Adds `description`, `registration_opens_at`, `registration_closes_at`, `ticket_types [{ code, name }]`. `404` for drafts. |
 
-Use `registration_open` to show or hide the sign-up button; the public sign-up form arrives in Phase 4b. Public routes are
+Use `registration_open` to show or hide the sign-up button.
+
+**Public registration (Phase 4b, no login).**
+`POST /v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations`, with the header
+`Idempotency-Key: <uuid>` and the body
+`{ first_name, last_name, phone, email?, affiliation_name?, country?, ticket_type_code?, privacy_notice_version }`.
+- **The fields:**
+  - `phone` must be an Ethiopian mobile (`09…` or `+251…`), because the confirmation SMS goes there;
+  - `ticket_type_code` is one of the page's `ticket_types[].code`, needed only when there are several;
+  - `privacy_notice_version` is the event page's `privacy_notice.version`. Show the notice on the form, and send back the version you showed.
+- **The key:**
+  - create a new UUID (`crypto.randomUUID()`) when the visitor presses *Register*;
+  - reuse it if you retry that same submission automatically, after a network error or timeout;
+  - make a new one if they change the form and submit again. The same key with a different form gets `409 idempotency_key_reused`.
+- **Success:** both **201** (registered) and **200** (that same submission was already processed) are success. Show `data.code`: it's the guest's registration code, also sent by SMS from Phase 4c.
+- **Refusals:** `registration_closed` and `capacity_reached` as for staff (section 4), `privacy_notice_outdated` (reload the page), `rate_limited` (10 submissions a minute per IP), and 404 when the event isn't public.
+- **What the reply contains:** only what the visitor needs: `code`, `status`, `ticket_type`, `event`, `organization`, `guest.first_name`. No ids.
+
+Staff may also send an optional `Idempotency-Key` on `POST …/events/{eventId}/registrations`; a repeat then answers
+200 "Same request already processed". Public routes are
 rate limited (`429 rate_limited` after 120 requests a minute per IP). The visitor site's origin must be in
 `CORS_ALLOWED_ORIGINS`.
 
@@ -363,6 +384,6 @@ are organization-level: branch-limited staff get `403` for now.
 
 ## 7. Not available yet
 
-- **Public registration** (the visitor sign-up form): Phase 4b. **Confirmation SMS sending:** Phase 4c (staff registrations already queue them).
+- **Confirmation SMS sending:** Phase 4c (staff and public registrations already queue them).
 - **Real auth-cheche sign-in is not yet verified end to end** (the live check is pending the real values). Report
   anything odd at login together with the `X-Request-Id`.

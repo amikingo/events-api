@@ -1,6 +1,7 @@
 import type { PersonRow } from "../models/person.js";
 import type { RegistrationSource, RegistrationStatus } from "../models/registration.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
+import type { PublicEventRow } from "../repositories/event.repository.js";
 import type { PersonRegistrationRow, RegistrationWithDetails } from "../repositories/registration.repository.js";
 
 /** A guest-list entry for staff: the registration, the guest's contact summary and the ticket type. */
@@ -114,4 +115,27 @@ export function toRegistrationSummaryDto(
   });
   const confirmed = [...confirmedByTicketType.values()].reduce((total, count) => total + count, 0);
   return { capacity: eventCapacity, confirmed, remaining: remainingOf(eventCapacity, confirmed), ticket_types: rows };
+}
+
+/** What a visitor sees after registering: their code and the event, never internal ids or other guests' data. */
+export type PublicRegistrationDto = {
+  code: string;
+  status: RegistrationStatus;
+  registered_at: Date;
+  ticket_type: { code: string; name: string };
+  event: { name: string; slug: string; starts_at: Date | null; ends_at: Date | null; timezone: string };
+  organization: { name: string; slug: string };
+  guest: { first_name: string };
+};
+
+export function toPublicRegistrationDto(row: RegistrationWithDetails, event: PublicEventRow): PublicRegistrationDto {
+  return {
+    code: row.code,
+    status: row.status,
+    registered_at: row.registered_at,
+    ticket_type: { code: row.ticketType.code, name: row.ticketType.name },
+    event: { name: event.name, slug: event.slug, starts_at: event.starts_at, ends_at: event.ends_at, timezone: event.timezone },
+    organization: { name: event.organization.name, slug: event.organization.slug },
+    guest: { first_name: row.person.first_name },
+  };
 }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { RequestContract } from "../middleware/validate.js";
 import type { RegistrationStatus } from "../models/registration.js";
-import { paginationQuerySchema, uuidSchema } from "./common.js";
+import { idempotencyKeySchema, paginationQuerySchema, uuidSchema } from "./common.js";
 import { eventParamsSchema } from "./event.js";
 import { personInputSchema, searchTextSchema } from "./person.js";
 
@@ -40,8 +40,15 @@ export type RegistrationCreateInput = z.output<typeof registrationCreateSchema>;
 export type RegistrationListQuery = z.output<typeof registrationListQuerySchema>;
 export type RegistrationTargetStatus = z.output<typeof statusSchema>;
 
+/** Optional for staff: a key makes a double-clicked "create guest and register" safe (same request, same result). */
+export const staffRegistrationHeadersSchema = z.object({ "idempotency-key": idempotencyKeySchema.optional() });
+
 // One contract per endpoint (see middleware/validate.ts).
-export const createRegistrationRequest = { params: eventParamsSchema, body: registrationCreateSchema } satisfies RequestContract;
+export const createRegistrationRequest = {
+  params: eventParamsSchema,
+  headers: staffRegistrationHeadersSchema,
+  body: registrationCreateSchema,
+} satisfies RequestContract;
 
 export const listRegistrationsRequest = { params: eventParamsSchema, query: registrationListQuerySchema } satisfies RequestContract;
 

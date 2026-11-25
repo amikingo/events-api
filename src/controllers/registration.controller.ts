@@ -11,10 +11,23 @@ import {
 } from "../validators/registration.js";
 import { getActorId } from "./helpers.js";
 
-/** 201 when a place was taken (new or reactivated); 200 when the same confirmed registration already existed. */
+/**
+ * 201 when a place was taken (new or reactivated); 200 when the same confirmed registration already existed, or when
+ * the same request (same Idempotency-Key) was already processed.
+ */
 async function registerGuest(req: Request, res: Response): Promise<void> {
-  const { params, body } = getValidated(req, createRegistrationRequest);
-  const { registration, outcome } = await registrationService.registerGuest(params.organizationId, params.eventId, body, getActorId(req));
+  const { params, headers, body } = getValidated(req, createRegistrationRequest);
+  const { registration, outcome } = await registrationService.registerGuest(
+    params.organizationId,
+    params.eventId,
+    body,
+    getActorId(req),
+    headers["idempotency-key"],
+  );
+  if (outcome === "REPLAYED") {
+    sendSuccess(res, 200, registration, "Same request already processed");
+    return;
+  }
   if (outcome === "UNCHANGED") {
     sendSuccess(res, 200, registration, "Guest is already registered");
     return;

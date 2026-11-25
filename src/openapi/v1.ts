@@ -8,6 +8,7 @@ import * as event from "../validators/event.js";
 import * as organization from "../validators/organization.js";
 import * as person from "../validators/person.js";
 import * as publicEvent from "../validators/public-event.js";
+import * as publicRegistration from "../validators/public-registration.js";
 import * as registration from "../validators/registration.js";
 import * as ticketType from "../validators/ticket-type.js";
 import * as venue from "../validators/venue.js";
@@ -99,6 +100,7 @@ export const v1Operations: readonly ApiOperation[] = [
   // --- Public (no login) ------------------------------------------------------------------------
   { method: "get", path: "/v1/public/events", contract: publicEvent.listPublicEventsRequest, summary: "Public catalog: upcoming and live PUBLISHED + PUBLIC events of active organizations, by start time (filters: exact category, organization slug)", tags: ["Public"], auth: "public", successStatus: 200 },
   { method: "get", path: "/v1/public/organizations/{organizationSlug}/events/{eventSlug}", contract: publicEvent.getPublicEventRequest, summary: "Public event page by both slugs: any event published at least once (also UNLISTED, ended, closed or cancelled); 404 for drafts", tags: ["Public"], auth: "public", successStatus: 200 },
+  { method: "post", path: "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations", contract: publicRegistration.createPublicRegistrationRequest, bodyComponent: "PublicRegistrationRequest", summary: "Register for an event without an account (Idempotency-Key required): 201 with the code; the same key and form again returns the same registration with 200", description: "Same rules as staff entry: the event must be taking registrations, the ticket type active and a place free. Errors: 400 validation_error (e.g. headers.idempotency-key, a non-Ethiopian mobile), 404 unknown event, 409 privacy_notice_outdated (details.current), 409 idempotency_key_reused, 409 registration_closed (details.reason), 409 capacity_reached (details.scope), 400 ticket_type_required, 429 rate_limited (10 a minute per IP).", tags: ["Public"], auth: "public", successStatus: 201 },
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -106,7 +108,7 @@ export const v1Operations: readonly ApiOperation[] = [
 // ---------------------------------------------------------------------------------------------
 
 type JsonSchema = Record<string, unknown>;
-type Parameter = { name: string; in: "path" | "query"; required: boolean; schema: JsonSchema };
+type Parameter = { name: string; in: "path" | "query" | "header"; required: boolean; schema: JsonSchema };
 type Operation = {
   summary: string;
   description?: string;
@@ -131,11 +133,14 @@ function toJsonSchema(schema: z.ZodType): JsonSchema {
   return converted;
 }
 
-function parametersOf(location: "path" | "query", schema: z.ZodObject | undefined): Parameter[] {
+/** "idempotency-key" → "Idempotency-Key": header names are case-insensitive; this is how clients write them. */
+const headerDisplayName = (name: string) => name.replace(/(^|-)([a-z])/g, (_match, dash: string, letter: string) => `${dash}${letter.toUpperCase()}`);
+
+function parametersOf(location: "path" | "query" | "header", schema: z.ZodObject | undefined): Parameter[] {
   if (!schema) return [];
   const fields = Object.entries(schema.shape) as Array<[string, z.ZodType]>;
   return fields.map(([name, field]) => ({
-    name,
+    name: location === "header" ? headerDisplayName(name) : name,
     in: location,
     required: location === "path" || !field.safeParse(undefined).success,
     schema: toJsonSchema(field),
@@ -203,7 +208,11 @@ export function buildV1Document(): OpenApiDocument {
       };
     }
 
-    const parameters = [...parametersOf("path", contract.params), ...parametersOf("query", contract.query)];
+    const parameters = [
+      ...parametersOf("path", contract.params),
+      ...parametersOf("query", contract.query),
+      ...parametersOf("header", contract.headers),
+    ];
     (paths[operation.path] ??= {})[operation.method] = {
       summary: operation.summary,
       ...(operation.description ? { description: operation.description } : {}),

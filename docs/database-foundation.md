@@ -18,6 +18,7 @@ references without FKs.
 19. `file` entity, uploader and storage provider (columns)
 20. `person` 21. `registration` 22. `message_outbox`
 23. seed: `REGISTRATIONS` module and menu 24. grants: `REGISTRATIONS` for existing `OWNER`/`VIEWER` roles
+25. `submission_key`
 
 ## Tables
 
@@ -170,3 +171,13 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
 - Indexes: `idx_message_outbox_due` (partial: `PENDING` rows by `next_attempt_at`), `idx_message_outbox_registration`
 - Written in the same transaction as the registration it confirms (spec rule 5). Supporting infrastructure, not one
   of the eight business tables.
+
+### `submission_key` (Phase 4b)
+- Columns: `scope` (`PUBLIC_REGISTRATION`, `STAFF_REGISTRATION`), `key` (the `Idempotency-Key`), `request_hash`
+  (sha256 of the event and the request body), `registration_id`
+- Constraints: `uq_submission_key_organization_scope_key`, composite `fk_submission_key_organization_registration` →
+  `registration (organization_id, id)`, `ck_submission_key_scope`, `ck_submission_key_key_format`,
+  `ck_submission_key_request_hash_format`
+- Indexes: `idx_submission_key_registration`
+- Stored only by a successful registration, in the same transaction. Kept for now; a clean-up job comes later.
+  Supporting infrastructure, not one of the eight business tables.

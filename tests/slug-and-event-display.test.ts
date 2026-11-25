@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { PRIVACY_NOTICE_VERSION } from "../src/config/privacy.js";
 import { eventDisplayStatus, isRegistrationOpen, toPublicEventCard, toPublicEventDetail } from "../src/mappers/event.mapper.js";
 import type { PublicEventRow } from "../src/repositories/event.repository.js";
 import { eventRow, ticketTypeRow } from "./helpers/fixtures.js";
@@ -77,6 +78,7 @@ test("public shapes carry only visitor fields: no client, staff, internal ids or
 
   const detail = toPublicEventDetail(row, [ticketTypeRow(), ticketTypeRow({ code: "VIP", name: "VIP" })], now);
   assert.equal(detail.description, "Annual forum");
+  assert.deepEqual(detail.privacy_notice, { version: PRIVACY_NOTICE_VERSION }, "the form shows this notice and sends its version back");
   assert.deepEqual(detail.ticket_types, [
     { code: "GA", name: "General Admission" },
     { code: "VIP", name: "VIP" },

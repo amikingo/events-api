@@ -10,6 +10,7 @@ import { Registration } from "./registration.js";
 import { Role } from "./role.js";
 import { RoleModuleAccess } from "./role-module-access.js";
 import { StoredFile } from "./stored-file.js";
+import { SubmissionKey } from "./submission-key.js";
 import { TicketType } from "./ticket-type.js";
 import { UserModuleAccess } from "./user-module-access.js";
 import { UserRole } from "./user-role.js";
@@ -31,6 +32,7 @@ initAssociations({
   Person,
   Registration,
   MessageOutbox,
+  SubmissionKey,
 });
 
 export {
@@ -45,6 +47,7 @@ export {
   Role,
   RoleModuleAccess,
   StoredFile,
+  SubmissionKey,
   TicketType,
   UserModuleAccess,
   UserRole,

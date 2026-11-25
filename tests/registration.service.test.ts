@@ -4,6 +4,7 @@ import type { Transaction } from "sequelize";
 import {
   AlreadyRegisteredError,
   CapacityReachedError,
+  IdempotencyKeyReusedError,
   InvalidEventStateError,
   NotFoundError,
   PersonInactiveError,
@@ -21,10 +22,12 @@ import { messageOutboxRepository } from "../src/repositories/message-outbox.repo
 import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { personRepository } from "../src/repositories/person.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
+import { submissionKeyRepository } from "../src/repositories/submission-key.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { registrationService } from "../src/services/registration.service.js";
 import { generateRegistrationCode, REGISTRATION_CODE_PATTERN } from "../src/utils/registration-code.js";
+import { requestHash } from "../src/utils/request-hash.js";
 import { eventRow, IDS, organizationRow, personRow, registrationRow, ticketTypeRow } from "./helpers/fixtures.js";
 
 /** The registration service against mocked repositories and a fake transaction: no database needed. */
@@ -360,4 +363,97 @@ test("registration codes are 8 characters without look-alikes (no 0, O, 1, I or 
     assert.doesNotMatch(code, /[0O1IL]/);
   }
   assert.ok(codes.size > 1990, "random, practically never repeated");
+});
+
+// --- Retry keys (Phase 4b) ------------------------------------------------------------------------
+
+const HASH_A = "a".repeat(64);
+const HASH_B = "b".repeat(64);
+const SUBMISSION = { scope: "PUBLIC_REGISTRATION" as const, key: "key-0000-0001", requestHash: HASH_A };
+const PUBLIC_INPUT = {
+  organizationId: IDS.orgA,
+  eventId: IDS.event,
+  guest: { person: NEW_GUEST },
+  source: "PUBLIC" as const,
+  actorId: null,
+  evidence: { privacyNoticeVersion: "2026-11-26", shownAt: new Date("2026-11-26T08:00:00Z") },
+};
+
+function arrangeKeys(calls: ReturnType<typeof arrange>, earlier: { request_hash: string; registration_id: string } | null) {
+  return {
+    findKey: mock.method(submissionKeyRepository, "findByScopeAndKey", async () => {
+      calls.calls.push("key");
+      return earlier === null ? null : { id: "key-row", organization_id: IDS.orgA, scope: "PUBLIC_REGISTRATION" as const, key: SUBMISSION.key, created_at: new Date(), updated_at: new Date(), ...earlier };
+    }),
+    storeKey: mock.method(submissionKeyRepository, "create", async (_values: Record<string, unknown>, _options?: unknown) => ({}) as never),
+    findOriginal: mock.method(registrationRepository, "findByEventAndId", async () => registrationRow({ source: "PUBLIC", registered_by: null })),
+  };
+}
+
+test("a new key registers once and stores the key with the request hash in the same transaction; the event is locked before the key is read", async () => {
+  const calls = arrange();
+  const keys = arrangeKeys(calls, null);
+
+  const { outcome, registration } = await registrationService.registerOnce(PUBLIC_INPUT, SUBMISSION, FAKE_TX);
+
+  assert.equal(outcome, "CREATED");
+  assert.deepEqual(calls.calls.slice(0, 2), ["event:lock", "key"], "the event lock serializes retries of the same submission");
+  const [values, options] = calls.create.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(
+    [values?.source, values?.registered_by, values?.privacy_notice_version, values?.privacy_notice_shown_at],
+    ["PUBLIC", null, "2026-11-26", new Date("2026-11-26T08:00:00Z")],
+  );
+  assert.deepEqual(options, { transaction: FAKE_TX });
+  const [stored, storedOptions] = keys.storeKey.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(stored, {
+    organization_id: IDS.orgA,
+    scope: "PUBLIC_REGISTRATION",
+    key: SUBMISSION.key,
+    request_hash: HASH_A,
+    registration_id: registration.id,
+  });
+  assert.deepEqual(storedOptions, { transaction: FAKE_TX });
+});
+
+test("the same key and request return the original registration: no new profile, place or SMS; another request with that key is refused", async () => {
+  const calls = arrange();
+  const keys = arrangeKeys(calls, { request_hash: HASH_A, registration_id: IDS.registration });
+
+  const { outcome, registration } = await registrationService.registerOnce(PUBLIC_INPUT, SUBMISSION, FAKE_TX);
+  assert.deepEqual([outcome, registration.id], ["REPLAYED", IDS.registration]);
+  assert.deepEqual(
+    [calls.createPerson.mock.callCount(), calls.create.mock.callCount(), calls.queue.mock.callCount(), keys.storeKey.mock.callCount()],
+    [0, 0, 0, 0],
+  );
+  assert.deepEqual(keys.findOriginal.mock.calls[0]?.arguments, [IDS.orgA, IDS.event, IDS.registration, { transaction: FAKE_TX }]);
+
+  await assert.rejects(registrationService.registerOnce(PUBLIC_INPUT, { ...SUBMISSION, requestHash: HASH_B }, FAKE_TX), IdempotencyKeyReusedError);
+  assert.equal(calls.create.mock.callCount(), 0);
+});
+
+test("a refused attempt stores no key, so the same submission can be retried later", async () => {
+  const calls = arrange({ eventTaken: 100 });
+  const keys = arrangeKeys(calls, null);
+  await assert.rejects(registrationService.registerOnce(PUBLIC_INPUT, SUBMISSION, FAKE_TX), CapacityReachedError);
+  assert.equal(keys.storeKey.mock.callCount(), 0);
+});
+
+test("staff may send a key too: it is scoped to staff entry and hashes the event with the request body", async () => {
+  const calls = arrange();
+  const keys = arrangeKeys(calls, null);
+  const body = { person: NEW_GUEST, ticket_type_id: undefined, person_id: undefined };
+
+  const { outcome } = await registrationService.registerGuest(IDS.orgA, IDS.event, body, IDS.user, "staff-key-0001");
+
+  assert.equal(outcome, "CREATED");
+  const [stored] = keys.storeKey.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([stored?.scope, stored?.key, stored?.request_hash], ["STAFF_REGISTRATION", "staff-key-0001", requestHash({ event_id: IDS.event, body })]);
+});
+
+test("the request hash ignores field order and unsent fields, and changes with any value", () => {
+  const base = requestHash({ event_id: IDS.event, body: { first_name: "Liya", phone: "+251912000001", email: undefined } });
+  assert.equal(base, requestHash({ body: { phone: "+251912000001", first_name: "Liya" }, event_id: IDS.event }));
+  assert.match(base, /^[0-9a-f]{64}$/);
+  assert.notEqual(base, requestHash({ event_id: IDS.event, body: { first_name: "Liyu", phone: "+251912000001" } }));
+  assert.notEqual(base, requestHash({ event_id: "another-event", body: { first_name: "Liya", phone: "+251912000001" } }));
 });

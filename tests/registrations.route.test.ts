@@ -142,3 +142,35 @@ test("the guest list passes its filters through; only CANCELLED or CONFIRMED are
   assert.deepEqual([passed.status, passed.q, passed.page, passed.pageSize], ["CONFIRMED", "Hana", 2, 5]);
   assert.deepEqual(change.mock.calls[0]?.arguments, [IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user]);
 });
+
+test("staff may send an Idempotency-Key: it reaches the service, a malformed one is 400, and a replay answers 200", async () => {
+  allowPermissions(true);
+  const register = mock.method(
+    registrationService,
+    "registerGuest",
+    async (_organizationId: string, _eventId: string, _input: unknown, _actorId: string | null, _key?: string) => ({
+      registration: dto,
+      outcome: "REPLAYED" as const,
+    }),
+  );
+
+  await withServer(app, async (baseUrl) => {
+    const send = (key: string) =>
+      fetch(`${baseUrl}${registrationsPath}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${staffToken()}`, "Content-Type": "application/json", "Idempotency-Key": key },
+        body: JSON.stringify({ person_id: IDS.person }),
+      });
+
+    const malformed = await send("no");
+    assert.equal(malformed.status, 400);
+    assert.equal(((await malformed.json()) as any).error.details.issues[0].path, "headers.idempotency-key");
+
+    const replayed = await send("staff-key-0001");
+    assert.equal(replayed.status, 200);
+    assert.equal(((await replayed.json()) as any).message, "Same request already processed");
+  });
+
+  assert.equal(register.mock.callCount(), 1);
+  assert.equal(register.mock.calls[0]?.arguments[4], "staff-key-0001");
+});

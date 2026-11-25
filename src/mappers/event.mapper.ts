@@ -1,3 +1,4 @@
+import { PRIVACY_NOTICE_VERSION } from "../config/privacy.js";
 import type { EventRow, EventStatus } from "../models/event.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import type { PublicEventRow } from "../repositories/event.repository.js";
@@ -76,6 +77,8 @@ export type PublicEventDetail = PublicEventCard & {
   registration_closes_at: Date | null;
   /** Active ticket types only, by code and name. */
   ticket_types: Array<{ code: string; name: string }>;
+  /** The privacy notice the registration form must show; the form sends this version back (Phase 4b). */
+  privacy_notice: { version: string };
 };
 
 export function toPublicEventCard(event: PublicEventRow, now: Date, cover: CoverDto = null): PublicEventCard {
@@ -108,5 +111,6 @@ export function toPublicEventDetail(
     registration_opens_at: event.registration_opens_at,
     registration_closes_at: event.registration_closes_at,
     ticket_types: activeTicketTypes.map((ticketType) => ({ code: ticketType.code, name: ticketType.name })),
+    privacy_notice: { version: PRIVACY_NOTICE_VERSION },
   };
 }

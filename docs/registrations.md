@@ -90,3 +90,68 @@ Everything happens in one transaction:
 - **44:** a draft (`NOT_PUBLISHED`), the Summit's closed sign-ups (`CLOSED`), an inactive ticket type, another event's ticket type and another organization's guest are all refused. PostgreSQL rejects the last two even on a direct insert.
 - **45:** a viewer reads and searches the guest list but can't register or cancel. Branch-limited staff and another tenant get 403.
 - **46:** the event's capacity and GA's limit can't drop below the 2 confirmed registrations.
+
+## 4b: public registration (no login)
+
+### `POST /v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations`
+
+A visitor who opens an event by link registers without an account. It uses the same registration core as staff entry, so the same rules apply: the event is taking registrations, the ticket type is active, and there is room.
+
+- **Header:** `Idempotency-Key`, **required**: 8–128 letters, digits, `-` or `_` (a UUID works). Missing or malformed gives 400 `validation_error` at `headers.idempotency-key`.
+- **Body (strict):**
+
+  | Field | Rule |
+  |---|---|
+  | `first_name`, `last_name` | Required |
+  | `phone` | Required, an Ethiopian mobile (stored as `+251…`), where the confirmation SMS goes. Another number gives 400. |
+  | `email`, `affiliation_name`, `country` | Optional |
+  | `ticket_type_code` | The code shown on the event page. Needed only when the event has several active ticket types. |
+  | `privacy_notice_version` | The version of the notice the form showed, from the event page's `privacy_notice` |
+
+- **Reply (visitor fields only):** `{ code, status, registered_at, ticket_type { code, name }, event { name, slug, starts_at, ends_at, timezone }, organization { name, slug }, guest { first_name } }`. A new registration answers **201**. The same request again answers **200**, with the same registration as it is now.
+- **Refusals:**
+
+  | Status and code | Meaning |
+  |---|---|
+  | 404 | The event isn't public: a draft, never published, or an inactive organization |
+  | 409 `privacy_notice_outdated` | The form showed an older notice; `details.current` is the current version |
+  | 409 `idempotency_key_reused` | The same key was sent with a different form |
+  | 409 `registration_closed`, 409 `capacity_reached`, 400 `ticket_type_required`, 409 `ticket_type_inactive` | As for staff entry |
+  | 429 `rate_limited` | More than 10 submissions a minute from one IP |
+
+- **A new profile every time:** each visitor gets a new, unlinked guest profile. A matching name, phone or email never links two profiles, so two people may share a phone (spec §6).
+
+### Retries: `submission_key` and `registerOnce`
+
+Spec rule 4: return the original result when the same submission is retried. `registrationService.registerOnce` works like this:
+
+1. **Lock the event first.** This serialises every registration change of the event, including two copies of one submission that arrive at the same moment.
+2. **Look up the key.** The key is stored per organization, with a scope of `PUBLIC_REGISTRATION` or `STAFF_REGISTRATION`.
+   - **The same request** (same `request_hash`: a sha256 of the event and the form, in a fixed field order): return the original registration. No new profile, place or SMS.
+   - **A different request:** 409 `idempotency_key_reused`.
+   - **No key yet:** register through the core, then store the key in the same transaction.
+
+**Only a successful registration stores its key.** A refused attempt (full, closed, invalid) wrote nothing, so retrying it simply checks again; a place may have freed up meanwhile.
+
+**Staff may send a key too**, on `POST /events/{eventId}/registrations`, where it is optional. A replay answers 200 with the message "Same request already processed". It protects "create a guest and register" from a double click.
+
+### Privacy evidence
+
+- **The version:** the event page returns `privacy_notice: { version }`, a platform constant, `PRIVACY_NOTICE_VERSION` in `src/config/privacy.ts`. The notice text lives in events-web, and the constant changes whenever the text does.
+- **Recorded on every public registration:** `privacy_notice_version`, and `privacy_notice_shown_at` (the submission time). Staff see them as `privacy_notice` on the registration.
+- **No consent yet:** the MVP form asks for no affirmative consent, so `consent_purpose`, `consent_version` and `consented_at` stay empty. A staff entry records no evidence, because staff entry is not consent.
+
+### Proof (matrix rows 47–49)
+
+All three rows use Partner Workshop, the UNLISTED event.
+- **47:**
+  - The same submission twice in a row gives 201, then 200 with the same code, and exactly one confirmation.
+  - Two copies sent at the same moment with one key give one registration and one confirmation.
+  - The same key with a changed form gets 409.
+  - A staff POST with a key replays without a second profile.
+- **48:** two separate submissions with the same phone give two profiles and two registrations.
+- **49:**
+  - The unlisted event registers by link, as `PUBLIC` with no `registered_by`, with the notice version and time recorded.
+  - A draft and an inactive organization's event answer 404.
+  - An outdated notice gets 409, and closed sign-ups get 409 `CLOSED`.
+  - No profile or key is written for any refusal.

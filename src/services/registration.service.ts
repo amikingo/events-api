@@ -2,6 +2,7 @@ import type { Transaction } from "sequelize";
 import {
   AlreadyRegisteredError,
   CapacityReachedError,
+  IdempotencyKeyReusedError,
   InvalidEventStateError,
   PersonInactiveError,
   RegistrationClosedError,
@@ -18,16 +19,19 @@ import {
 import type { EventRow } from "../models/event.js";
 import type { PersonRow } from "../models/person.js";
 import type { RegistrationRow, RegistrationSource } from "../models/registration.js";
+import type { SubmissionScope } from "../models/submission-key.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { messageOutboxRepository } from "../repositories/message-outbox.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { personRepository } from "../repositories/person.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
+import { submissionKeyRepository } from "../repositories/submission-key.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { normalizeEthiopianMobile } from "../utils/mobile.js";
 import { buildPagination } from "../utils/pagination.js";
 import { generateRegistrationCode } from "../utils/registration-code.js";
+import { requestHash } from "../utils/request-hash.js";
 import type { PersonInput } from "../validators/person.js";
 import type { RegistrationCreateInput, RegistrationListQuery, RegistrationTargetStatus } from "../validators/registration.js";
 import { ensureFound, runTransaction } from "./helpers.js";
@@ -57,6 +61,11 @@ export type RegisterInput = {
 /** CREATED and REACTIVATED took a place; UNCHANGED found the same confirmed registration (a harmless repeat). */
 export type RegisterOutcome = "CREATED" | "REACTIVATED" | "UNCHANGED";
 export type RegisterResult = { registration: RegistrationRow; outcome: RegisterOutcome };
+
+/** An Idempotency-Key with the hash of the request it came with (see registerOnce). */
+export type SubmissionRequest = { scope: SubmissionScope; key: string; requestHash: string };
+/** REPLAYED: the same request was already processed; the original registration is returned as it is now. */
+export type SubmissionOutcome = RegisterOutcome | "REPLAYED";
 
 const MAX_CODE_ATTEMPTS = 5;
 
@@ -247,24 +256,68 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
   return { registration, outcome: existing ? "REACTIVATED" : "CREATED" };
 }
 
+/**
+ * The registration core behind a retry key (spec rule 4). The event is locked first, which serializes retries of the
+ * same submission even when they arrive together. The same key with the same request returns the original
+ * registration (no new profile, place or message); the same key with another request is refused. Only a successful
+ * registration stores its key, so a refused attempt can simply be retried.
+ */
+async function registerOnce(input: RegisterInput, submission: SubmissionRequest, transaction: Transaction): Promise<{
+  registration: RegistrationRow;
+  outcome: SubmissionOutcome;
+}> {
+  const { organizationId, eventId } = input;
+  ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
+
+  const earlier = await submissionKeyRepository.findByScopeAndKey(organizationId, submission.scope, submission.key, { transaction });
+  if (earlier) {
+    if (earlier.request_hash !== submission.requestHash) throw new IdempotencyKeyReusedError();
+    // Same hash, so the same event: the original registration, in its current state.
+    const registration = ensureFound(
+      await registrationRepository.findByEventAndId(organizationId, eventId, earlier.registration_id, { transaction }),
+      "Registration not found",
+    );
+    return { registration, outcome: "REPLAYED" };
+  }
+
+  const result = await registerInTransaction(input, transaction);
+  await submissionKeyRepository.create(
+    {
+      organization_id: organizationId,
+      scope: submission.scope,
+      key: submission.key,
+      request_hash: submission.requestHash,
+      registration_id: result.registration.id,
+    },
+    { transaction },
+  );
+  return result;
+}
+
 async function toDto(organizationId: string, eventId: string, registrationId: string, transaction?: Transaction): Promise<RegistrationDto> {
   const details = await registrationRepository.findDetailsByEventAndId(organizationId, eventId, registrationId, { transaction: transaction ?? null });
   return toRegistrationDto(ensureFound(details, "Registration not found"));
 }
 
-/** Staff entry: an existing guest (`person_id`) or a new one (`person`). */
+/** Staff entry: an existing guest (`person_id`) or a new one (`person`); an optional Idempotency-Key makes it safe to retry. */
 async function registerGuest(
   organizationId: string,
   eventId: string,
   input: RegistrationCreateInput,
   actorId: string | null,
-): Promise<{ registration: RegistrationDto; outcome: RegisterOutcome }> {
+  idempotencyKey?: string,
+): Promise<{ registration: RegistrationDto; outcome: SubmissionOutcome }> {
   return runTransaction(async (transaction) => {
     const guest: RegistrationGuest = input.person_id !== undefined ? { personId: input.person_id } : { person: input.person as PersonInput };
-    const { registration, outcome } = await registerInTransaction(
-      { organizationId, eventId, ticketTypeId: input.ticket_type_id, guest, source: "STAFF", actorId },
-      transaction,
-    );
+    const registerInput: RegisterInput = { organizationId, eventId, ticketTypeId: input.ticket_type_id, guest, source: "STAFF", actorId };
+    const { registration, outcome } =
+      idempotencyKey === undefined
+        ? await registerInTransaction(registerInput, transaction)
+        : await registerOnce(
+            registerInput,
+            { scope: "STAFF_REGISTRATION", key: idempotencyKey, requestHash: requestHash({ event_id: eventId, body: input }) },
+            transaction,
+          );
     return { registration: await toDto(organizationId, eventId, registration.id, transaction), outcome };
   });
 }
@@ -348,6 +401,7 @@ async function getRegistrationSummary(organizationId: string, eventId: string): 
 
 export const registrationService = {
   registerInTransaction,
+  registerOnce,
   registerGuest,
   changeRegistrationStatus,
   listRegistrations,

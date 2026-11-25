@@ -105,3 +105,12 @@ export const booleanQuerySchema = z
 export const statusChangeSchema = z.strictObject({ is_active: z.boolean() });
 
 export const organizationIdParamsSchema = z.strictObject({ organizationId: uuidSchema });
+
+/**
+ * An `Idempotency-Key` header: 8–128 letters, digits, "-" or "_" (a UUID fits). The same key with the same request
+ * returns the original result; see registrationService.registerOnce.
+ */
+export const idempotencyKeySchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_-]{8,128}$/, "Use 8–128 letters, digits, - or _ (a UUID works)");

@@ -9,6 +9,7 @@ import type { Registration } from "./registration.js";
 import type { Role } from "./role.js";
 import type { RoleModuleAccess } from "./role-module-access.js";
 import type { StoredFile } from "./stored-file.js";
+import type { SubmissionKey } from "./submission-key.js";
 import type { TicketType } from "./ticket-type.js";
 import type { UserModuleAccess } from "./user-module-access.js";
 import type { UserRole } from "./user-role.js";
@@ -30,6 +31,7 @@ type Models = {
   Person: typeof Person;
   Registration: typeof Registration;
   MessageOutbox: typeof MessageOutbox;
+  SubmissionKey: typeof SubmissionKey;
 };
 
 /** Every association is declared here, once, with an explicit `as` alias and foreign key. */
@@ -50,6 +52,7 @@ export function initAssociations(models: Models): void {
     Person,
     Registration,
     MessageOutbox,
+    SubmissionKey,
   } = models;
 
   Organization.hasMany(Branch, { foreignKey: "organization_id", as: "branches" });
@@ -89,4 +92,5 @@ export function initAssociations(models: Models): void {
   Registration.belongsTo(TicketType, { foreignKey: "ticket_type_id", as: "ticketType" });
   Registration.hasMany(MessageOutbox, { foreignKey: "registration_id", as: "messages" });
   MessageOutbox.belongsTo(Registration, { foreignKey: "registration_id", as: "registration" });
+  SubmissionKey.belongsTo(Registration, { foreignKey: "registration_id", as: "registration" });
 }

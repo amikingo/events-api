@@ -94,3 +94,11 @@ test("every documented path resolves to a mounted route", async () => {
     }
   });
 });
+
+test("Idempotency-Key is documented as a header: required on the public form, optional for staff", () => {
+  const document = buildV1Document();
+  const header = (path: string) =>
+    (document.paths[path]?.post?.parameters ?? []).find((parameter) => parameter.in === "header" && parameter.name === "Idempotency-Key");
+  assert.equal(header("/v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations")?.required, true);
+  assert.equal(header("/v1/organizations/{organizationId}/events/{eventId}/registrations")?.required, false);
+});

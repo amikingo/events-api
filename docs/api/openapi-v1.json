@@ -2250,6 +2250,15 @@
               "format": "uuid",
               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,128}$"
+            }
           }
         ],
         "requestBody": {
@@ -2667,6 +2676,74 @@
         ],
         "responses": {
           "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations": {
+      "post": {
+        "summary": "Register for an event without an account (Idempotency-Key required): 201 with the code; the same key and form again returns the same registration with 200",
+        "description": "Same rules as staff entry: the event must be taking registrations, the ticket type active and a place free. Errors: 400 validation_error (e.g. headers.idempotency-key, a non-Ethiopian mobile), 404 unknown event, 409 privacy_notice_outdated (details.current), 409 idempotency_key_reused, 409 registration_closed (details.reason), 409 capacity_reached (details.scope), 400 ticket_type_required, 429 rate_limited (10 a minute per IP).",
+        "tags": [
+          "Public"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "organizationSlug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            }
+          },
+          {
+            "name": "eventSlug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicRegistrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
           },
           "default": {
@@ -3648,6 +3725,70 @@
         },
         "required": [
           "status"
+        ],
+        "additionalProperties": false
+      },
+      "PublicRegistrationRequest": {
+        "type": "object",
+        "properties": {
+          "first_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "last_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "phone": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 20
+          },
+          "email": {
+            "nullable": true,
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              },
+              {
+                "type": "string",
+                "maxLength": 254,
+                "format": "email",
+                "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+              }
+            ]
+          },
+          "affiliation_name": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 200
+          },
+          "country": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          },
+          "ticket_type_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "privacy_notice_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        },
+        "required": [
+          "first_name",
+          "last_name",
+          "phone",
+          "privacy_notice_version"
         ],
         "additionalProperties": false
       }

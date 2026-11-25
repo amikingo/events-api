@@ -279,3 +279,17 @@ export class PersonInactiveError extends AppError {
     super(message, { statusCode: 409, code: "person_inactive", details, cause: options?.cause });
   }
 }
+
+/** The public form showed an older privacy notice: reload the event page (`details.current` is the current version). */
+export class PrivacyNoticeOutdatedError extends AppError {
+  constructor(message = "The privacy notice has changed; reload the page", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "privacy_notice_outdated", details, cause: options?.cause });
+  }
+}
+
+/** The Idempotency-Key was already used for a different request. */
+export class IdempotencyKeyReusedError extends AppError {
+  constructor(message = "This Idempotency-Key was already used for a different request", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "idempotency_key_reused", details, cause: options?.cause });
+  }
+}

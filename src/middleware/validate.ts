@@ -12,6 +12,11 @@ export type RequestContract = {
   params?: z.ZodObject;
   query?: z.ZodObject;
   body?: z.ZodType;
+  /**
+   * Request headers this endpoint reads (lower-case names, e.g. "idempotency-key"). Use z.object, never a strict or
+   * loose object: every other header (Authorization, cookies, …) is dropped from the validated input.
+   */
+  headers?: z.ZodObject;
 };
 
 type Out<S> = S extends z.ZodType ? z.output<S> : undefined;
@@ -20,15 +25,16 @@ export type ValidatedInput<C extends RequestContract> = {
   params: Out<C["params"]>;
   query: Out<C["query"]>;
   body: Out<C["body"]>;
+  headers: Out<C["headers"]>;
 };
 
 export type ValidateMiddleware = RequestHandler & { readonly contract: RequestContract };
 
-const PARTS = ["params", "query", "body"] as const;
+const PARTS = ["params", "query", "body", "headers"] as const;
 
 export function validate<C extends RequestContract>(contract: C): ValidateMiddleware {
   const middleware = (req: Request, _res: Response, next: NextFunction): void => {
-    const validated: { params?: unknown; query?: unknown; body?: unknown } = {};
+    const validated: { params?: unknown; query?: unknown; body?: unknown; headers?: unknown } = {};
     const issues: Array<{ path: string; message: string; code: string }> = [];
 
     for (const part of PARTS) {

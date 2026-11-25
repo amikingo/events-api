@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createApp } from "../../src/app.js";
 import { filesConfig } from "../../src/config/files.js";
+import { PRIVACY_NOTICE_VERSION } from "../../src/config/privacy.js";
 import { sequelize } from "../../src/db.js";
 import { ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
+import { publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
 import { migrator } from "../../src/migrator.js";
 import {
   AppEvent,
@@ -16,6 +19,7 @@ import {
   Person as PersonModel,
   Registration,
   StoredFile,
+  SubmissionKey,
   UserModuleAccess,
 } from "../../src/models/index.js";
 import { eventRepository } from "../../src/repositories/event.repository.js";
@@ -838,4 +842,111 @@ test("row 46: the event's or a ticket type's capacity can't drop below its confi
   assert.deepEqual([lowerTicket.status, lowerTicket.body.error.code], [409, "capacity_below_registrations"]);
 
   assert.equal((await as("SELAM_OWNER", "PATCH", eventPath, { capacity: 3 })).status, 200, "raising it is fine");
+});
+
+// --- Phase 4b: public registration (no login) -----------------------------------------------------------
+
+const workshopForm = (first_name: string, phone: string) => ({ first_name, last_name: "Visitor", phone, privacy_notice_version: PRIVACY_NOTICE_VERSION });
+const workshopRegistrations = "/v1/public/organizations/selam-events/events/partner-workshop/registrations";
+
+/** A POST with an Idempotency-Key, as a visitor (no token) or as a staff member. */
+async function postWithKey(path: string, body: unknown, key: string, person?: Person): Promise<TestResponse> {
+  const token = person ? tokens.get(person) : undefined;
+  return withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
+  });
+}
+
+/** These rows send more public submissions than the 10-a-minute limit allows one address (proven separately). */
+const resetPublicLimit = () => publicRegistrationLimiter.resetKey("127.0.0.1");
+
+const workshopId = async () => {
+  const workshop = await AppEvent.findOne({ where: { organization_id: fixture.selamId, slug: "partner-workshop" }, attributes: ["id"], raw: true });
+  assert.ok(workshop);
+  return workshop.id;
+};
+
+test("row 47: a retried submission returns the original registration with one confirmation in total, even when sent twice at once", { skip }, async () => {
+  resetPublicLimit();
+  const eventId = await workshopId();
+
+  // Twice in a row: 201, then 200 with the same code.
+  const key = randomUUID();
+  const first = await postWithKey(workshopRegistrations, workshopForm("Liya", "0912000001"), key);
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const again = await postWithKey(workshopRegistrations, workshopForm("Liya", "0912000001"), key);
+  assert.deepEqual([again.status, again.body.data.code], [200, first.body.data.code]);
+  const liya = await Registration.findAll({ where: { event_id: eventId, code: first.body.data.code }, attributes: ["id"], raw: true });
+  assert.equal(liya.length, 1);
+  assert.equal(await MessageOutbox.count({ where: { registration_id: liya.map((row) => row.id) } }), 1, "one confirmation in total");
+  assert.equal(await PersonModel.count({ where: { organization_id: fixture.selamId, first_name: "Liya" } }), 1);
+
+  // Twice at the same moment with one new key: one registration, one confirmation.
+  const together = randomUUID();
+  const [a, b] = await Promise.all([
+    postWithKey(workshopRegistrations, workshopForm("Meron", "0912000002"), together),
+    postWithKey(workshopRegistrations, workshopForm("Meron", "0912000002"), together),
+  ]);
+  assert.deepEqual([a?.status, b?.status].sort(), [200, 201]);
+  assert.equal(a?.body.data.code, b?.body.data.code);
+  const meron = await Registration.findAll({ where: { event_id: eventId, code: a?.body.data.code }, attributes: ["id"], raw: true });
+  assert.equal(await MessageOutbox.count({ where: { registration_id: meron.map((row) => row.id) } }), 1);
+  assert.equal(await PersonModel.count({ where: { organization_id: fixture.selamId, first_name: "Meron" } }), 1);
+
+  // The same key with a changed form is refused.
+  const reused = await postWithKey(workshopRegistrations, workshopForm("Liyu", "0912000001"), key);
+  assert.deepEqual([reused.status, reused.body.error.code], [409, "idempotency_key_reused"]);
+
+  // Staff entry with a key replays the same way.
+  const staffPath = `/v1/organizations/${fixture.selamId}/events/${eventId}/registrations`;
+  const staffKey = randomUUID();
+  const staffBody = { person: { first_name: "Nahom", phone: "+251912000003" } };
+  const created = await postWithKey(staffPath, staffBody, staffKey, "SELAM_OWNER");
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const repeated = await postWithKey(staffPath, staffBody, staffKey, "SELAM_OWNER");
+  assert.deepEqual([repeated.status, repeated.body.message, repeated.body.data.id], [200, "Same request already processed", created.body.data.id]);
+  assert.equal(await PersonModel.count({ where: { organization_id: fixture.selamId, first_name: "Nahom" } }), 1, "no second profile");
+});
+
+test("row 48: two separate submissions with the same phone create two profiles and two registrations", { skip }, async () => {
+  resetPublicLimit();
+  const first = await postWithKey(workshopRegistrations, workshopForm("Selam", "0912000004"), randomUUID());
+  const second = await postWithKey(workshopRegistrations, workshopForm("Selam", "0912000004"), randomUUID());
+  assert.deepEqual([first.status, second.status], [201, 201]);
+  assert.notEqual(first.body.data.code, second.body.data.code);
+  assert.equal(await PersonModel.count({ where: { organization_id: fixture.selamId, phone: "+251912000004" } }), 2, "a shared phone never links profiles");
+});
+
+test("row 49: an unlisted event registers by link with privacy evidence; drafts, inactive organizations and outdated notices write nothing", { skip }, async () => {
+  resetPublicLimit();
+  const eventId = await workshopId();
+  const registered = await postWithKey(workshopRegistrations, workshopForm("Tigist", "0912000005"), randomUUID());
+  assert.equal(registered.status, 201);
+  assert.deepEqual(Object.keys(registered.body.data).sort(), ["code", "event", "guest", "organization", "registered_at", "status", "ticket_type"]);
+  const row = await Registration.findOne({ where: { event_id: eventId, code: registered.body.data.code }, raw: true });
+  assert.ok(row);
+  assert.deepEqual(
+    [row.source, row.registered_by, row.privacy_notice_version, row.privacy_notice_shown_at instanceof Date, row.consent_purpose],
+    ["PUBLIC", null, PRIVACY_NOTICE_VERSION, true, null],
+  );
+  const staffView = await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/events/${eventId}/registrations/${row.id}`);
+  assert.equal(staffView.body.data.privacy_notice.version, PRIVACY_NOTICE_VERSION, "staff see the evidence");
+
+  const people = await PersonModel.count();
+  const keys = await SubmissionKey.count();
+  const draft = await postWithKey("/v1/public/organizations/selam-events/events/london-roadshow/registrations", workshopForm("Yared", "0912000006"), randomUUID());
+  assert.equal(draft.status, 404, "a draft");
+  const inactive = await postWithKey("/v1/public/organizations/horn-health-alliance/events/banking-forum/registrations", workshopForm("Yared", "0912000006"), randomUUID());
+  assert.equal(inactive.status, 404, "an inactive organization");
+  const outdated = await postWithKey(workshopRegistrations, { ...workshopForm("Yared", "0912000006"), privacy_notice_version: "2020-01-01" }, randomUUID());
+  assert.deepEqual([outdated.status, outdated.body.error.code, outdated.body.error.details.current], [409, "privacy_notice_outdated", PRIVACY_NOTICE_VERSION]);
+  const closedSignUps = await postWithKey("/v1/public/organizations/selam-events/events/annual-summit/registrations", workshopForm("Yared", "0912000006"), randomUUID());
+  assert.deepEqual([closedSignUps.status, closedSignUps.body.error.details.reason], [409, "CLOSED"]);
+  assert.deepEqual([await PersonModel.count(), await SubmissionKey.count()], [people, keys], "nothing written for a refusal");
 });

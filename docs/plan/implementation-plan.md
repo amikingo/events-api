@@ -442,6 +442,11 @@ Each of these phases gets its detailed version (steps, tables, endpoints, test m
 
 **4a status: done.** Migrations `20261126000000` to `…004` (`person`, `registration`, `message_outbox`, the `REGISTRATIONS` module and its grants) were applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 202 of 202 on the real database, none skipped. That includes matrix rows 41–46: row 42 has five guests racing for the last place, and exactly one wins. `npm run check` passed beforehand, with the OpenAPI snapshot up to date.
 
+**4b status: done.** Migration `20261126000100-create-submission-key` was applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 221 of 221 on the real database, none skipped. That includes matrix rows 47–49: a retried submission, even two copies sent at the same moment, returns the original registration with one confirmation in total. `npm run check` passed beforehand, with the OpenAPI snapshot up to date. Refinements to the approved plan:
+- `Idempotency-Key` is checked by the request contract, so a missing key gives 400 `validation_error` at `headers.idempotency-key`;
+- only successful registrations store a key;
+- the privacy notice version starts as `2026-11-26`.
+
 ### Phase 5 — Pilot walkthrough
 
 Connect the staff and public screens to the API and run the full flow against PostgreSQL: a guest discovers an event, registers, receives a code, and appears once on the staff guest list.

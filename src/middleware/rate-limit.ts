@@ -26,6 +26,13 @@ export const publicReadLimiter = createJsonRateLimiter({
   message: "Too many requests",
 });
 
+/** The public registration form: each submission may create a guest profile and queue an SMS, so 10 a minute per IP. */
+export const publicRegistrationLimiter = createJsonRateLimiter({
+  windowMs: 60_000,
+  limit: 10,
+  message: "Too many registration attempts",
+});
+
 export const authRefreshLimiter = createJsonRateLimiter({
   windowMs: 60_000,
   limit: 20,
