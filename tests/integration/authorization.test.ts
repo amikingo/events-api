@@ -2061,3 +2061,91 @@ test("row 82: adding staff creates a Cheche account when the mobile has none; an
     mock.restoreAll();
   }
 });
+
+// --- Phase 2e step 5: platform roles and platform staff ------------------------------------------------------
+
+const SUPPORT_ID = "cddddddd-dddd-4ddd-8ddd-dddddddddd01";
+const platformFixture = { supportRoleId: "", supportAssignmentId: "" };
+
+function stubPlatformPeople() {
+  const people: Record<string, string> = { "+251933000030": SUPPORT_ID, "+251933000031": PEOPLE.SELAM_VIEWER };
+  mock.method(centralAuthClient, "findUserByMobile", async (mobile: string) => {
+    const userId = people[mobile];
+    return userId ? { userId, mobile, firstname: "Platform", middlename: null, lastname: "Person" } : null;
+  });
+  mock.method(centralAuthClient, "getUsersByIds", async (ids: readonly string[]) =>
+    ids.map((userId) => ({ userId, mobile: null, firstname: "Name", middlename: null, lastname: "Of Staff" })),
+  );
+}
+
+test("row 83: the Super Admin creates Platform support and assigns someone; they read guests in two organizations, can't create events, and /me shows their menu", { skip }, async () => {
+  stubPlatformPeople();
+  try {
+    const role = await as("SUPER", "POST", "/v1/platform/roles", {
+      code: "platform_support",
+      name: "Platform support",
+      grants: [grantOf("ORGANIZATIONS", true, false, false), grantOf("REGISTRATIONS", true, false, false)],
+    });
+    assert.equal(role.status, 201, JSON.stringify(role.body));
+    platformFixture.supportRoleId = role.body.data.id;
+
+    const given = await as("SUPER", "POST", "/v1/platform/staff-assignments", { mobile: "0933000030", role_id: platformFixture.supportRoleId });
+    assert.equal(given.status, 201, JSON.stringify(given.body));
+    platformFixture.supportAssignmentId = given.body.data.id;
+    assert.equal((await as("SUPER", "GET", "/v1/platform/staff-assignments")).body.data.some((row: { id: string }) => row.id === given.body.data.id), true);
+
+    const support = await tokenFor(SUPPORT_ID);
+    assert.equal((await asToken(support, "GET", swapFixture.guestsPath)).status, 200, "Selam's guests");
+    const abayEvent = await AppEvent.findOne({ where: { organization_id: guestFixturePhase6.abayId, slug: guestFixturePhase6.abayDaySlug }, raw: true });
+    assert.ok(abayEvent);
+    assert.equal((await asToken(support, "GET", `/v1/organizations/${guestFixturePhase6.abayId}/events/${abayEvent.id}/registrations`)).status, 200, "Abay's guests");
+    assert.equal((await asToken(support, "POST", `/v1/organizations/${fixture.selamId}/events`, { name: "Support Party" })).status, 403);
+
+    const me = await asToken(support, "GET", "/v1/auth/staff/me");
+    assert.equal(me.status, 200, JSON.stringify(me.body));
+    const codes = (me.body.data.navigation as Array<{ children: Array<{ code: string }> }>).flatMap((node) => node.children.map((child) => child.code));
+    assert.ok(codes.includes("REGISTRATIONS") && codes.includes("ORGANIZATIONS"), JSON.stringify(codes));
+    assert.equal(me.body.data.permissions.EVENTS.create, false);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 84: Owners can't reach platform routes or see platform rows; SUPER_ADMIN is locked; the last Super Admin stays; tenant staff can't be platform staff", { skip }, async () => {
+  stubPlatformPeople();
+  try {
+    assert.equal((await as("SELAM_OWNER", "GET", "/v1/platform/roles")).status, 403);
+    assert.equal((await as("SELAM_OWNER", "POST", "/v1/platform/roles", { code: "X", name: "X", grants: [] })).status, 403);
+    assert.equal((await as("SELAM_OWNER", "GET", "/v1/platform/staff-assignments")).status, 403);
+    const selamRoles = (await as("SELAM_OWNER", "GET", `${staffBase()}/roles`)).body.data as Array<{ code: string }>;
+    assert.ok(!selamRoles.some((role) => role.code === "PLATFORM_SUPPORT" || role.code === "SUPER_ADMIN"), "tenant lists never show platform roles");
+    assert.equal((await as("SELAM_OWNER", "GET", `${staffBase()}/staff-assignments/${platformFixture.supportAssignmentId}`)).status, 404, "nor platform staff");
+
+    const superRole = (await as("SUPER", "GET", "/v1/platform/roles")).body.data.find((role: { code: string }) => role.code === "SUPER_ADMIN");
+    const locked = await as("SUPER", "PATCH", `/v1/platform/roles/${superRole.id}`, { name: "Boss" });
+    assert.deepEqual([locked.status, locked.body.error.code], [409, "role_locked"]);
+
+    // Platform support may now manage platform staff, so the last-Super-Admin rule can be tried by someone else.
+    const widened = await as("SUPER", "PATCH", `/v1/platform/roles/${platformFixture.supportRoleId}`, {
+      grants: [
+        grantOf("ORGANIZATIONS", true, false, false),
+        grantOf("REGISTRATIONS", true, false, false),
+        { ...grantOf("USER_ROLES", true, false, true), delete: true },
+      ],
+    });
+    assert.equal(widened.status, 200, JSON.stringify(widened.body));
+    const support = await tokenFor(SUPPORT_ID);
+    const superAssignment = await assignmentIdOf(PEOPLE.SUPER);
+    const off = await asToken(support, "PATCH", `/v1/platform/staff-assignments/${superAssignment}/status`, { is_active: false });
+    assert.deepEqual([off.status, off.body.error.code], [409, "last_super_admin"]);
+    const gone = await asToken(support, "DELETE", `/v1/platform/staff-assignments/${superAssignment}`);
+    assert.deepEqual([gone.status, gone.body.error.code], [409, "last_super_admin"]);
+    const own = await as("SUPER", "DELETE", `/v1/platform/staff-assignments/${superAssignment}`);
+    assert.deepEqual([own.status, own.body.error.code], [409, "own_assignment"]);
+
+    const tenantPerson = await as("SUPER", "POST", "/v1/platform/staff-assignments", { mobile: "0933000031", role_id: platformFixture.supportRoleId });
+    assert.deepEqual([tenantPerson.status, tenantPerson.body.error.code, tenantPerson.body.error.details.field], [409, "conflict", "user_id"]);
+  } finally {
+    mock.restoreAll();
+  }
+});

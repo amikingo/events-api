@@ -293,3 +293,18 @@ platform scope; adding staff never returns a token; every route checks a permiss
 - `PATCH …/staff-assignments/{assignmentId}/profile` (`USER_ROLES.update`) changes the person's names in auth-cheche:
   names only, never mobile, email, password or status; `409 central_auth_refused` when auth-cheche says no.
 - Adding staff never returns a token for that person (a bookings hole that stays closed).
+
+**Step 5: platform roles and platform staff.** Platform scope only (the Super Admin, or platform staff given Roles or
+Staff Assignments at platform scope); a tenant assignment never satisfies platform scope, and every tenant query is
+keyed by `organization_id`, so tenant routes never see platform rows.
+- `GET`, `POST`, `GET /{roleId}`, `PATCH /{roleId}`, `PATCH /{roleId}/status` at `/v1/platform/roles` (`ROLES`):
+  any active permission module, platform modules included, all 7 actions; the editor must hold each newly granted
+  action at platform scope; `SUPER_ADMIN` is locked (409 `role_locked`); a platform role still held can't be switched
+  off (409 `role_in_use`); codes unique among platform roles, names unique.
+- `GET`, `POST`, `GET /{assignmentId}`, `PATCH /{assignmentId}` (role), `PATCH /{assignmentId}/status`,
+  `DELETE /{assignmentId}` at `/v1/platform/staff-assignments` (`USER_ROLES`): by mobile (with `new_account` to create
+  the Cheche account); a person who is staff of any organization is refused (409 `conflict`, `field: user_id`); the
+  last active Super Admin can't be moved, switched off or deleted (409 `last_super_admin`, under a Super Admin lock);
+  nobody changes or deletes their own platform assignment (409 `own_assignment`).
+- **A platform role's grants on tenant modules apply in every organization.** "Platform support" with *Guests › view*
+  reads every organization's guest list. Give platform roles only what platform staff need everywhere.

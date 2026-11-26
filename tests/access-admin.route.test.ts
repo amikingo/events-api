@@ -179,3 +179,31 @@ test("editing names needs Staff Assignments › update and takes names only; a n
   const asked = permission.mock.calls.map((entry) => [(entry.arguments[0] as { moduleCode: string }).moduleCode, (entry.arguments[0] as { action: string }).action]);
   assert.deepEqual(asked[0], ["USER_ROLES", "update"]);
 });
+
+test("platform roles use Roles and platform staff use Staff Assignments, both at platform scope; bodies are strict", async () => {
+  const permission = allowPermissions(false);
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    const role = "55555555-5555-4555-8555-555555555553";
+    await call(baseUrl, "GET", "/v1/platform/roles", { token });
+    await call(baseUrl, "POST", "/v1/platform/roles", { token, body: { code: "HELP", name: "Help", grants: [] } });
+    await call(baseUrl, "PATCH", `/v1/platform/roles/${role}/status`, { token, body: { is_active: false } });
+    await call(baseUrl, "GET", "/v1/platform/staff-assignments", { token });
+    await call(baseUrl, "POST", "/v1/platform/staff-assignments", { token, body: { mobile: "0911223344", role_id: role } });
+    const denied = await call(baseUrl, "DELETE", `/v1/platform/staff-assignments/${ASSIGNMENT}`, { token });
+    assert.deepEqual([denied.status, denied.body.error.code], [403, "permission_denied"]);
+    assert.equal((await call(baseUrl, "POST", "/v1/platform/staff-assignments", { token, body: { mobile: "0911223344", role_id: role, organization_id: IDS.orgA } })).status, 400);
+  });
+  const asked = permission.mock.calls.map((entry) => {
+    const input = entry.arguments[0] as { moduleCode: string; action: string; scope: PermissionScope };
+    return [input.moduleCode, input.action, input.scope.level];
+  });
+  assert.deepEqual(asked, [
+    ["ROLES", "view", "platform"],
+    ["ROLES", "create", "platform"],
+    ["ROLES", "update", "platform"],
+    ["USER_ROLES", "view", "platform"],
+    ["USER_ROLES", "create", "platform"],
+    ["USER_ROLES", "delete", "platform"],
+  ]);
+});

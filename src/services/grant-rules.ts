@@ -39,14 +39,32 @@ async function assertGrantable(entries: readonly GrantEntry[], pathPrefix: strin
   return moduleIds;
 }
 
-/** Every listed action must be one the editor holds in this organization (their signed-in assignment). */
-async function assertHeld(organizationId: string, editor: GrantEditor, entries: readonly GrantEntry[]): Promise<void> {
+/**
+ * Platform roles (Phase 2e) may hold any active permission module, platform modules included, and all 7 actions. A
+ * module that doesn't exist or isn't a permission module is a 400 naming it. Returns the module ids by code.
+ */
+async function assertPlatformGrantable(entries: readonly GrantEntry[], pathPrefix: string, transaction: Transaction): Promise<Map<string, string>> {
+  const moduleIds = new Map((await moduleRepository.listActiveOrdered({ transaction })).filter((m) => m.is_permission).map((m) => [m.code, m.id]));
+  const issues = entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => !moduleIds.has(entry.module_code))
+    .map(({ entry, index }) => ({ path: `${pathPrefix}.${index}.module_code`, message: `${entry.module_code} is not an active permission module`, code: "module_not_grantable" }));
+  if (issues.length > 0) throw new ValidationAppError("Request validation failed", { issues });
+  return moduleIds;
+}
+
+/**
+ * Every listed action must be one the editor holds (their signed-in assignment): in this organization, or at platform
+ * scope when `organizationId` is null (platform roles, Phase 2e).
+ */
+async function assertHeld(organizationId: string | null, editor: GrantEditor, entries: readonly GrantEntry[]): Promise<void> {
+  const scope = organizationId === null ? ({ level: "platform" } as const) : ({ level: "organization", organizationId, branchId: null } as const);
   for (const entry of entries) {
     for (const action of entry.actions) {
       const resolution = await permissionResolutionService.resolvePermission({
         userId: editor.userId,
         assignmentId: editor.assignmentId,
-        scope: { level: "organization", organizationId, branchId: null },
+        scope,
         moduleCode: entry.module_code,
         action,
       });
@@ -55,4 +73,4 @@ async function assertHeld(organizationId: string, editor: GrantEditor, entries: 
   }
 }
 
-export const grantRules = { assertGrantable, assertHeld };
+export const grantRules = { assertGrantable, assertPlatformGrantable, assertHeld };

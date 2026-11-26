@@ -3,9 +3,6 @@ import { centralAuthClient, type CentralUser } from "../clients/central-auth.cli
 import {
   AssignmentScopeConflictError,
   BranchInactiveError,
-  CentralAccountNotFoundError,
-  ConflictError,
-  MalformedCentralAuthResponseError,
   InvalidBranchStateError,
   LastOwnerAssignmentError,
   OrganizationInactiveError,
@@ -23,7 +20,6 @@ import { roleRepository } from "../repositories/role.repository.js";
 import { userModuleAccessRepository } from "../repositories/user-module-access.repository.js";
 import { userRoleRepository, type StaffAssignmentRow } from "../repositories/user-role.repository.js";
 import { OWNER_ROLE_CODE } from "../utils/default-roles.js";
-import { logger } from "../utils/logger.js";
 import { buildPagination } from "../utils/pagination.js";
 import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, TENANT_GRANTABLE, type GrantableAction } from "../utils/rbac.js";
 import type {
@@ -36,6 +32,7 @@ import type {
 } from "../validators/staff-assignment.js";
 import { grantRules, type GrantEditor } from "./grant-rules.js";
 import { ensureFound, runTransaction } from "./helpers.js";
+import { staffAccounts } from "./staff-accounts.js";
 import { staffRules } from "./staff-rules.js";
 
 /**
@@ -45,47 +42,6 @@ import { staffRules } from "./staff-rules.js";
  */
 export type StaffLookupDto = { user_id: string } & NonNullable<StaffProfileDto>;
 export type AssignOutcome = "CREATED" | "REACTIVATED" | "UNCHANGED";
-
-async function findAccount(mobile: string): Promise<CentralUser> {
-  const user = await centralAuthClient.findUserByMobile(mobile);
-  if (!user) throw new CentralAccountNotFoundError(undefined, { mobile });
-  return user;
-}
-
-/**
- * The Cheche account behind this mobile (Phase 2e): the existing one, or, when there is none and the Owner filled in
- * `new_account`, a new verified account with the Owner's password. A 409 (it was created meanwhile) uses the existing
- * account as it is. Always outside the transaction: no lock waits on the network.
- */
-async function accountFor(input: StaffAssignmentCreateInput): Promise<{ user: CentralUser; created: boolean }> {
-  const existing = await centralAuthClient.findUserByMobile(input.mobile);
-  if (existing) return { user: existing, created: false };
-  if (!input.new_account) throw new CentralAccountNotFoundError(undefined, { mobile: input.mobile });
-
-  let created: CentralUser | null;
-  try {
-    created = await centralAuthClient.createVerifiedUser({ mobile: input.mobile, ...input.new_account });
-  } catch (error) {
-    if (!(error instanceof ConflictError)) throw error;
-    return { user: await findAccount(input.mobile), created: false };
-  }
-  if (created) return { user: created, created: true };
-  // The reply didn't name the account: look it up again.
-  const lookedUp = await centralAuthClient.findUserByMobile(input.mobile);
-  if (!lookedUp) throw new MalformedCentralAuthResponseError("Central Auth created the account but it can't be found by its mobile");
-  return { user: lookedUp, created: true };
-}
-
-/** Names for a page of assignments, one auth-cheche call. Best effort: if it fails, profiles are null. */
-async function profilesOf(userIds: string[]): Promise<Map<string, CentralUser>> {
-  const unique = [...new Set(userIds)];
-  try {
-    return new Map((await centralAuthClient.getUsersByIds(unique)).map((user) => [user.userId, user]));
-  } catch (error) {
-    logger.warn({ err: error instanceof Error ? error.message : error, count: unique.length }, "Staff names could not be read from Central Auth");
-    return new Map();
-  }
-}
 
 async function activeTenantRole(organizationId: string, roleId: string, transaction: Transaction): Promise<RoleRow> {
   // Platform roles (organization_id NULL) are never found here, so they can't be handed out.
@@ -117,7 +73,7 @@ async function staffDto(organizationId: string, assignmentId: string, user?: Cen
 
 /** Who uses this mobile in auth-cheche, so the owner can confirm the person before assigning. */
 async function lookUp(mobile: string): Promise<StaffLookupDto> {
-  const user = await findAccount(mobile);
+  const user = await staffAccounts.findAccount(mobile);
   return { user_id: user.userId, ...(toStaffProfileDto(user) as NonNullable<StaffProfileDto>) };
 }
 
@@ -145,14 +101,14 @@ async function list(organizationId: string, query: StaffAssignmentListQuery): Pr
     limit,
     offset,
   });
-  const profiles = await profilesOf(rows.map((row) => row.user_id));
+  const profiles = await staffAccounts.profilesOf(rows.map((row) => row.user_id));
   return { rows: rows.map((row) => toStaffAssignmentDto(row, profiles.get(row.user_id))), count };
 }
 
 /** One assignment with the person's name from auth-cheche (best effort: profile null when it can't be read). */
 async function get(organizationId: string, assignmentId: string): Promise<StaffAssignmentDto> {
   const assignment = await staffDto(organizationId, assignmentId);
-  return { ...assignment, profile: toStaffProfileDto((await profilesOf([assignment.user_id])).get(assignment.user_id)) };
+  return { ...assignment, profile: toStaffProfileDto((await staffAccounts.profilesOf([assignment.user_id])).get(assignment.user_id)) };
 }
 
 /**
@@ -164,7 +120,7 @@ async function assign(
   input: StaffAssignmentCreateInput,
   actorId: string | null,
 ): Promise<{ assignment: StaffAssignmentDto; outcome: AssignOutcome; accountCreated: boolean }> {
-  const { user, created: accountCreated } = await accountFor(input);
+  const { user, created: accountCreated } = await staffAccounts.accountFor(input);
 
   return runTransaction(async (transaction) => {
     await userRoleRepository.lockAssignmentsOfUser(user.userId, { transaction });
@@ -251,7 +207,7 @@ async function update(
   });
   return {
     ...assignment,
-    profile: toStaffProfileDto((await profilesOf([assignment.user_id])).get(assignment.user_id)),
+    profile: toStaffProfileDto((await staffAccounts.profilesOf([assignment.user_id])).get(assignment.user_id)),
     role_changed: roleChanged,
     override_count: overrideCount,
   };
@@ -280,7 +236,7 @@ async function changeStatus(organizationId: string, assignmentId: string, isActi
     }
     return staffDto(organizationId, current.id, undefined, transaction);
   });
-  return { ...assignment, profile: toStaffProfileDto((await profilesOf([assignment.user_id])).get(assignment.user_id)) };
+  return { ...assignment, profile: toStaffProfileDto((await staffAccounts.profilesOf([assignment.user_id])).get(assignment.user_id)) };
 }
 
 /**

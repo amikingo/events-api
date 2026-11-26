@@ -72,6 +72,31 @@ async function listByOrganization(organizationId: string, options: RepoOptions &
   return toPlainList<RoleRow>(rows);
 }
 
+// --- Platform roles (Phase 2e): organization_id NULL. Never reachable through the tenant functions above. ---------
+
+async function listPlatform(options: RepoOptions = {}): Promise<RoleRow[]> {
+  const rows = await Role.findAll({
+    where: { organization_id: null },
+    attributes: [...attributes],
+    order: [
+      ["is_active", "DESC"],
+      ["code", "ASC"],
+    ],
+    ...txOptions(options),
+  });
+  return toPlainList<RoleRow>(rows);
+}
+
+async function findPlatformById(roleId: string, options: RepoOptions = {}): Promise<RoleRow | null> {
+  const row = await Role.findOne({ where: { organization_id: null, id: roleId }, attributes: [...attributes], ...txOptions(options), ...lockOptions(options) });
+  return toPlain<RoleRow>(row);
+}
+
+async function updatePlatformById(roleId: string, values: RoleUpdateValues, options: WriteOptions = {}): Promise<RoleRow | null> {
+  await Role.update(values, { where: { organization_id: null, id: roleId }, ...txOptions(options) });
+  return findPlatformById(roleId, options);
+}
+
 /** A role made from a template, with its organization (the Super Admin's "roles using this template", Phase 2e). */
 export type TemplateRoleRow = RoleRow & { organization: Pick<OrganizationRow, "id" | "name" | "slug"> };
 
@@ -91,6 +116,9 @@ async function listByTemplate(templateId: string, options: RepoOptions = {}): Pr
 }
 
 export const roleRepository = {
+  listPlatform,
+  findPlatformById,
+  updatePlatformById,
   listByTemplate,
   findPlatformRoleByCode,
   findByOrganizationAndCode,

@@ -357,6 +357,13 @@ export class CentralAuthRefusedError extends AppError {
   }
 }
 
+/** Phase 2e: the platform must keep at least one active Super Admin. */
+export class LastSuperAdminError extends AppError {
+  constructor(message = "The platform must keep at least one active Super Admin", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "last_super_admin", details, cause: options?.cause });
+  }
+}
+
 /** Phase 2e: a role can't be made from a switched-off template. */
 export class RoleTemplateInactiveError extends AppError {
   constructor(message = "This template is switched off", details?: unknown, options?: ErrorOptions) {

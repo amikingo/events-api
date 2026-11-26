@@ -10,6 +10,7 @@ import { grantableModulesRouter } from "./grantable-modules.js";
 import { modulesRouter } from "./modules.js";
 import { organizationsRouter } from "./organizations.js";
 import { personsRouter } from "./persons.js";
+import { platformRouter } from "./platform.js";
 import { publicEventsRouter } from "./public-events.js";
 import { registrationsRouter } from "./registrations.js";
 import { organizationRoleTemplatesRouter, roleTemplatesRouter } from "./role-templates.js";
@@ -35,6 +36,7 @@ router.use("/organizations/:organizationId/role-templates", organizationRoleTemp
 router.use("/organizations/:organizationId/grantable-modules", grantableModulesRouter);
 router.use("/role-templates", roleTemplatesRouter); // platform scope: the Super Admin's template library
 router.use("/modules", modulesRouter); // platform scope: the menu and permission list
+router.use("/platform", platformRouter); // platform scope: platform roles and platform staff
 router.use("/organizations/:organizationId", staffAssignmentsRouter); // /staff-assignments, /staff-lookup
 router.use("/public", publicEventsRouter); // no login: catalog and event pages
 router.use("/customer", customerRouter); // a signed-in guest's own data (My Tickets)

@@ -204,6 +204,68 @@ async function countActiveByRole(organizationId: string, roleId: string, options
   return UserRole.count({ where: { organization_id: organizationId, role_id: roleId, is_active: true }, ...txOptions(options) });
 }
 
+// --- Platform staff (Phase 2e): assignments with organization_id NULL. Tenant functions never return them. ----------
+
+async function listPlatform(
+  filters: { isActive?: boolean | undefined; roleId?: string | undefined; limit: number; offset: number },
+  options: RepoOptions = {},
+): Promise<{ rows: StaffAssignmentRow[]; count: number }> {
+  const { rows, count } = await UserRole.findAndCountAll({
+    where: {
+      organization_id: null,
+      ...(typeof filters.isActive === "boolean" ? { is_active: filters.isActive } : {}),
+      ...(filters.roleId ? { role_id: filters.roleId } : {}),
+    },
+    attributes: [...attributes],
+    include: staffIncludes,
+    order: [
+      ["is_active", "DESC"],
+      ["created_at", "ASC"],
+      ["id", "ASC"],
+    ],
+    limit: filters.limit,
+    offset: filters.offset,
+    ...txOptions(options),
+  });
+  return { rows: toPlainList<StaffAssignmentRow>(rows), count };
+}
+
+async function findPlatformById(assignmentId: string, options: RepoOptions = {}): Promise<UserRoleRow | null> {
+  const row = await UserRole.findOne({ where: { organization_id: null, id: assignmentId }, attributes: [...attributes], ...txOptions(options), ...lockOptions(options) });
+  return toPlain<UserRoleRow>(row);
+}
+
+async function findPlatformStaffById(assignmentId: string, options: RepoOptions = {}): Promise<StaffAssignmentRow | null> {
+  const row = await UserRole.findOne({ where: { organization_id: null, id: assignmentId }, attributes: [...attributes], include: staffIncludes, ...txOptions(options) });
+  return toPlain<StaffAssignmentRow>(row);
+}
+
+/** Active platform assignments holding one platform role (the last-Super-Admin rule, and switching a role off). */
+async function countActivePlatformByRole(roleId: string, options: RepoOptions = {}): Promise<number> {
+  return UserRole.count({ where: { organization_id: null, role_id: roleId, is_active: true }, ...txOptions(options) });
+}
+
+async function countActivePlatformByRoles(roleIds: readonly string[], options: RepoOptions = {}): Promise<Map<string, number>> {
+  if (roleIds.length === 0) return new Map();
+  const rows = (await UserRole.findAll({
+    where: { organization_id: null, role_id: { [Op.in]: [...roleIds] }, is_active: true },
+    attributes: ["role_id", [fn("COUNT", col("id")), "members"]],
+    group: ["role_id"],
+    raw: true,
+    ...txOptions(options),
+  })) as unknown as Array<{ role_id: string; members: string | number }>;
+  return new Map(rows.map((row) => [row.role_id, Number(row.members)]));
+}
+
+async function deletePlatformById(assignmentId: string, options: { transaction: Transaction }): Promise<void> {
+  await UserRole.destroy({ where: { organization_id: null, id: assignmentId }, transaction: options.transaction });
+}
+
+/** Serializes Super Admin changes, so two Super Admins can't remove each other at the same moment. */
+async function lockSuperAdmins(options: { transaction: Transaction }): Promise<void> {
+  await acquireAdvisoryXactLock("platform_super_admins", "all", options);
+}
+
 /** Hard-deletes one organization's assignment (Phase 2e); its overrides go with it through the foreign key's CASCADE. */
 async function deleteByOrganizationAndId(organizationId: string, assignmentId: string, options: { transaction: Transaction }): Promise<void> {
   await UserRole.destroy({ where: { organization_id: organizationId, id: assignmentId }, transaction: options.transaction });
@@ -228,6 +290,13 @@ async function lockOwnersOfOrganization(organizationId: string, options: { trans
 }
 
 export const userRoleRepository = {
+  listPlatform,
+  findPlatformById,
+  findPlatformStaffById,
+  countActivePlatformByRole,
+  countActivePlatformByRoles,
+  deletePlatformById,
+  lockSuperAdmins,
   listByOrganization,
   findByOrganizationAndId,
   findStaffByOrganizationAndId,

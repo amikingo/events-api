@@ -546,6 +546,8 @@ Connect the staff and public screens to the API and run the full flow against Po
 
 **Step 3 (R2): API done (26 November 2026).** Migration `20261203000000-add-role-template-id-to-role` applied to `events_dev`; `npm run check` passed (314 unit tests, OpenAPI snapshot up to date); the project owner ran `TEST_DATABASE=1 npm test` (row 81 included) and committed.
 
-**Step 4 (U4, U5): built, not yet verified.** No migration. Waiting for `npm run check` and `TEST_DATABASE=1 npm test` (row 82). By hand later: one staff member added with a new account on a test mobile, then renamed (confirms `create-verified` and `PUT /users/{id}` accept the service token).
+**Step 4 (U4, U5): API done (26 November 2026).** No migration. `npm run check` passed (321 unit tests, OpenAPI snapshot up to date); the project owner ran `TEST_DATABASE=1 npm test` (row 82 included) and committed. By hand later: one staff member added with a new account on a test mobile, then renamed (confirms `create-verified` and `PUT /users/{id}` accept the service token).
+
+**Step 5 (R1): API done (26 November 2026).** No migration. `npm run check` passed (327 unit tests, OpenAPI snapshot up to date); the project owner ran `TEST_DATABASE=1 npm test` (rows 83–84 included) and committed. The account look-up and creation moved into the shared `src/services/staff-accounts.ts`, used by tenant and platform staff.
 
 **Screens:** at the project owner's request, the UI briefs for every step (`docs/ui-brief-phase-2e-<n>.md`) go to Antigravity together, once all six backend steps are done.
