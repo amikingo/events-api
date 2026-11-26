@@ -33,6 +33,7 @@ import { organizationRepository } from "../repositories/organization.repository.
 import { personRepository } from "../repositories/person.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
 import { submissionKeyRepository } from "../repositories/submission-key.repository.js";
+import { ticketAdmissionRepository } from "../repositories/ticket-admission.repository.js";
 import { ticketOrderRepository } from "../repositories/ticket-order.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { normalizeEthiopianMobile } from "../utils/mobile.js";
@@ -585,6 +586,7 @@ async function exportRegistrations(organizationId: string, eventId: string, quer
     status: query.status,
     ticketTypeId: query.ticket_type_id,
     q: query.q,
+    ...(query.checked_in === undefined ? {} : { checkedIn: query.checked_in }),
     phoneVariant: query.q === undefined ? null : normalizeEthiopianMobile(query.q),
   });
   const confirmations = new Map<string, NonNullable<RegistrationDto["confirmation"]>>();
@@ -604,6 +606,7 @@ async function listRegistrations(organizationId: string, eventId: string, query:
     status: query.status,
     ticketTypeId: query.ticket_type_id,
     q: query.q,
+    ...(query.checked_in === undefined ? {} : { checkedIn: query.checked_in }),
     phoneVariant: query.q === undefined ? null : normalizeEthiopianMobile(query.q),
     limit,
     offset,
@@ -621,7 +624,8 @@ async function getRegistrationSummary(organizationId: string, eventId: string): 
   const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId), "Event not found");
   const ticketTypes = await ticketTypeRepository.listByEvent(organizationId, eventId);
   const confirmed = await registrationRepository.countConfirmedPerTicketType(organizationId, eventId);
-  return toRegistrationSummaryDto(event.capacity, ticketTypes, confirmed);
+  const checkedIn = await ticketAdmissionRepository.countPerTicketType(organizationId, eventId);
+  return toRegistrationSummaryDto(event.capacity, ticketTypes, confirmed, checkedIn);
 }
 
 /**

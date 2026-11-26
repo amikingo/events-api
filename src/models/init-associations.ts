@@ -12,6 +12,7 @@ import type { RoleTemplate } from "./role-template.js";
 import type { RoleTemplateModuleAccess } from "./role-template-module-access.js";
 import type { StoredFile } from "./stored-file.js";
 import type { SubmissionKey } from "./submission-key.js";
+import type { TicketAdmission } from "./ticket-admission.js";
 import type { OrderPayment } from "./order-payment.js";
 import type { TicketOrder } from "./ticket-order.js";
 import type { TicketType } from "./ticket-type.js";
@@ -40,6 +41,7 @@ type Models = {
   SubmissionKey: typeof SubmissionKey;
   TicketOrder: typeof TicketOrder;
   OrderPayment: typeof OrderPayment;
+  TicketAdmission: typeof TicketAdmission;
 };
 
 /** Every association is declared here, once, with an explicit `as` alias and foreign key. */
@@ -65,6 +67,7 @@ export function initAssociations(models: Models): void {
     SubmissionKey,
     TicketOrder,
     OrderPayment,
+    TicketAdmission,
   } = models;
 
   Organization.hasMany(Branch, { foreignKey: "organization_id", as: "branches" });
@@ -119,4 +122,8 @@ export function initAssociations(models: Models): void {
   // Phase 7 step 3: payments.
   TicketOrder.hasOne(OrderPayment, { foreignKey: "order_id", as: "payment" });
   OrderPayment.belongsTo(TicketOrder, { foreignKey: "order_id", as: "order" });
+
+  // Phase 8 step 2: one admission per ticket.
+  Registration.hasOne(TicketAdmission, { foreignKey: "registration_id", as: "admission" });
+  TicketAdmission.belongsTo(Registration, { foreignKey: "registration_id", as: "registration" });
 }

@@ -578,9 +578,14 @@ Four steps, built one at a time:
 
 The plan follows the 27 November handoff.
 
-**Step 1 (the mobile limit): built; waiting on `npm run check`, then `TEST_DATABASE=1 npm test` (row 96). No migration.**
+**Step 1 (the mobile limit): done (27 November 2026).** `npm run check` passed; the project owner ran `TEST_DATABASE=1 npm test` (row 96, and row 91 updated to the new rule) and committed. No migration.
 - Tests written first showed three paths skipping the limit when no mobile was known:
   - a free staff order;
   - a staff registration of a guest without an Ethiopian mobile;
   - bringing back an unnamed ticket whose order had no mobile.
 - On a capped event these now answer 400 `buyer_mobile_required`. Uncapped events are unchanged.
+
+**Step 2 (check-in and the QR payload): built; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test` (rows 97–98).** Migration `20261208000000-create-ticket-admission`.
+- `POST …/events/{eventId}/check-ins` (Guests › update, an `Idempotency-Key` header, body `{ code }`). It answers `ADMITTED` or `ALREADY_CHECKED_IN`.
+- The QR payload is the existing ticket code, which events-web draws.
+- The summary, guest list, single registration and CSV gain the check-in fields.

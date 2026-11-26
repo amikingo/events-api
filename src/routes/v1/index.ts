@@ -15,6 +15,7 @@ import { ordersRouter } from "./orders.js";
 import { chechePayCredentialsRouter } from "./cheche-pay-credentials.js";
 import { paymentsRouter } from "./payments.js";
 import { publicEventsRouter } from "./public-events.js";
+import { checkInsRouter } from "./check-ins.js";
 import { registrationsRouter } from "./registrations.js";
 import { organizationRoleTemplatesRouter, roleTemplatesRouter } from "./role-templates.js";
 import { rolesRouter } from "./roles.js";
@@ -33,6 +34,7 @@ router.use("/organizations/:organizationId/venues", venuesRouter);
 router.use("/organizations/:organizationId/events", eventsRouter);
 router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticketTypesRouter);
 router.use("/organizations/:organizationId/events/:eventId/registrations", registrationsRouter);
+router.use("/organizations/:organizationId/events/:eventId/check-ins", checkInsRouter); // Phase 8: the door
 router.use("/organizations/:organizationId/events/:eventId/orders", ordersRouter);
 router.use("/organizations/:organizationId/cheche-pay", chechePayCredentialsRouter); // platform scope: where the money goes
 router.use("/organizations/:organizationId/persons", personsRouter);

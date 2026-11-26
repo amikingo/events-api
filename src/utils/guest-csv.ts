@@ -31,6 +31,8 @@ export const GUEST_CSV_HEADERS = [
   "Cancelled (Gregorian)",
   "Order",
   "Buyer mobile",
+  "Checked in (Ethiopian)",
+  "Checked in (Gregorian)",
 ] as const;
 
 const UNNAMED_TICKET = "Unnamed ticket";
@@ -91,6 +93,7 @@ function rowCells(row: RegistrationDto, timeZone: string): string[] {
     ...dateCells(row.cancelled_at, timeZone),
     safeCell(row.order.reference),
     mobileCell(row.order.buyer_mobile),
+    ...dateCells(row.checked_in_at, timeZone),
   ];
 }
 

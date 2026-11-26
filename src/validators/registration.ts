@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { RequestContract } from "../middleware/validate.js";
 import type { RegistrationStatus } from "../models/registration.js";
-import { idempotencyKeySchema, paginationQuerySchema, uuidSchema } from "./common.js";
+import { booleanQuerySchema, idempotencyKeySchema, paginationQuerySchema, uuidSchema } from "./common.js";
 import { eventParamsSchema } from "./event.js";
 import { personInputSchema, searchTextSchema } from "./person.js";
 
@@ -34,6 +34,8 @@ const guestListFilters = {
   status: statusSchema.optional(),
   ticket_type_id: uuidSchema.optional(),
   q: searchTextSchema,
+  /** Phase 8: true for tickets admitted at the door, false for those not yet admitted. */
+  checked_in: booleanQuerySchema,
 };
 
 export const registrationListQuerySchema = paginationQuerySchema.extend(guestListFilters);

@@ -4882,7 +4882,7 @@
         }
       },
       "get": {
-        "summary": "The event's guest list, newest first (q searches the guest's names, email and phone, and since Phase 7 the ticket code and the order's buyer mobile). Phase 7: person is null for an unnamed QUICK ticket; each entry has order { id, reference, buyer_mobile } and price { amount, currency }; confirmation is the ticket's own SMS or its order's",
+        "summary": "The event's guest list, newest first (q searches the guest's names, email and phone, and since Phase 7 the ticket code and the order's buyer mobile). Phase 7: person is null for an unnamed QUICK ticket; each entry has order { id, reference, buyer_mobile } and price { amount, currency }; confirmation is the ticket's own SMS or its order's. Phase 8: checked_in_at and checked_in_by (null until admitted at the door); checked_in=true|false filters",
         "tags": [
           "Registrations"
         ],
@@ -4967,6 +4967,18 @@
               "minLength": 1,
               "maxLength": 100
             }
+          },
+          {
+            "name": "checked_in",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4988,7 +5000,7 @@
     },
     "/v1/organizations/{organizationId}/events/{eventId}/registrations/summary": {
       "get": {
-        "summary": "Places confirmed and left, for the event and each ticket type",
+        "summary": "Places confirmed and left, for the event and each ticket type; since Phase 8 also checked_in (tickets admitted at the door), overall and per ticket type",
         "tags": [
           "Registrations"
         ],
@@ -5039,7 +5051,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/registrations/export": {
       "get": {
         "summary": "Download the guest list as CSV (needs REGISTRATIONS export): the list's filters and order, every matching guest in one file named {event-slug}-guests.csv",
-        "description": "UTF-8 with a byte-order mark. Dates in the event's time zone, Ethiopian first, then Gregorian with a 12-hour time. Cells that start like a formula get a leading apostrophe; Ethiopian mobiles are written as 0911 234 567. Errors (JSON): 400 validation_error (paging isn't accepted), 403 permission_denied, 404 unknown event.",
+        "description": "Phase 8: the last two columns are Checked in (Ethiopian) and (Gregorian). UTF-8 with a byte-order mark. Dates in the event's time zone, Ethiopian first, then Gregorian with a 12-hour time. Cells that start like a formula get a leading apostrophe; Ethiopian mobiles are written as 0911 234 567. Errors (JSON): 400 validation_error (paging isn't accepted), 403 permission_denied, 404 unknown event.",
         "tags": [
           "Registrations"
         ],
@@ -5100,6 +5112,18 @@
               "minLength": 1,
               "maxLength": 100
             }
+          },
+          {
+            "name": "checked_in",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5112,6 +5136,76 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/events/{eventId}/check-ins": {
+      "post": {
+        "summary": "Phase 8: admit a ticket at the door by its code (a scanned QR, whose payload is the ticket's 8-character code, or a typed code). Online and single entry: 200 with result ADMITTED, or ALREADY_CHECKED_IN with the original time and staff",
+        "description": "Idempotency-Key required: the same request again returns its original result. Only a CONFIRMED ticket of this organization and event is admitted, once for the whole event; check-in keeps the registration and its place. Reply: { result, checked_in_at, checked_in_by, ticket { id, code, ticket_type { code, name }, holder { first_name, last_name } | null, order { reference } } }. Errors: 400 validation_error (a malformed code or key), 404 not_found (no such code at this event, including another event's or organization's), 409 ticket_not_admissible (details.status HELD, RELEASED or CANCELLED), 409 invalid_event_state (the event isn't PUBLISHED), 409 idempotency_key_reused (the key already admitted another ticket).",
+        "tags": [
+          "Registrations"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckInRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
           },
           "default": {
             "description": "Error envelope",
@@ -7840,6 +7934,18 @@
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
           }
         },
+        "additionalProperties": false
+      },
+      "CheckInRequest": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
         "additionalProperties": false
       },
       "RegistrationStatusChangeRequest": {

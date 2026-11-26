@@ -448,3 +448,36 @@ guest whose only phone isn't an Ethiopian mobile counts as having none.
 **Proof:** unit tests for each path, and matrix row 96. The tests were written first: only the free staff order, the
 staff registration of a guest without an Ethiopian mobile, and bringing back an unnamed ticket whose order had no
 mobile failed the rule. Only those three paths were changed (`ticketing.assertBuyerAllowance`).
+
+### Step 2: the ticket QR and admission at the door
+
+**The QR payload is the ticket's existing 8-character `code`, and nothing else.** It's already in the order page, My
+Tickets and staff reads for every confirmed ticket. events-web draws, shares and downloads one QR per ticket. A friend
+given one QR can't see the rest of the order, because the order token is never in it. A saved screenshot works offline;
+the gate validates online.
+
+**Admission:** `POST /v1/organizations/{organizationId}/events/{eventId}/check-ins` (Guests › update), with an
+`Idempotency-Key` header and a body of `{ code }`. A scan and a typed code use the same call.
+- Only a `CONFIRMED` ticket of this organization and event is admitted, once for the whole event. Admission records
+  the staff member and the time in `ticket_admission`; the registration and its place don't change.
+- `ADMITTED`: this request admitted the ticket. Retrying the same request (the same key) after a lost response returns
+  this original result.
+- `ALREADY_CHECKED_IN`: a separate scan of an admitted ticket. It carries the original time and staff member.
+- **Refusals:**
+  - an unknown code, or one from another event or organization: 404;
+  - a ticket that is `HELD`, `RELEASED` or `CANCELLED`: 409 `ticket_not_admissible`;
+  - an event that isn't `PUBLISHED`: 409 `invalid_event_state`;
+  - a key that already admitted another ticket: 409 `idempotency_key_reused`.
+- **Atomic:** the registration row is locked. It's the only lock check-in takes, so it can't deadlock with a return or
+  a cancellation. One admission per ticket is a unique key, so two gates racing produce exactly one admission.
+
+**Reporting:**
+- the summary has `checked_in`, overall and per ticket type;
+- guest-list rows and a single registration have `checked_in_at` and `checked_in_by`, with a `checked_in=true|false`
+  filter;
+- the CSV's last two columns are Checked in (Ethiopian) and (Gregorian).
+
+Looking a ticket up (the guest list's `q` finds a code) and showing a QR never write anything.
+
+**Proof:** unit tests (results, retries, refusals, the race fallback) and matrix rows 97–98 (the exact payload on
+every path, two gates racing, the retried winner, a second ticket of the same order, refusals, tenants, view-only).

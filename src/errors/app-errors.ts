@@ -324,6 +324,16 @@ export class InvalidSignatureError extends AppError {
   }
 }
 
+/**
+ * Phase 8: this ticket can't be admitted at the door: it isn't a confirmed, issued ticket (`details.status`: HELD,
+ * RELEASED or CANCELLED, e.g. returned).
+ */
+export class TicketNotAdmissibleError extends AppError {
+  constructor(message = "This ticket can't be admitted", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "ticket_not_admissible", details, cause: options?.cause });
+  }
+}
+
 /** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
 export class CapacityReachedError extends AppError {
   constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {

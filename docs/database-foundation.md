@@ -234,3 +234,12 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
   - **added:** `tx_ref` (the latest attempt, `uq_order_payment_tx_ref`), `provider_transaction_id`,
     `checkout_expires_at`, `key_mode` (`ck_order_payment_key_mode`);
   - **constraint:** a `PAID` row has `paid_tx_ref` and `verified_at` (`ck_order_payment_paid_verified`).
+
+### Phase 8 step 2 (admission at the door)
+- `ticket_admission` (new, `20261208000000`):
+  - columns: `organization_id`, `event_id`, `registration_id`, `admitted_at`, `admitted_by` (the staff user),
+    `idempotency_key` (the gate request's retry key), `created_at`;
+  - constraints: `uq_ticket_admission_registration` (one admission per ticket, for the whole event),
+    `uq_ticket_admission_organization_key`, tenant composite `fk_ticket_admission_organization_event` and
+    `fk_ticket_admission_organization_registration`, `idx_ticket_admission_organization_event`.
+- The registration row is never changed by check-in.

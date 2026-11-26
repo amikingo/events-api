@@ -33,6 +33,9 @@ export type RegistrationDto = {
   privacy_notice: { version: string; shown_at: Date } | null;
   /** The latest confirmation SMS: PENDING, SENT, FAILED or SKIPPED; null when none was queued (no Ethiopian mobile). */
   confirmation: ConfirmationDto;
+  /** Phase 8: when the ticket was admitted at the door and by which staff member; null until then. */
+  checked_in_at: Date | null;
+  checked_in_by: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -67,6 +70,8 @@ export function toRegistrationDto(row: RegistrationWithDetails, confirmation: Co
         ? { version: row.privacy_notice_version, shown_at: row.privacy_notice_shown_at }
         : null,
     confirmation,
+    checked_in_at: row.admission?.admitted_at ?? null,
+    checked_in_by: row.admission?.admitted_by ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -105,6 +110,8 @@ export type RegistrationSummaryDto = {
   capacity: number | null;
   confirmed: number;
   remaining: number | null;
+  /** Phase 8: tickets admitted at the door (the attendance count). */
+  checked_in: number;
   ticket_types: Array<{
     id: string;
     code: string;
@@ -113,6 +120,7 @@ export type RegistrationSummaryDto = {
     capacity: number | null;
     confirmed: number;
     remaining: number | null;
+    checked_in: number;
   }>;
 };
 
@@ -122,6 +130,7 @@ export function toRegistrationSummaryDto(
   eventCapacity: number | null,
   ticketTypes: TicketTypeRow[],
   confirmedByTicketType: Map<string, number>,
+  checkedInByTicketType: Map<string, number> = new Map(),
 ): RegistrationSummaryDto {
   const rows = ticketTypes.map((ticketType) => {
     const confirmed = confirmedByTicketType.get(ticketType.id) ?? 0;
@@ -133,10 +142,12 @@ export function toRegistrationSummaryDto(
       capacity: ticketType.capacity,
       confirmed,
       remaining: remainingOf(ticketType.capacity, confirmed),
+      checked_in: checkedInByTicketType.get(ticketType.id) ?? 0,
     };
   });
   const confirmed = [...confirmedByTicketType.values()].reduce((total, count) => total + count, 0);
-  return { capacity: eventCapacity, confirmed, remaining: remainingOf(eventCapacity, confirmed), ticket_types: rows };
+  const checkedIn = [...checkedInByTicketType.values()].reduce((total, count) => total + count, 0);
+  return { capacity: eventCapacity, confirmed, remaining: remainingOf(eventCapacity, confirmed), checked_in: checkedIn, ticket_types: rows };
 }
 
 /** What a visitor sees after registering: their code and the event, never internal ids or other guests' data. */

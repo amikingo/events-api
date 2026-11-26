@@ -14,6 +14,7 @@ import { RoleTemplate } from "./role-template.js";
 import { RoleTemplateModuleAccess } from "./role-template-module-access.js";
 import { StoredFile } from "./stored-file.js";
 import { SubmissionKey } from "./submission-key.js";
+import { TicketAdmission } from "./ticket-admission.js";
 import { OrderPayment } from "./order-payment.js";
 import { TicketOrder } from "./ticket-order.js";
 import { TicketType } from "./ticket-type.js";
@@ -42,6 +43,7 @@ initAssociations({
   SubmissionKey,
   TicketOrder,
   OrderPayment,
+  TicketAdmission,
 });
 
 export {
@@ -61,6 +63,7 @@ export {
   RoleTemplateModuleAccess,
   StoredFile,
   SubmissionKey,
+  TicketAdmission,
   TicketOrder,
   TicketType,
   UserModuleAccess,

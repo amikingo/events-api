@@ -36,6 +36,7 @@ import {
   RoleTemplateModuleAccess,
   StoredFile,
   SubmissionKey,
+  TicketAdmission,
   TicketOrder,
   UserModuleAccess,
   UserRole,
@@ -1442,8 +1443,9 @@ test("row 64: the owner downloads the guest list as CSV (BOM, filters, Amharic i
   assert.equal(lines.length, 4, "header plus all three guests");
   const hana = lines.find((line) => line.startsWith(swapFixture.hanaCode)) ?? "";
   assert.match(hana, /,Confirmed,Hana,Swap,0922 000 001,,,VIP,Added by staff,/);
-  // Phase 7: after the (empty) cancelled dates come the order reference and the buyer's mobile.
-  assert.match(hana, /"[A-Z][a-z]+ \d{1,2}, \d{4} at \d{1,2}:\d{2} (in the morning|in the afternoon|in the evening|at night)","[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2} (AM|PM)",,,[A-HJKMNP-Z2-9]{10},0922 000 001$/);
+  // Phase 7: after the (empty) cancelled dates come the order reference and the buyer's mobile; Phase 8: then the
+  // (empty, not checked in) check-in dates.
+  assert.match(hana, /"[A-Z][a-z]+ \d{1,2}, \d{4} at \d{1,2}:\d{2} (in the morning|in the afternoon|in the evening|at night)","[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2} (AM|PM)",,,[A-HJKMNP-Z2-9]{10},0922 000 001,,$/);
   assert.ok(lines.some((line) => line.includes(",ሰላም,Swap,")), "Amharic kept");
   assert.ok(lines.some((line) => line.includes(",'=SUM(1),Swap,")), "the formula can't run");
 
@@ -2446,8 +2448,9 @@ test("row 89: Hana gets 3 quick tickets with one mobile; a retry returns the sam
   assert.ok(order);
   const messages = await MessageOutbox.findAll({ where: { order_id: order.id }, raw: true });
   assert.deepEqual(
-    messages.map((message) => [message.kind, message.recipient, "codes" in message.payload ? message.payload.codes : null]),
-    [["ORDER_CONFIRMATION", "+251913100001", codes]],
+    // Compared as a set: tickets made in the same millisecond come back in code order, the SMS lists creation order.
+    messages.map((message) => [message.kind, message.recipient, "codes" in message.payload ? [...message.payload.codes].sort() : null]),
+    [["ORDER_CONFIRMATION", "+251913100001", [...codes].sort()]],
   );
   assert.equal(await Registration.count({ where: { order_id: order.id } }), 3);
 });
@@ -2796,4 +2799,94 @@ test("row 96: with a limit of 4 per mobile, 3 public tickets and 1 staff ticket 
   const free = await as("SELAM_OWNER", "POST", `${uncapped.path}/orders`, { items: [{ ticket_type_id: uncapped.types.GA, quantity: 1 }] });
   assert.deepEqual([free.status, free.body.data.buyer_mobile], [201, null], "no limit: staff may still leave the mobile out");
   assert.equal(free.body.data.confirmation, null, "no buyer mobile, no SMS");
+});
+
+// --- Phase 8 step 2: QR payload and admission at the door ----------------------------------------------------------
+
+/** A gate (or staff typing a code) admitting a ticket, with the gate request's retry key. */
+async function gateScan(person: Person, eventPath: string, code: string, key: string): Promise<TestResponse> {
+  const token = tokens.get(person);
+  assert.ok(token);
+  return withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${eventPath}/check-ins`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "Idempotency-Key": key },
+      body: JSON.stringify({ code }),
+    });
+    const text = await response.text();
+    return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
+  });
+}
+
+const doorFixture = { eventPath: "", publicPath: "", codes: [] as string[] };
+
+test("row 97: each ticket's QR payload is exactly its code on the order page, My Tickets and the staff order; two gates racing admit it once; the winning request retried gets its original result; the other ticket of the order is admitted on its own", { skip }, async () => {
+  resetPublicLimit();
+  const event = await publishedCheckoutEvent({ name: "Pilot Gala", registration_mode: "QUICK" });
+  Object.assign(doorFixture, { eventPath: event.path, publicPath: event.publicPath });
+  const bought = await guestPost(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }]), { key: randomUUID(), token: guestAccessToken("SARA") });
+  assert.equal(bought.status, 201, JSON.stringify(bought.body));
+  const codes = bought.body.data.tickets.map((ticket: { code: string }) => ticket.code) as string[];
+  doorFixture.codes = codes;
+  assert.ok(codes.every((code) => /^[A-HJKMNP-Z2-9]{8}$/.test(code)), "the payload: the 8-character code only");
+  assert.equal(new Set(codes).size, 2);
+
+  const recovered = await withServer(app, async (baseUrl) => (await fetch(`${baseUrl}/v1/public/orders/${bought.body.data.reference}`, { headers: { "X-Order-Token": bought.body.data.order_token } })).json());
+  assert.deepEqual((recovered as { data: { tickets: Array<{ code: string }> } }).data.tickets.map((ticket) => ticket.code).sort(), [...codes].sort(), "guest order recovery");
+  const mine = await guestGet("/v1/customer/registrations", guestAccessToken("SARA"));
+  assert.ok(codes.every((code) => mine.body.data.some((row: { code: string }) => row.code === code)), "My Tickets");
+  const order = await TicketOrder.findOne({ where: { reference: bought.body.data.reference }, raw: true });
+  const staffOrder = await as("SELAM_OWNER", "GET", `${event.path}/orders/${order?.id}`);
+  assert.deepEqual(staffOrder.body.data.tickets.map((ticket: { code: string }) => ticket.code).sort(), [...codes].sort(), "the staff order");
+
+  assert.equal((await as("SELAM_OWNER", "GET", `${event.path}/registrations/summary`)).body.data.checked_in, 0);
+  const gateKeys = [randomUUID(), randomUUID()];
+  const race = await Promise.all(gateKeys.map((key) => gateScan("SELAM_OWNER", event.path, codes[0] as string, key)));
+  assert.deepEqual(race.map((response) => response.status), [200, 200]);
+  assert.deepEqual(race.map((response) => response.body.data.result).sort(), ["ADMITTED", "ALREADY_CHECKED_IN"]);
+  assert.equal(race[0]?.body.data.checked_in_at, race[1]?.body.data.checked_in_at, "the second gate sees the original time");
+  assert.equal(race[0]?.body.data.ticket.ticket_type.code, "GA");
+  assert.equal(await TicketAdmission.count({ where: { event_id: event.id } }), 1, "one admission");
+  assert.equal((await as("SELAM_OWNER", "GET", `${event.path}/registrations/summary`)).body.data.checked_in, 1, "the count rose by one");
+
+  const winnerIndex = race.findIndex((response) => response.body.data.result === "ADMITTED");
+  const retried = await gateScan("SELAM_OWNER", event.path, codes[0] as string, gateKeys[winnerIndex] as string);
+  assert.deepEqual([retried.body.data.result, retried.body.data.checked_in_at], ["ADMITTED", race[winnerIndex]?.body.data.checked_in_at], "the winning request, retried after a lost response: its original result");
+  const loserRetried = await gateScan("SELAM_OWNER", event.path, codes[0] as string, gateKeys[1 - winnerIndex] as string);
+  assert.equal(loserRetried.body.data.result, "ALREADY_CHECKED_IN", "the other gate's request, retried: still already checked in");
+  const retryKey = randomUUID();
+  const second = await gateScan("SELAM_OWNER", event.path, codes[1] as string, retryKey);
+  assert.equal(second.body.data.result, "ADMITTED", "the other ticket of the order on its own");
+  const secondAgain = await gateScan("SELAM_OWNER", event.path, codes[1] as string, retryKey);
+  assert.deepEqual([secondAgain.body.data.result, secondAgain.body.data.checked_in_at], ["ADMITTED", second.body.data.checked_in_at], "the same request again: its original result");
+  assert.equal((await as("SELAM_OWNER", "GET", `${event.path}/registrations/summary`)).body.data.checked_in, 2);
+  const admitted = await as("SELAM_OWNER", "GET", `${event.path}/registrations?checked_in=true`);
+  assert.equal(admitted.body.data.length, 2);
+  assert.ok(admitted.body.data.every((row: { checked_in_at: string | null; checked_in_by: string; status: string }) => row.checked_in_at !== null && row.checked_in_by === PEOPLE.SELAM_OWNER && row.status === "CONFIRMED"), "the registration and its place are kept");
+});
+
+test("row 98: at the door a cancelled ticket is refused, a held ticket has no code to present, another event's code is not found; another organization's Owner and a Viewer can't admit", { skip }, async () => {
+  resetPublicLimit();
+  const event = await publishedCheckoutEvent({ name: "Pilot Matinee", registration_mode: "QUICK" });
+  const free = await as("SELAM_OWNER", "POST", `${event.path}/orders`, { buyer_mobile: "0913400001", items: [{ ticket_type_id: event.types.GA, quantity: 1 }] });
+  const ticket = free.body.data.tickets[0] as { id: string; code: string };
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/registrations/${ticket.id}/status`, { status: "CANCELLED" })).status, 200);
+  const cancelled = await gateScan("SELAM_OWNER", event.path, ticket.code, randomUUID());
+  assert.deepEqual([cancelled.status, cancelled.body.error.code, cancelled.body.error.details.status], [409, "ticket_not_admissible", "CANCELLED"]);
+
+  stubChechePay();
+  try {
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "300" })).status, 200);
+    const held = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913400002"), randomUUID());
+    assert.equal(held.status, 201, JSON.stringify(held.body));
+    assert.equal(held.body.data.tickets[0].code, null, "a held (or released) ticket has no code, so there is nothing to scan");
+  } finally {
+    mock.restoreAll();
+  }
+
+  const elsewhere = await gateScan("SELAM_OWNER", event.path, doorFixture.codes[0] as string, randomUUID());
+  assert.deepEqual([elsewhere.status, elsewhere.body.error.code], [404, "not_found"], "a code of another event");
+  assert.equal((await gateScan("HORN_OWNER", doorFixture.eventPath, doorFixture.codes[1] as string, randomUUID())).status, 403, "another organization");
+  assert.equal((await gateScan("SELAM_VIEWER", doorFixture.eventPath, doorFixture.codes[1] as string, randomUUID())).status, 403, "view-only");
+  assert.equal(await TicketAdmission.count({ where: { event_id: event.id } }), 0, "refusals write nothing");
 });

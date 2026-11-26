@@ -15,7 +15,16 @@ test("the file starts with a byte-order mark and the header row, and ends every 
   const csv = guestListCsv([], ADDIS);
   assert.ok(csv.startsWith("\uFEFF"), "Excel reads Amharic correctly only with the BOM");
   assert.equal(csv, `\uFEFF${GUEST_CSV_HEADERS.join(",")}\r\n`);
-  assert.deepEqual(GUEST_CSV_HEADERS.slice(-6), ["Registered (Ethiopian)", "Registered (Gregorian)", "Cancelled (Ethiopian)", "Cancelled (Gregorian)", "Order", "Buyer mobile"]);
+  assert.deepEqual(GUEST_CSV_HEADERS.slice(-8), [
+    "Registered (Ethiopian)",
+    "Registered (Gregorian)",
+    "Cancelled (Ethiopian)",
+    "Cancelled (Gregorian)",
+    "Order",
+    "Buyer mobile",
+    "Checked in (Ethiopian)",
+    "Checked in (Gregorian)",
+  ]);
 });
 
 test("a row: code, status, names, mobile, email, organization, ticket type, how they signed up, SMS, then Ethiopian before Gregorian dates", () => {
@@ -27,7 +36,7 @@ test("a row: code, status, names, mobile, email, organization, ticket type, how 
   const line = guestListCsv([row], ADDIS).split("\r\n")[1];
   assert.equal(
     line,
-    'K7M2Q9XP,Confirmed,Hana,Bekele,0911 234 567,hana@example.et,ABC Bank,General Admission,Online,Sent,"Hidar 16, 2019 at 4:30 in the morning","Nov 25, 2026, 10:30 AM",,,K7M2Q9XP,0911 234 567',
+    'K7M2Q9XP,Confirmed,Hana,Bekele,0911 234 567,hana@example.et,ABC Bank,General Admission,Online,Sent,"Hidar 16, 2019 at 4:30 in the morning","Nov 25, 2026, 10:30 AM",,,K7M2Q9XP,0911 234 567,,',
   );
 });
 
@@ -68,12 +77,25 @@ test("statuses, sources and SMS states read as words; a cancelled guest has canc
   const cells = guestListCsv([cancelled], ADDIS).split("\r\n")[1] ?? "";
   assert.match(cells, /^K7M2Q9XP,Cancelled,Hana,Bekele,,hana@example.et,,General Admission,Added by staff,No mobile,/);
   // Phase 7: the cancelled date is followed by the order reference and the buyer's mobile.
-  assert.match(cells, /"Nov 26, 2026, 12:00 PM",K7M2Q9XP,0911 234 567$/);
+  assert.match(cells, /"Nov 26, 2026, 12:00 PM",K7M2Q9XP,0911 234 567,,$/);
 });
 
 test("Phase 7: an unnamed ticket reads Unnamed ticket, with its order and buyer mobile in the last columns", () => {
   const row = toRegistrationDto({ ...registrationRow({ person_id: null }), person: null, ticketType: ticketTypeRow(), order: orderSummary({ reference: "ORDER23456" }) });
   const cells = guestListCsv([row], ADDIS).split("\r\n")[1]?.split(",") ?? [];
   assert.deepEqual(cells.slice(2, 7), ["Unnamed ticket", "", "", "", ""]);
-  assert.deepEqual(cells.slice(-2), ["ORDER23456", "0911 234 567"]);
+  assert.deepEqual(cells.slice(-4), ["ORDER23456", "0911 234 567", "", ""], "not checked in yet: two empty cells");
+});
+
+test("Phase 8: a ticket admitted at the door has its check-in time in the last two columns, Ethiopian first", () => {
+  const row = toRegistrationDto({
+    ...registrationRow(),
+    person: personRow(),
+    ticketType: ticketTypeRow(),
+    order: orderSummary(),
+    admission: { admitted_at: new Date("2026-11-25T16:05:00Z"), admitted_by: "staff-1" },
+  });
+  assert.deepEqual([row.checked_in_at?.toISOString(), row.checked_in_by], ["2026-11-25T16:05:00.000Z", "staff-1"]);
+  const line = guestListCsv([row], ADDIS).split("\r\n")[1] ?? "";
+  assert.ok(line.endsWith(',"Hidar 16, 2019 at 1:05 in the evening","Nov 25, 2026, 7:05 PM"'), line);
 });

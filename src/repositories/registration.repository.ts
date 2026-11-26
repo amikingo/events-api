@@ -1,9 +1,10 @@
 import { col, fn, Op, type CreationAttributes, type WhereOptions } from "sequelize";
 import type { EventRow } from "../models/event.js";
-import { AppEvent, Organization, Person, Registration, TicketOrder, TicketType } from "../models/index.js";
+import { AppEvent, Organization, Person, Registration, TicketAdmission, TicketOrder, TicketType } from "../models/index.js";
 import type { OrganizationRow } from "../models/organization.js";
 import type { PersonRow } from "../models/person.js";
 import type { RegistrationRow, RegistrationStatus } from "../models/registration.js";
+import type { TicketAdmissionRow } from "../models/ticket-admission.js";
 import type { TicketOrderRow } from "../models/ticket-order.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
@@ -45,6 +46,7 @@ const PERSON_SUMMARY = ["id", "first_name", "last_name", "phone", "email", "affi
 const TICKET_TYPE_SUMMARY = ["id", "code", "name"] as const satisfies readonly (keyof TicketTypeRow)[];
 const ORDER_SUMMARY = ["id", "reference", "buyer_mobile"] as const satisfies readonly (keyof TicketOrderRow)[];
 const EVENT_SUMMARY = ["id", "name", "slug", "starts_at", "ends_at", "timezone", "status"] as const satisfies readonly (keyof EventRow)[];
+const ADMISSION_SUMMARY = ["admitted_at", "admitted_by"] as const satisfies readonly (keyof TicketAdmissionRow)[];
 
 export type RegistrationUpdateValues = Partial<
   Pick<RegistrationRow, "ticket_type_id" | "status" | "source" | "registered_by" | "registered_at" | "cancelled_at" | "updated_by">
@@ -58,6 +60,8 @@ export type RegistrationWithDetails = RegistrationRow & {
   person: Pick<PersonRow, (typeof PERSON_SUMMARY)[number]> | null;
   ticketType: Pick<TicketTypeRow, (typeof TICKET_TYPE_SUMMARY)[number]>;
   order: Pick<TicketOrderRow, (typeof ORDER_SUMMARY)[number]>;
+  /** Phase 8: the ticket's admission at the door, or null; absent where a read doesn't load it. */
+  admission?: Pick<TicketAdmissionRow, (typeof ADMISSION_SUMMARY)[number]> | null;
 };
 
 /** A person's registration in their organization, with the event it is for (for confirming a returning guest). */
@@ -70,6 +74,7 @@ const detailIncludes = [
   { model: Person, as: "person", required: false, attributes: [...PERSON_SUMMARY] },
   { model: TicketType, as: "ticketType", required: true, attributes: [...TICKET_TYPE_SUMMARY] },
   { model: TicketOrder, as: "order", required: true, attributes: [...ORDER_SUMMARY] },
+  { model: TicketAdmission, as: "admission", required: false, attributes: [...ADMISSION_SUMMARY] },
 ];
 
 async function create(values: CreationAttributes<Registration>, options: WriteOptions = {}): Promise<RegistrationRow> {
@@ -86,6 +91,17 @@ async function findByEventAndId(
 ): Promise<RegistrationRow | null> {
   const row = await Registration.findOne({
     where: { organization_id: organizationId, event_id: eventId, id: registrationId },
+    attributes: [...attributes],
+    ...txOptions(options),
+    ...lockOptions(options),
+  });
+  return toPlain<RegistrationRow>(row);
+}
+
+/** The ticket behind a code at one event (Phase 8: the door). A code from another event or tenant is simply not found. */
+async function findByEventAndCode(organizationId: string, eventId: string, code: string, options: RepoOptions = {}): Promise<RegistrationRow | null> {
+  const row = await Registration.findOne({
+    where: { organization_id: organizationId, event_id: eventId, code },
     attributes: [...attributes],
     ...txOptions(options),
     ...lockOptions(options),
@@ -176,6 +192,8 @@ export type RegistrationListFilters = {
   ticketTypeId?: string | undefined;
   q?: string | undefined;
   phoneVariant?: string | null;
+  /** Phase 8: only tickets admitted at the door (true) or not yet (false). */
+  checkedIn?: boolean | undefined;
 };
 
 /**
@@ -207,6 +225,7 @@ function guestListQuery(organizationId: string, eventId: string, filters: Regist
       status: filters.status ?? [...ISSUED_STATUSES],
       ...(filters.ticketTypeId ? { ticket_type_id: filters.ticketTypeId } : {}),
       ...(filters.q ? guestSearchWhere(filters.q, filters.phoneVariant ?? null) : {}),
+      ...(filters.checkedIn === undefined ? {} : { "$admission.id$": filters.checkedIn ? { [Op.ne]: null } : { [Op.is]: null } }),
     },
     attributes: [...attributes],
     include: detailIncludes,
@@ -352,6 +371,7 @@ export const registrationRepository = {
   countConfirmedByTicketType,
   countConfirmedPerTicketType,
   countConfirmedByBuyerMobile,
+  findByEventAndCode,
   listByEvent,
   listAllByEvent,
   listByPerson,
