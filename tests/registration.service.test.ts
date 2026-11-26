@@ -7,6 +7,7 @@ import {
   IdempotencyKeyReusedError,
   InvalidEventStateError,
   NotFoundError,
+  PaymentRequiredError,
   PersonInactiveError,
   RegistrationCancelledError,
   RegistrationClosedError,
@@ -635,4 +636,55 @@ test("My Tickets: upcoming first (soonest first), then past (most recent first),
   assert.deepEqual(Object.keys(tickets[0] ?? {}).sort(), ["cancelled_at", "code", "event", "organization", "registered_at", "status", "ticket_type"]);
   assert.deepEqual(tickets[0]?.organization, { name: "Selam Events", slug: "selam-events" });
   assert.deepEqual(Object.keys(tickets[0]?.event ?? {}).sort(), ["ends_at", "name", "slug", "starts_at", "status", "timezone"]);
+});
+
+// --- Phase 7 step 1: audiences and prices on the single-ticket endpoints -----------------------------------
+
+// PUBLIC_INPUT (above): a public-form registration of a new guest.
+
+test("the public form never sees a staff-only type: not found by code, not counted as the only type, closed when it's the only one", async () => {
+  const crew = ticketTypeRow({ id: "crew-id", code: "CREW", audience: "STAFF_ONLY" });
+  const calls = arrange({ ticketTypes: [ticketTypeRow(), crew] });
+  mock.method(ticketTypeRepository, "findByEventAndCode", async (_o: string, _e: string, code: string) => (code === "CREW" ? crew : null));
+
+  await assert.rejects(registrationService.registerInTransaction({ ...PUBLIC_INPUT, ticketTypeCode: "CREW" }, FAKE_TX), NotFoundError);
+  const { registration } = await registrationService.registerInTransaction(PUBLIC_INPUT, FAKE_TX);
+  assert.equal(registration.ticket_type_id, IDS.ticketType, "GA is the only public type, so it's the default");
+  resetTransaction();
+
+  const onlyCrew = arrange({ ticketTypes: [crew] });
+  await assert.rejects(
+    registrationService.registerInTransaction(PUBLIC_INPUT, FAKE_TX),
+    (error: unknown) => error instanceof RegistrationClosedError && (error.details as { reason: string }).reason === "NO_PUBLIC_TICKETS",
+  );
+  assert.equal(onlyCrew.create.mock.callCount(), 0);
+  assert.equal(calls.create.mock.callCount(), 1);
+});
+
+test("staff may issue a staff-only type", async () => {
+  const crew = ticketTypeRow({ id: "crew-id", code: "CREW", audience: "STAFF_ONLY" });
+  const calls = arrange({ ticketTypes: [crew] });
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person, ticket_type_id: "crew-id" }, IDS.user);
+  assert.equal(calls.create.mock.calls[0]?.arguments[0]?.ticket_type_id, "crew-id");
+});
+
+test("a paid type is refused on the single-ticket endpoints (payment_required), for staff and the public alike", async () => {
+  const vip = ticketTypeRow({ id: "vip-id", code: "VIP", price: "1000.00" });
+  const calls = arrange({ ticketTypes: [vip] });
+  const isPaymentRequired = (error: unknown) =>
+    error instanceof PaymentRequiredError && JSON.stringify(error.details) === JSON.stringify({ ticket_type_code: "VIP", price: "1000.00", currency: "ETB" });
+
+  await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person, ticket_type_id: "vip-id" }, IDS.user), isPaymentRequired);
+  await assert.rejects(registrationService.registerInTransaction(PUBLIC_INPUT, FAKE_TX), isPaymentRequired);
+  assert.equal(calls.create.mock.callCount(), 0);
+});
+
+test("a guest can't be moved onto a paid type", async () => {
+  const vip = ticketTypeRow({ id: "vip-id", code: "VIP", price: "1000.00" });
+  arrange({ event: eventRow({ ...PUBLISHED }), ticketTypes: [ticketTypeRow(), vip] });
+  mock.method(registrationRepository, "findByEventAndId", async () => registrationRow({ status: "CONFIRMED", ticket_type_id: IDS.ticketType }));
+  const update = mock.method(registrationRepository, "updateByEventAndId", async () => registrationRow());
+
+  await assert.rejects(registrationService.changeRegistrationTicketType(IDS.orgA, IDS.event, IDS.registration, "vip-id", IDS.user), PaymentRequiredError);
+  assert.equal(update.mock.callCount(), 0);
 });

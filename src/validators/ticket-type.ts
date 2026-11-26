@@ -1,17 +1,24 @@
 import { z } from "zod";
 import type { RequestContract } from "../middleware/validate.js";
-import { codeSchema, statusChangeSchema, uuidSchema } from "./common.js";
+import type { TicketAudience } from "../models/ticket-type.js";
+import { codeSchema, moneyAmountSchema, statusChangeSchema, uuidSchema } from "./common.js";
 import { eventParamsSchema } from "./event.js";
 
 /** Optional separate limit for this category; null means it draws only on the event's overall limit. */
 const capacitySchema = z.number().int().positive().max(1_000_000).nullable().optional();
 const displayOrderSchema = z.number().int().min(0).max(10_000);
+/** Phase 7: "0" is free (the default); more is paid, in the organizer's currency (copied, never sent). */
+const priceSchema = moneyAmountSchema;
+/** Phase 7: PUBLIC (default) or STAFF_ONLY (only authorized staff may issue it). */
+const audienceSchema = z.enum(["PUBLIC", "STAFF_ONLY"] as const satisfies readonly TicketAudience[]);
 
 export const ticketTypeCreateSchema = z.strictObject({
   /** Unique within the event, stored upper-case (e.g. "vip" → "VIP"). */
   code: codeSchema,
   name: z.string().trim().min(1).max(255),
   capacity: capacitySchema,
+  price: priceSchema.optional(),
+  audience: audienceSchema.optional(),
   /** Default: after the event's last ticket type. */
   display_order: displayOrderSchema.optional(),
   is_active: z.boolean().optional(),
@@ -22,6 +29,8 @@ export const ticketTypeUpdateSchema = z
     code: codeSchema.optional(),
     name: z.string().trim().min(1).max(255).optional(),
     capacity: capacitySchema,
+    price: priceSchema.optional(),
+    audience: audienceSchema.optional(),
     display_order: displayOrderSchema.optional(),
   })
   .refine((value) => Object.values(value).some((field) => field !== undefined), {

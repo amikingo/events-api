@@ -80,11 +80,37 @@ test("public shapes carry only visitor fields: no client, staff, internal ids or
   assert.equal(detail.description, "Annual forum");
   assert.deepEqual(detail.privacy_notice, { version: PRIVACY_NOTICE_VERSION }, "the form shows this notice and sends its version back");
   assert.deepEqual(detail.ticket_types, [
-    { code: "GA", name: "General Admission" },
-    { code: "VIP", name: "VIP" },
+    { code: "GA", name: "General Admission", price: "0.00", currency: "ETB", is_free: true },
+    { code: "VIP", name: "VIP", price: "0.00", currency: "ETB", is_free: true },
   ]);
   const serialized = JSON.stringify(detail);
   for (const secret of ["client-id", "organization_id", "customer_account_id", "created_by", "updated_by", "published_at", '"id"']) {
     assert.ok(!serialized.includes(secret), `${secret} must not reach visitors`);
   }
+});
+
+// --- Phase 7 step 1 ------------------------------------------------------------------------------------
+
+test("the public page shows only active public ticket types with their price; staff-only types never open an event", () => {
+  const row: PublicEventRow = {
+    ...eventRow({ status: "PUBLISHED", visibility: "PUBLIC", registration_mode: "QUICK", purchase_limit_per_mobile: 4 }),
+    organization: { name: "Selam Events", slug: "selam-events" },
+    venue: null,
+    coverFile: null,
+  };
+  const now = new Date("2027-01-15T00:00:00Z");
+  const vip = ticketTypeRow({ code: "VIP", name: "VIP", price: "1000.00" });
+  const crew = ticketTypeRow({ code: "CREW", name: "Crew", audience: "STAFF_ONLY" });
+
+  const detail = toPublicEventDetail(row, [ticketTypeRow(), vip, crew], now);
+  assert.deepEqual(detail.ticket_types.map((type) => [type.code, type.price, type.is_free]), [
+    ["GA", "0.00", true],
+    ["VIP", "1000.00", false],
+  ]);
+  assert.deepEqual([detail.registration_mode, detail.purchase_limit_per_mobile, detail.registration_open], ["QUICK", 4, true]);
+  assert.equal(detail.holder_fields.name, "REQUIRED");
+
+  assert.equal(toPublicEventDetail(row, [crew], now).registration_open, false, "only a staff-only type: closed to the public");
+  assert.equal(toPublicEventCard({ ...row, has_public_tickets: false }, now).registration_open, false, "the catalog card agrees");
+  assert.equal(toPublicEventCard({ ...row, has_public_tickets: true }, now).registration_open, true);
 });

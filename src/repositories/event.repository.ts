@@ -1,4 +1,4 @@
-import { col, fn, Op, where as sqlWhere, type CreationAttributes, type Includeable, type Transaction } from "sequelize";
+import { col, fn, literal, Op, where as sqlWhere, type CreationAttributes, type Includeable, type Transaction } from "sequelize";
 import type { EventRow, EventStatus, EventVisibility } from "../models/event.js";
 import { AppEvent, Organization, StoredFile, Venue } from "../models/index.js";
 import type { OrganizationRow } from "../models/organization.js";
@@ -27,6 +27,9 @@ const attributes = [
   "registration_closes_at",
   "visibility",
   "category",
+  "registration_mode",
+  "holder_fields",
+  "purchase_limit_per_mobile",
   "published_at",
   "created_at",
   "updated_at",
@@ -115,7 +118,17 @@ export type PublicEventRow = EventRow & {
   organization: Pick<OrganizationRow, "name" | "slug">;
   venue: Pick<VenueRow, "name" | "address" | "city" | "country"> | null;
   coverFile: Pick<StoredFileRow, "storage_provider" | "storage_key"> | null;
+  /** Phase 7: whether the event has an active PUBLIC ticket type (staff-only types never open it to the public). */
+  has_public_tickets?: boolean;
 };
+
+/** Phase 7: one EXISTS per event, so the catalog can say "open" only when the public can actually get a ticket. */
+const HAS_PUBLIC_TICKETS = [
+  literal(
+    `EXISTS (SELECT 1 FROM "ticket_type" t WHERE t."organization_id" = "AppEvent"."organization_id" AND t."event_id" = "AppEvent"."id" AND t."is_active" = true AND t."audience" = 'PUBLIC')`,
+  ),
+  "has_public_tickets",
+] as const;
 
 /** Only active organizations are public; the organization filter (by slug) goes into the same join. */
 function publicIncludes(organizationSlug: string | undefined): Includeable[] {
@@ -152,7 +165,7 @@ async function listPublicCatalog(
         : { [Op.and]: [sqlWhere(fn("lower", col("AppEvent.category")), filters.category.toLowerCase())] }),
     },
     include: publicIncludes(filters.organizationSlug),
-    attributes: [...attributes],
+    attributes: [...attributes, [...HAS_PUBLIC_TICKETS]],
     order: [
       ["starts_at", "ASC"],
       ["id", "ASC"],
@@ -174,7 +187,7 @@ async function findPublishedBySlugs(organizationSlug: string, eventSlug: string,
   const row = await AppEvent.findOne({
     where: { slug: eventSlug, published_at: { [Op.ne]: null } },
     include: publicIncludes(organizationSlug),
-    attributes: [...attributes],
+    attributes: [...attributes, [...HAS_PUBLIC_TICKETS]],
     ...txOptions(options),
   });
   return toPlain<PublicEventRow>(row);

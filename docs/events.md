@@ -231,3 +231,36 @@ at.
   CLOSED Banking Forum (409) are all refused, with no new file on disk and no new row.
 - **40:** a JPEG replaces the cover, giving a new path. Removing the cover clears the staff and public pages. Both
   files and both rows remain for the later clean-up.
+
+## Phase 7 step 1: checkout settings, prices and audiences (26 November 2026)
+
+**On the event** (create and `PATCH`, `EVENTS` create or update):
+- `registration_mode`: `QUICK` (the buyer gives one mobile for delivery; tickets may be unnamed) or `DETAILED` (each
+  ticket holder's details are collected). Default `DETAILED`.
+- `holder_fields`: for `DETAILED` events, `{ name, mobile, email, affiliation, country }`, each `REQUIRED`, `OPTIONAL`
+  or `HIDDEN`, always sent together. Default: today's form (name and mobile required, the rest optional). Existing
+  events got exactly that, so they behave as before.
+- `purchase_limit_per_mobile`: the most tickets one buyer mobile may hold at the event, across every order; `null`
+  means no limit. Stored now; enforced from step 2, when orders record the buyer's mobile.
+
+**On a ticket type:**
+- `price`: an exact decimal string (`"500"` is stored as `"500.00"`); `"0.00"` (the default) is free. One event may
+  offer free and paid types.
+- `currency`: the organizer's `default_currency`, copied when the type is created. It is never sent.
+- `audience`: `PUBLIC` (the default) or `STAFF_ONLY` (only authorized staff may issue it).
+- Existing types became free and public. General Admission is created free and public.
+
+**Where the rules apply:**
+- **The public page** lists only active `PUBLIC` types, with `price`, `currency` and `is_free`, plus the three event
+  settings. `registration_open` (page and catalog card) also needs an active public type, so a staff-only type never
+  makes an event look open.
+- **The public form:**
+  - a `STAFF_ONLY` type is 404, even by code;
+  - with no public type active it is 409 `registration_closed` (`reason: NO_PUBLIC_TICKETS`);
+  - a `DETAILED` event's required fields must be given and hidden ones aren't accepted (400, `issues[].code`
+    `required` or `not_collected`). The form's phone is the delivery mobile, so the mobile setting doesn't apply to it.
+- **Both single-ticket endpoints** refuse a paid type (409 `payment_required`). Moving a guest onto a paid type is
+  refused too. Paid tickets come through checkout (steps 2–3).
+- **Staff** may issue `STAFF_ONLY` types.
+
+**Proof:** matrix rows 87–88.

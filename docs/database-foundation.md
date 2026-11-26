@@ -100,20 +100,24 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
 ### `event` (Phase 3b)
 - Columns: `branch_id`, `customer_account_id`, `venue_id`, `cover_file_id` (all optional), `name`, `slug`,
   `description`, `starts_at`, `ends_at`, `timezone`, `status`, `capacity`, `registration_opens_at`,
-  `registration_closes_at`, `visibility`, `category`
+  `registration_closes_at`, `visibility`, `category`; Phase 7: `registration_mode` (`QUICK`/`DETAILED`),
+  `holder_fields` (JSONB, five keys, each `REQUIRED`/`OPTIONAL`/`HIDDEN`), `purchase_limit_per_mobile`
 - Constraints: `fk_event_organization_id`, `uq_event_organization_id_id` (for ticket types and registrations),
   `uq_event_organization_id_slug`; composite FKs `fk_event_organization_branch`, `fk_event_organization_customer_account`,
   `fk_event_organization_venue`, `fk_event_organization_cover_file` (same organization; NULL links unchecked);
   `ck_event_slug_format`, `ck_event_status`, `ck_event_visibility`, `ck_event_capacity_positive`, `ck_event_dates_order`,
   `ck_event_registration_window_order`, `ck_event_published_has_dates`, `ck_event_timezone_present`
+- Phase 7 constraints: `ck_event_registration_mode`, `ck_event_holder_fields`, `ck_event_purchase_limit_positive`
 - Indexes: `idx_event_organization_status`, `idx_event_catalog` (`status`, `visibility`, `starts_at`)
 - Triggers: none
 
 ### `ticket_type` (Phase 3b)
-- Columns: `event_id`, `code`, `name`, `capacity`, `display_order`, `is_active`
+- Columns: `event_id`, `code`, `name`, `capacity`, `display_order`, `is_active`; Phase 7: `price` (NUMERIC(12,2),
+  default 0), `currency` (the organizer's, copied), `audience` (`PUBLIC`/`STAFF_ONLY`)
 - Constraints: composite `fk_ticket_type_organization_event` → `event (organization_id, id)`,
   `uq_ticket_type_organization_event_id` (for Phase 4's registration FK), `uq_ticket_type_event_code`,
-  `ck_ticket_type_code_format`, `ck_ticket_type_capacity_positive`, `ck_ticket_type_display_order_non_negative`
+  `ck_ticket_type_code_format`, `ck_ticket_type_capacity_positive`, `ck_ticket_type_display_order_non_negative`,
+  Phase 7: `ck_ticket_type_price_non_negative`, `ck_ticket_type_currency_format`, `ck_ticket_type_audience`
 - Indexes: `idx_ticket_type_organization_event`
 - Triggers: none
 

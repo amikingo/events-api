@@ -4,6 +4,7 @@ import { toPublicRegistrationDto, type PublicRegistrationDto } from "../mappers/
 import type { CustomerAuthContext } from "../middleware/authentication.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
+import { holderFieldIssues } from "../utils/holder-fields.js";
 import { requestHash } from "../utils/request-hash.js";
 import type { PublicRegistrationInput } from "../validators/public-registration.js";
 import { customerAuthService } from "./customer-auth.service.js";
@@ -19,6 +20,8 @@ import { registrationService, type RegistrationGuest, type SubmissionOutcome } f
  * - Signed in with a Cheche account (Phase 6), the account's linked profile in the organization is used or created,
  *   with the account's verified mobile (never the form's). Registering again for the same event returns the same
  *   registration (outcome UNCHANGED). The account is part of the retry-key hash.
+ * - Phase 7: a DETAILED event's holder fields apply (required ones must be given, hidden ones are refused); only
+ *   PUBLIC, free ticket types can be chosen (the registration core refuses the rest).
  */
 async function registerFromPublicForm(
   organizationSlug: string,
@@ -30,6 +33,13 @@ async function registerFromPublicForm(
   const event = ensureFound(await eventRepository.findPublishedBySlugs(organizationSlug, eventSlug), "Event not found");
   if (input.privacy_notice_version !== PRIVACY_NOTICE_VERSION) {
     throw new PrivacyNoticeOutdatedError(undefined, { current: PRIVACY_NOTICE_VERSION });
+  }
+
+  // Phase 7: a DETAILED event's required and hidden holder fields. The phone here is also the buyer's delivery mobile,
+  // so the mobile setting doesn't apply to it.
+  if (event.registration_mode === "DETAILED") {
+    const issues = holderFieldIssues(event.holder_fields, input, "body", ["mobile"]);
+    if (issues.length > 0) throw new ValidationAppError("Request validation failed", { issues });
   }
 
   const details = {

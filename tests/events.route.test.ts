@@ -3,9 +3,10 @@ import { afterEach, mock, test } from "node:test";
 import { createApp } from "../src/app.js";
 import { toEventDto } from "../src/mappers/event.mapper.js";
 import { eventService } from "../src/services/event.service.js";
+import { ticketTypeService } from "../src/services/ticket-type.service.js";
 import { organizationService } from "../src/services/organization.service.js";
 import { permissionResolutionService, type PermissionScope } from "../src/services/permission-resolution.service.js";
-import { eventRow, IDS, organizationRow, staffToken } from "./helpers/fixtures.js";
+import { eventRow, IDS, organizationRow, staffToken, ticketTypeRow } from "./helpers/fixtures.js";
 import { call, withServer } from "./helpers/http.js";
 
 /**
@@ -102,4 +103,51 @@ test("organization defaults: codes are normalized and checked", async () => {
 
   const [, input] = update.mock.calls[0]?.arguments ?? [];
   assert.deepEqual([input?.country, input?.default_currency], ["KE", "KES"]);
+});
+
+// --- Phase 7 step 1 ------------------------------------------------------------------------------------
+
+test("checkout settings: registration_mode, all five holder fields together, and a positive purchase limit", async () => {
+  allowPermissions(true);
+  const update = mock.method(eventService, "updateEvent", async () => toEventDto(eventRow()));
+  const all = { name: "REQUIRED", mobile: "OPTIONAL", email: "HIDDEN", affiliation: "OPTIONAL", country: "HIDDEN" };
+
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    for (const body of [
+      { registration_mode: "FAST" },
+      { holder_fields: { name: "REQUIRED" } },
+      { holder_fields: { ...all, name: "MAYBE" } },
+      { holder_fields: { ...all, phone: "REQUIRED" } },
+      { purchase_limit_per_mobile: 0 },
+      { purchase_limit_per_mobile: 2.5 },
+    ]) {
+      assert.equal((await call(baseUrl, "PATCH", `${eventsPath}/${IDS.event}`, { token, body })).status, 400, JSON.stringify(body));
+    }
+    const ok = await call(baseUrl, "PATCH", `${eventsPath}/${IDS.event}`, { token, body: { registration_mode: "QUICK", holder_fields: all, purchase_limit_per_mobile: 4 } });
+    assert.equal(ok.status, 200);
+    assert.equal((await call(baseUrl, "PATCH", `${eventsPath}/${IDS.event}`, { token, body: { purchase_limit_per_mobile: null } })).status, 200, "null removes the limit");
+  });
+  assert.deepEqual(update.mock.calls[0]?.arguments[2], { registration_mode: "QUICK", holder_fields: all, purchase_limit_per_mobile: 4 });
+});
+
+test("ticket type price is a decimal string (stored with two places) and audience is PUBLIC or STAFF_ONLY; currency can't be sent", async () => {
+  allowPermissions(true);
+  const create = mock.method(ticketTypeService, "createTicketType", async () => ticketTypeRow());
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    const path = `${eventsPath}/${IDS.event}/ticket-types`;
+    for (const body of [
+      { code: "VIP", name: "VIP", price: 500 },
+      { code: "VIP", name: "VIP", price: "-5" },
+      { code: "VIP", name: "VIP", price: "5.555" },
+      { code: "VIP", name: "VIP", audience: "STAFF" },
+      { code: "VIP", name: "VIP", currency: "USD" },
+    ]) {
+      assert.equal((await call(baseUrl, "POST", path, { token, body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call(baseUrl, "POST", path, { token, body: { code: "VIP", name: "VIP", price: "500", audience: "STAFF_ONLY" } })).status, 201);
+  });
+  const input = create.mock.calls[0]?.arguments[2] as unknown as { price: string; audience: string };
+  assert.deepEqual([input.price, input.audience], ["500.00", "STAFF_ONLY"]);
 });

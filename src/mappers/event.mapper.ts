@@ -1,6 +1,7 @@
 import { PRIVACY_NOTICE_VERSION } from "../config/privacy.js";
 import type { EventRow, EventStatus } from "../models/event.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
+import { isZeroAmount } from "../utils/money.js";
 import type { PublicEventRow } from "../repositories/event.repository.js";
 
 /**
@@ -32,7 +33,7 @@ export function toEventDto(event: EventRow, now: Date = new Date(), cover: Cover
 // --- Public (visitor) shapes, Phase 3c --------------------------------------------------------------
 
 /** Why an event is not taking registrations right now (Phase 4 answers it as 409 registration_closed). */
-export type RegistrationClosedReason = "NOT_PUBLISHED" | "CANCELLED" | "CLOSED" | "ENDED" | "NOT_OPEN_YET";
+export type RegistrationClosedReason = "NOT_PUBLISHED" | "CANCELLED" | "CLOSED" | "ENDED" | "NOT_OPEN_YET" | "NO_PUBLIC_TICKETS";
 
 type RegistrationTiming = Pick<EventRow, "status" | "ends_at" | "registration_opens_at" | "registration_closes_at">;
 
@@ -51,9 +52,13 @@ export function registrationClosedReason(event: RegistrationTiming, now: Date): 
   return null;
 }
 
-/** Open for sign-ups (the public `registration_open` flag): see registrationClosedReason. */
-export function isRegistrationOpen(event: RegistrationTiming, now: Date): boolean {
-  return registrationClosedReason(event, now) === null;
+/**
+ * Open for public sign-ups (the public `registration_open` flag): see registrationClosedReason. Since Phase 7 the
+ * event also needs an active PUBLIC ticket type: staff-only types never make an event look open to the public.
+ * `hasPublicTickets` undefined means the caller didn't load it (counts as yes).
+ */
+export function isRegistrationOpen(event: RegistrationTiming, now: Date, hasPublicTickets?: boolean): boolean {
+  return registrationClosedReason(event, now) === null && hasPublicTickets !== false;
 }
 
 /** A catalog card: enough to render and link it (both slugs). No client, staff, internal ids or audit fields. */
@@ -75,11 +80,23 @@ export type PublicEventDetail = PublicEventCard & {
   description: string | null;
   registration_opens_at: Date | null;
   registration_closes_at: Date | null;
-  /** Active ticket types only, by code and name. */
-  ticket_types: Array<{ code: string; name: string }>;
+  /** Active PUBLIC ticket types only, in display order. Since Phase 7 with the price ("0.00" is free) and currency. */
+  ticket_types: PublicTicketTypeDto[];
+  /** Phase 7: QUICK (one buyer mobile; tickets may be unnamed) or DETAILED (each holder's details). */
+  registration_mode: EventRow["registration_mode"];
+  /** Phase 7: for DETAILED events, how each holder detail is asked for (REQUIRED, OPTIONAL or HIDDEN). */
+  holder_fields: EventRow["holder_fields"];
+  /** Phase 7: most tickets one buyer mobile may hold at this event; null means no limit. */
+  purchase_limit_per_mobile: number | null;
   /** The privacy notice the registration form must show; the form sends this version back (Phase 4b). */
   privacy_notice: { version: string };
 };
+
+export type PublicTicketTypeDto = { code: string; name: string; price: string; currency: string; is_free: boolean };
+
+export function toPublicTicketTypeDto(ticketType: TicketTypeRow): PublicTicketTypeDto {
+  return { code: ticketType.code, name: ticketType.name, price: ticketType.price, currency: ticketType.currency, is_free: isZeroAmount(ticketType.price) };
+}
 
 export function toPublicEventCard(event: PublicEventRow, now: Date, cover: CoverDto = null): PublicEventCard {
   return {
@@ -91,7 +108,7 @@ export function toPublicEventCard(event: PublicEventRow, now: Date, cover: Cover
     display_status: eventDisplayStatus(event, now),
     category: event.category,
     cover,
-    registration_open: isRegistrationOpen(event, now),
+    registration_open: isRegistrationOpen(event, now, event.has_public_tickets),
     organization: { name: event.organization.name, slug: event.organization.slug },
     venue: event.venue
       ? { name: event.venue.name, address: event.venue.address, city: event.venue.city, country: event.venue.country }
@@ -99,18 +116,23 @@ export function toPublicEventCard(event: PublicEventRow, now: Date, cover: Cover
   };
 }
 
+/** `activeTicketTypes`: the event's active ticket types; only PUBLIC ones are shown or count towards being open. */
 export function toPublicEventDetail(
   event: PublicEventRow,
   activeTicketTypes: TicketTypeRow[],
   now: Date,
   cover: CoverDto = null,
 ): PublicEventDetail {
+  const publicTypes = activeTicketTypes.filter((ticketType) => ticketType.audience === "PUBLIC");
   return {
-    ...toPublicEventCard(event, now, cover),
+    ...toPublicEventCard({ ...event, has_public_tickets: publicTypes.length > 0 }, now, cover),
     description: event.description,
     registration_opens_at: event.registration_opens_at,
     registration_closes_at: event.registration_closes_at,
-    ticket_types: activeTicketTypes.map((ticketType) => ({ code: ticketType.code, name: ticketType.name })),
+    ticket_types: publicTypes.map(toPublicTicketTypeDto),
+    registration_mode: event.registration_mode,
+    holder_fields: event.holder_fields,
+    purchase_limit_per_mobile: event.purchase_limit_per_mobile,
     privacy_notice: { version: PRIVACY_NOTICE_VERSION },
   };
 }

@@ -52,9 +52,15 @@ test("a new event is DRAFT, UNLISTED and organization-wide, copies the organizat
     ["DRAFT", "UNLISTED", null, "Africa/Addis_Ababa", "banking-forum", null],
   );
   assert.deepEqual(options, { transaction: FAKE_TX });
+  assert.deepEqual(
+    [values?.registration_mode, values?.holder_fields, values?.purchase_limit_per_mobile],
+    ["DETAILED", { name: "REQUIRED", mobile: "REQUIRED", email: "OPTIONAL", affiliation: "OPTIONAL", country: "OPTIONAL" }, null],
+    "Phase 7: today's form unless chosen otherwise",
+  );
 
   const [ticket, ticketOptions] = calls.createTicketType.mock.calls[0]?.arguments ?? [];
   assert.deepEqual([ticket?.code, ticket?.name, ticket?.capacity, ticket?.is_active], ["GA", "General Admission", null, true]);
+  assert.deepEqual([ticket?.price, ticket?.currency, ticket?.audience], ["0.00", "ETB", "PUBLIC"], "free, public, the organizer's currency");
   assert.deepEqual(ticketOptions, { transaction: FAKE_TX }, "General Admission joins the event's transaction");
 });
 

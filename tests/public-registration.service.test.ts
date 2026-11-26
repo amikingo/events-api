@@ -164,3 +164,38 @@ test("a signed-in guest already registered for the event is reported as UNCHANGE
   const { outcome, replayed } = await publicRegistrationService.registerFromPublicForm("selam-events", "partner-workshop", KEY, FORM, ACCOUNT);
   assert.deepEqual([outcome, replayed], ["UNCHANGED", false]);
 });
+
+// --- Phase 7 step 1 ------------------------------------------------------------------------------------
+
+test("a DETAILED event's holder fields apply to the public form: required ones must be given, hidden ones are refused", async () => {
+  const registerOnce = arrange();
+  mock.method(eventRepository, "findPublishedBySlugs", async () => ({
+    ...EVENT,
+    holder_fields: { name: "REQUIRED", mobile: "REQUIRED", email: "REQUIRED", affiliation: "HIDDEN", country: "OPTIONAL" },
+  }));
+  const issuesOf = (error: unknown) => (error as ValidationAppError & { details: { issues: Array<{ path: string; code: string }> } }).details.issues;
+
+  await assert.rejects(publicRegistrationService.registerFromPublicForm("selam-events", "workshop", KEY, { ...FORM, affiliation_name: "Selam Bank" }), (error: unknown) => {
+    assert.ok(error instanceof ValidationAppError);
+    assert.deepEqual(issuesOf(error).map((issue) => [issue.path, issue.code]), [
+      ["body.email", "required"],
+      ["body.affiliation_name", "not_collected"],
+    ]);
+    return true;
+  });
+  assert.equal(registerOnce.mock.callCount(), 0, "refused before any transaction");
+
+  await publicRegistrationService.registerFromPublicForm("selam-events", "workshop", KEY, { ...FORM, email: "liya@example.com" });
+  assert.equal(registerOnce.mock.callCount(), 1);
+});
+
+test("a QUICK event keeps the form as it is", async () => {
+  const registerOnce = arrange();
+  mock.method(eventRepository, "findPublishedBySlugs", async () => ({
+    ...EVENT,
+    registration_mode: "QUICK" as const,
+    holder_fields: { name: "REQUIRED", mobile: "REQUIRED", email: "REQUIRED", affiliation: "HIDDEN", country: "HIDDEN" },
+  }));
+  await publicRegistrationService.registerFromPublicForm("selam-events", "festival", KEY, FORM);
+  assert.equal(registerOnce.mock.callCount(), 1);
+});

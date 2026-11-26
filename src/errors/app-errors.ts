@@ -261,6 +261,16 @@ export class RegistrationClosedError extends AppError {
   }
 }
 
+/**
+ * Phase 7: the ticket type has a price, so it can only be obtained through checkout (`details.ticket_type_code`,
+ * `details.price`, `details.currency`). Paid checkout comes in Phase 7 step 3.
+ */
+export class PaymentRequiredError extends AppError {
+  constructor(message = "This ticket type has a price: get it through checkout", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "payment_required", details, cause: options?.cause });
+  }
+}
+
 /** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
 export class CapacityReachedError extends AppError {
   constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {

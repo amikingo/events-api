@@ -3,6 +3,7 @@ import { CapacityBelowRegistrationsError, ConflictError, InvalidEventStateError,
 import type { EventRow } from "../models/event.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { eventRepository } from "../repositories/event.repository.js";
+import { organizationRepository } from "../repositories/organization.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { pickDefined } from "../utils/patch.js";
@@ -10,11 +11,13 @@ import type { TicketTypeCreateInput, TicketTypeUpdateInput } from "../validators
 import { ensureFound, runTransaction } from "./helpers.js";
 
 /**
- * Ticket types (spec §7): free registration categories of one event. Every change locks the event first and the
+ * Ticket types (spec §7): registration categories of one event, each with a price ("0.00" is free) and an audience
+ * (PUBLIC or STAFF_ONLY) since Phase 7. A price change never touches tickets already issued: an order keeps the
+ * prices of its checkout. Every change locks the event first and the
  * ticket type second (the spec's lock order for anything that touches capacity). A ticket type's own limit must fit
  * within the event's limit when both are set; limits may add up to more, because all categories share one pool.
  */
-const UPDATABLE_FIELDS = ["code", "name", "capacity", "display_order"] as const;
+const UPDATABLE_FIELDS = ["code", "name", "capacity", "price", "audience", "display_order"] as const;
 
 async function lockChangeableEvent(organizationId: string, eventId: string, transaction: Transaction): Promise<EventRow> {
   const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
@@ -54,6 +57,7 @@ async function createTicketType(
     await assertCodeFree(organizationId, eventId, input.code, transaction);
     assertFitsEventCapacity(input.capacity, event);
     const lastOrder = await ticketTypeRepository.maxDisplayOrderByEvent(organizationId, eventId, { transaction });
+    const organization = ensureFound(await organizationRepository.findById(organizationId, { transaction }), "Organization not found");
 
     return ticketTypeRepository.create(
       {
@@ -62,6 +66,10 @@ async function createTicketType(
         code: input.code,
         name: input.name,
         capacity: input.capacity ?? null,
+        price: input.price ?? "0.00",
+        // The organizer's currency, copied once (Phase 7); later changes there leave this ticket type alone.
+        currency: organization.default_currency,
+        audience: input.audience ?? "PUBLIC",
         display_order: input.display_order ?? (lastOrder === null ? 0 : lastOrder + 1),
         is_active: input.is_active ?? true,
         created_by: actorId,

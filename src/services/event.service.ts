@@ -18,6 +18,7 @@ import { registrationRepository } from "../repositories/registration.repository.
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { venueRepository } from "../repositories/venue.repository.js";
 import { buildPagination } from "../utils/pagination.js";
+import { DEFAULT_HOLDER_FIELDS } from "../utils/holder-fields.js";
 import { pickDefined } from "../utils/patch.js";
 import { firstFreeSlug, SLUG_MAX_LENGTH, slugify } from "../utils/slug.js";
 import { isValidTimeZone } from "../utils/time-zone.js";
@@ -62,6 +63,9 @@ const EDITABLE_FIELDS = [
   "customer_account_id",
   "venue_id",
   "cover_file_id",
+  "registration_mode",
+  "holder_fields",
+  "purchase_limit_per_mobile",
 ] as const;
 
 type Links = Partial<Pick<EventRow, "branch_id" | "customer_account_id" | "venue_id" | "cover_file_id">>;
@@ -186,6 +190,9 @@ async function createEvent(organizationId: string, input: EventCreateInput, acto
         customer_account_id: input.customer_account_id ?? null,
         venue_id: input.venue_id ?? null,
         cover_file_id: input.cover_file_id ?? null,
+        registration_mode: input.registration_mode ?? "DETAILED",
+        holder_fields: input.holder_fields ?? DEFAULT_HOLDER_FIELDS,
+        purchase_limit_per_mobile: input.purchase_limit_per_mobile ?? null,
         created_by: actorId,
         updated_by: actorId,
       },
@@ -200,6 +207,10 @@ async function createEvent(organizationId: string, input: EventCreateInput, acto
         code: GENERAL_ADMISSION.code,
         name: GENERAL_ADMISSION.name,
         capacity: null,
+        // Free and public; the organizer's currency, copied once.
+        price: "0.00",
+        currency: organization.default_currency,
+        audience: "PUBLIC",
         display_order: 0,
         is_active: true,
         created_by: actorId,

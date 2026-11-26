@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MONEY_PATTERN, normalizeAmount } from "../utils/money.js";
 import { normalizeEthiopianMobile } from "../utils/mobile.js";
 import { canonicalTimeZone } from "../utils/time-zone.js";
 
@@ -17,6 +18,16 @@ export const currencyCodeSchema = z
   .trim()
   .toUpperCase()
   .regex(/^[A-Z]{3}$/, "Use the three-letter currency code, e.g. ETB");
+
+/**
+ * An exact amount as a decimal string with up to two places ("500", "500.5", "500.50"), stored as "500.00". A string,
+ * not a JSON number, so prices never pass through floating point (Phase 7).
+ */
+export const moneyAmountSchema = z
+  .string()
+  .trim()
+  .regex(MONEY_PATTERN, 'An amount such as "500" or "500.50": up to 10 digits and 2 decimal places')
+  .transform(normalizeAmount);
 
 /** IANA time zone, stored in its canonical spelling (e.g. Africa/Addis_Ababa). */
 export const timeZoneSchema = z

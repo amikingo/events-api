@@ -522,7 +522,8 @@ test("rows 35–36: direct links open any event published at least once, by both
   // Row 35: unlisted, ended and closed events open by link; detail has the description and active ticket types.
   const unlisted = await publicGet("/v1/public/organizations/selam-events/events/partner-workshop");
   assert.equal(unlisted.status, 200);
-  assert.deepEqual(unlisted.body.data.ticket_types, [{ code: "GA", name: "General Admission" }]);
+  // Phase 7 added the price, currency and is_free; an event from before stays free.
+  assert.deepEqual(unlisted.body.data.ticket_types, [{ code: "GA", name: "General Admission", price: "0.00", currency: "ETB", is_free: true }]);
   assert.ok("description" in unlisted.body.data);
   const ended = await publicGet("/v1/public/organizations/selam-events/events/past-meetup");
   assert.deepEqual([ended.status, ended.body.data.registration_open], [200, false]);
@@ -2284,4 +2285,101 @@ test("row 86: switching Guests off denies everyone and keeps its grants; Modules
   } finally {
     mock.restoreAll();
   }
+});
+
+// --- Phase 7 step 1: prices, audiences and holder fields ----------------------------------------------------
+
+const festivalFixture = { eventId: "", path: "", publicPath: "", gaId: "", vipId: "", crewId: "" };
+const festivalForm = (extra: Record<string, unknown> = {}) => ({ ...workshopForm("Hana", "0913000001"), ...extra });
+
+test("row 87: checkout settings round-trip; a staff-only type is invisible to the public and refused by code; staff can issue it", { skip }, async () => {
+  resetPublicLimit();
+  const selamEvents = `/v1/organizations/${fixture.selamId}/events`;
+  const created = await as("SELAM_OWNER", "POST", selamEvents, {
+    name: "Coffee Festival",
+    starts_at: "2027-06-01T07:00:00+03:00",
+    ends_at: "2027-06-01T18:00:00+03:00",
+    registration_mode: "QUICK",
+    purchase_limit_per_mobile: 4,
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual([created.body.data.registration_mode, created.body.data.purchase_limit_per_mobile, created.body.data.holder_fields.name], ["QUICK", 4, "REQUIRED"]);
+  festivalFixture.eventId = created.body.data.id;
+  festivalFixture.path = `${selamEvents}/${festivalFixture.eventId}`;
+  festivalFixture.publicPath = `/v1/public/organizations/selam-events/events/${created.body.data.slug}`;
+
+  const types = await as("SELAM_OWNER", "GET", `${festivalFixture.path}/ticket-types`);
+  const ga = types.body.data[0];
+  assert.deepEqual([ga.code, ga.price, ga.currency, ga.audience], ["GA", "0.00", "ETB", "PUBLIC"], "General Admission is free and public");
+  festivalFixture.gaId = ga.id;
+  const vip = await as("SELAM_OWNER", "POST", `${festivalFixture.path}/ticket-types`, { code: "VIP", name: "VIP", price: "1000" });
+  assert.deepEqual([vip.status, vip.body.data.price], [201, "1000.00"]);
+  festivalFixture.vipId = vip.body.data.id;
+  const crew = await as("SELAM_OWNER", "POST", `${festivalFixture.path}/ticket-types`, { code: "CREW", name: "Crew", audience: "STAFF_ONLY" });
+  assert.deepEqual([crew.status, crew.body.data.audience], [201, "STAFF_ONLY"]);
+  festivalFixture.crewId = crew.body.data.id;
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${festivalFixture.path}/status`, { status: "PUBLISHED" })).status, 200);
+
+  const page = await publicGet(festivalFixture.publicPath);
+  assert.equal(page.status, 200);
+  assert.deepEqual(
+    page.body.data.ticket_types.map((type: { code: string; price: string; is_free: boolean }) => [type.code, type.price, type.is_free]),
+    [
+      ["GA", "0.00", true],
+      ["VIP", "1000.00", false],
+    ],
+  );
+  assert.deepEqual([page.body.data.registration_mode, page.body.data.purchase_limit_per_mobile, page.body.data.registration_open], ["QUICK", 4, true]);
+
+  const byCode = await postWithKey(`${festivalFixture.publicPath}/registrations`, festivalForm({ ticket_type_code: "CREW" }), randomUUID());
+  assert.deepEqual([byCode.status, byCode.body.error.code], [404, "not_found"]);
+
+  const staffIssued = await as("SELAM_OWNER", "POST", `${festivalFixture.path}/registrations`, {
+    person: { first_name: "Dawit", last_name: "Crew", phone: "0913000002" },
+    ticket_type_id: festivalFixture.crewId,
+  });
+  assert.equal(staffIssued.status, 201, JSON.stringify(staffIssued.body));
+});
+
+test("row 88: a paid type can't be had through the old endpoints; a DETAILED event's fields are enforced; only staff-only types close the event; old events are unchanged", { skip }, async () => {
+  resetPublicLimit();
+  const registrations = `${festivalFixture.publicPath}/registrations`;
+  const paidPublic = await postWithKey(registrations, festivalForm({ ticket_type_code: "VIP" }), randomUUID());
+  assert.deepEqual([paidPublic.status, paidPublic.body.error.code, paidPublic.body.error.details.price], [409, "payment_required", "1000.00"]);
+  const paidStaff = await as("SELAM_OWNER", "POST", `${festivalFixture.path}/registrations`, {
+    person: { first_name: "Meron", last_name: "Paid", phone: "0913000003" },
+    ticket_type_id: festivalFixture.vipId,
+  });
+  assert.deepEqual([paidStaff.status, paidStaff.body.error.code], [409, "payment_required"]);
+
+  // DETAILED with email required and affiliation hidden.
+  const detailed = await as("SELAM_OWNER", "PATCH", festivalFixture.path, {
+    registration_mode: "DETAILED",
+    holder_fields: { name: "REQUIRED", mobile: "REQUIRED", email: "REQUIRED", affiliation: "HIDDEN", country: "OPTIONAL" },
+  });
+  assert.equal(detailed.status, 200, JSON.stringify(detailed.body));
+  const missing = await postWithKey(registrations, festivalForm({ ticket_type_code: "GA", affiliation_name: "Selam Bank" }), randomUUID());
+  assert.equal(missing.status, 400);
+  assert.deepEqual(
+    missing.body.error.details.issues.map((issue: { path: string; code: string }) => [issue.path, issue.code]),
+    [
+      ["body.email", "required"],
+      ["body.affiliation_name", "not_collected"],
+    ],
+  );
+  const complete = await postWithKey(registrations, festivalForm({ ticket_type_code: "GA", email: "hana@example.com" }), randomUUID());
+  assert.equal(complete.status, 201, JSON.stringify(complete.body));
+
+  // Only the staff-only type left active: closed to the public, on the page and on the form.
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${festivalFixture.path}/ticket-types/${festivalFixture.gaId}/status`, { is_active: false })).status, 200);
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${festivalFixture.path}/ticket-types/${festivalFixture.vipId}/status`, { is_active: false })).status, 200);
+  assert.equal((await publicGet(festivalFixture.publicPath)).body.data.registration_open, false);
+  const closed = await postWithKey(registrations, festivalForm({ email: "liya@example.com", phone: "0913000004" }), randomUUID());
+  assert.deepEqual([closed.status, closed.body.error.code, closed.body.error.details.reason], [409, "registration_closed", "NO_PUBLIC_TICKETS"]);
+
+  // An event from before Phase 7 keeps today's form and free, public ticket types.
+  const workshop = await publicGet("/v1/public/organizations/selam-events/events/partner-workshop");
+  assert.equal(workshop.body.data.registration_mode, "DETAILED");
+  assert.deepEqual(workshop.body.data.holder_fields, { name: "REQUIRED", mobile: "REQUIRED", email: "OPTIONAL", affiliation: "OPTIONAL", country: "OPTIONAL" });
+  assert.ok(workshop.body.data.ticket_types.every((type: { price: string; is_free: boolean }) => type.price === "0.00" && type.is_free));
 });

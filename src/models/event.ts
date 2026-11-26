@@ -1,10 +1,22 @@
 import { DataTypes, Model, type CreationOptional, type InferAttributes, type InferCreationAttributes } from "sequelize";
 import { sequelize } from "../db.js";
+import { DEFAULT_HOLDER_FIELDS } from "../utils/holder-fields.js";
 
 export const EVENT_STATUSES = ["DRAFT", "PUBLISHED", "CLOSED", "CANCELLED"] as const;
 export type EventStatus = (typeof EVENT_STATUSES)[number];
 export const EVENT_VISIBILITIES = ["PUBLIC", "UNLISTED"] as const;
 export type EventVisibility = (typeof EVENT_VISIBILITIES)[number];
+
+/** Phase 7: QUICK collects one buyer mobile (tickets may be unnamed); DETAILED collects each ticket holder's details. */
+export const REGISTRATION_MODES = ["QUICK", "DETAILED"] as const;
+export type RegistrationMode = (typeof REGISTRATION_MODES)[number];
+
+/** The holder details a DETAILED event may collect, and how each one is asked for. */
+export const HOLDER_FIELD_KEYS = ["name", "mobile", "email", "affiliation", "country"] as const;
+export type HolderFieldKey = (typeof HOLDER_FIELD_KEYS)[number];
+export const HOLDER_FIELD_SETTINGS = ["REQUIRED", "OPTIONAL", "HIDDEN"] as const;
+export type HolderFieldSetting = (typeof HOLDER_FIELD_SETTINGS)[number];
+export type HolderFields = Record<HolderFieldKey, HolderFieldSetting>;
 
 /**
  * One event hosted by the organizer (spec §5; table `event`). Named `AppEvent` because a bare `Event` would shadow
@@ -30,6 +42,10 @@ export class AppEvent extends Model<InferAttributes<AppEvent>, InferCreationAttr
   declare registration_closes_at: Date | null;
   declare visibility: CreationOptional<EventVisibility>;
   declare category: string | null;
+  declare registration_mode: CreationOptional<RegistrationMode>;
+  declare holder_fields: CreationOptional<HolderFields>;
+  /** Most tickets one buyer mobile may hold at this event, across every order; null means no limit. */
+  declare purchase_limit_per_mobile: number | null;
   /** Server-managed: set once when first published, kept after closing or cancelling. Public links need it. */
   declare published_at: CreationOptional<Date | null>;
   declare created_at: CreationOptional<Date>;
@@ -60,6 +76,9 @@ AppEvent.init(
     registration_closes_at: { type: DataTypes.DATE, allowNull: true },
     visibility: { type: DataTypes.STRING(20), allowNull: false, defaultValue: "UNLISTED" },
     category: { type: DataTypes.STRING(80), allowNull: true },
+    registration_mode: { type: DataTypes.STRING(20), allowNull: false, defaultValue: "DETAILED" },
+    holder_fields: { type: DataTypes.JSONB, allowNull: false, defaultValue: DEFAULT_HOLDER_FIELDS },
+    purchase_limit_per_mobile: { type: DataTypes.INTEGER, allowNull: true },
     published_at: { type: DataTypes.DATE, allowNull: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,

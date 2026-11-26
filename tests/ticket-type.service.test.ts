@@ -3,11 +3,12 @@ import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
 import { CapacityBelowRegistrationsError, ConflictError, InvalidEventStateError, ValidationAppError } from "../src/errors/app-errors.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
+import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { ticketTypeService } from "../src/services/ticket-type.service.js";
-import { eventRow, IDS, ticketTypeRow } from "./helpers/fixtures.js";
+import { eventRow, IDS, organizationRow, ticketTypeRow } from "./helpers/fixtures.js";
 
 /** The ticket type service against mocked repositories and a fake transaction: no database needed. */
 const FAKE_TX = { id: "fake-transaction" } as unknown as Transaction;
@@ -17,6 +18,7 @@ beforeEach(() => {
   mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
   mock.method(ticketTypeRepository, "findByEventAndCode", async () => null);
   mock.method(ticketTypeRepository, "maxDisplayOrderByEvent", async () => 0);
+  mock.method(organizationRepository, "findById", async () => organizationRow({ default_currency: "ETB" }));
 });
 afterEach(() => mock.restoreAll());
 
@@ -92,4 +94,28 @@ test("a ticket type's limit can't drop below its confirmed registrations; the co
 
   await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { capacity: 30 }, IDS.user);
   assert.equal(update.mock.callCount(), 1, "exactly the confirmed count fits");
+});
+
+// --- Phase 7 step 1 ------------------------------------------------------------------------------------
+
+test("a new ticket type is free and public unless told otherwise, in the organizer's currency", async () => {
+  mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow());
+  mock.method(organizationRepository, "findById", async () => organizationRow({ default_currency: "USD" }));
+  const create = mock.method(ticketTypeRepository, "create", async () => ticketTypeRow());
+
+  await ticketTypeService.createTicketType(IDS.orgA, IDS.event, { ...VIP }, IDS.user);
+  await ticketTypeService.createTicketType(IDS.orgA, IDS.event, { code: "CREW", name: "Crew", price: "500.00", audience: "STAFF_ONLY" }, IDS.user);
+
+  const [free, paid] = create.mock.calls.map((call) => call.arguments[0]);
+  assert.deepEqual([free?.price, free?.currency, free?.audience], ["0.00", "USD", "PUBLIC"]);
+  assert.deepEqual([paid?.price, paid?.currency, paid?.audience], ["500.00", "USD", "STAFF_ONLY"]);
+});
+
+test("price and audience can change later; the currency can't be sent", async () => {
+  mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED" }));
+  mock.method(ticketTypeRepository, "findByEventAndId", async () => ticketTypeRow());
+  const update = mock.method(ticketTypeRepository, "updateByEventAndId", async () => ticketTypeRow({ price: "250.00" }));
+
+  await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { price: "250.00", audience: "STAFF_ONLY" }, IDS.user);
+  assert.deepEqual(update.mock.calls[0]?.arguments[3], { price: "250.00", audience: "STAFF_ONLY", updated_by: IDS.user });
 });

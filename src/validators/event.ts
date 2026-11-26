@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { RequestContract } from "../middleware/validate.js";
-import type { EventStatus, EventVisibility } from "../models/event.js";
+import type { EventStatus, EventVisibility, HolderFieldSetting, RegistrationMode } from "../models/event.js";
 import { dateTimeSchema, nullableText, organizationIdParamsSchema, paginationQuerySchema, timeZoneSchema, uuidSchema } from "./common.js";
 import { slugSchema } from "./organization.js";
 
@@ -15,6 +15,18 @@ const optionalInstant = dateTimeSchema.nullable().optional();
 const optionalLink = uuidSchema.nullable().optional();
 /** Optional booking limit; null means no event-wide limit. */
 const capacitySchema = z.number().int().positive().max(1_000_000).nullable().optional();
+
+/** Phase 7: how each holder detail is asked for in a DETAILED event. All five are sent together. */
+const holderFieldSetting = z.enum(["REQUIRED", "OPTIONAL", "HIDDEN"] as const satisfies readonly HolderFieldSetting[]);
+const holderFieldsSchema = z.strictObject({
+  name: holderFieldSetting,
+  mobile: holderFieldSetting,
+  email: holderFieldSetting,
+  affiliation: holderFieldSetting,
+  country: holderFieldSetting,
+});
+/** Phase 7: most tickets one buyer mobile may hold at the event, across every order; null means no limit. */
+const purchaseLimitSchema = z.number().int().positive().max(10_000).nullable().optional();
 
 type Schedule = {
   starts_at?: Date | null | undefined;
@@ -51,6 +63,10 @@ const eventFields = {
   customer_account_id: optionalLink,
   venue_id: optionalLink,
   cover_file_id: optionalLink,
+  /** Phase 7. Default DETAILED with today's form (name and mobile required, the rest optional). */
+  registration_mode: z.enum(["QUICK", "DETAILED"] as const satisfies readonly RegistrationMode[]).optional(),
+  holder_fields: holderFieldsSchema.optional(),
+  purchase_limit_per_mobile: purchaseLimitSchema,
 };
 
 /** New events start as DRAFT with visibility UNLISTED unless PUBLIC is chosen; General Admission is added. */

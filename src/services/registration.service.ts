@@ -4,6 +4,8 @@ import {
   CapacityReachedError,
   IdempotencyKeyReusedError,
   InvalidEventStateError,
+  NotFoundError,
+  PaymentRequiredError,
   PersonInactiveError,
   RegistrationCancelledError,
   RegistrationClosedError,
@@ -32,6 +34,7 @@ import { registrationRepository } from "../repositories/registration.repository.
 import { submissionKeyRepository } from "../repositories/submission-key.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { normalizeEthiopianMobile } from "../utils/mobile.js";
+import { isZeroAmount } from "../utils/money.js";
 import { buildPagination } from "../utils/pagination.js";
 import { guestListCsv } from "../utils/guest-csv.js";
 import { generateRegistrationCode } from "../utils/registration-code.js";
@@ -92,16 +95,26 @@ function assertTakingRegistrations(event: EventRow, now: Date): void {
   if (reason) throw new RegistrationClosedError("This event is not taking registrations", { reason });
 }
 
-/** The ticket type, locked after the event: by id, by code, or the only active one. */
+/** Phase 7: the public form only ever sees PUBLIC ticket types; staff may issue STAFF_ONLY ones too. */
+const visibleTo = (source: RegistrationSource) => (ticketType: TicketTypeRow) => source === "STAFF" || ticketType.audience === "PUBLIC";
+
+/**
+ * The ticket type, locked after the event: by id, by code, or the only active one the caller may use. A STAFF_ONLY
+ * type asked for by the public form is "not found", even by its code, so the public can't tell it exists. Since
+ * Phase 7 a paid type is refused here (409 payment_required): the single-ticket endpoints only issue free tickets.
+ */
 async function lockTicketType(input: RegisterInput, transaction: Transaction): Promise<TicketTypeRow> {
-  const { organizationId, eventId } = input;
+  const { organizationId, eventId, source } = input;
   let ticketTypeId = input.ticketTypeId;
   if (ticketTypeId === undefined && input.ticketTypeCode !== undefined) {
     const byCode = await ticketTypeRepository.findByEventAndCode(organizationId, eventId, input.ticketTypeCode, { transaction });
-    ticketTypeId = ensureFound(byCode, "Ticket type not found").id;
+    ticketTypeId = ensureFound(byCode && visibleTo(source)(byCode) ? byCode : null, "Ticket type not found").id;
   }
   if (ticketTypeId === undefined) {
-    const active = await ticketTypeRepository.listActiveByEvent(organizationId, eventId, { transaction });
+    const active = (await ticketTypeRepository.listActiveByEvent(organizationId, eventId, { transaction })).filter(visibleTo(source));
+    if (active.length === 0) {
+      throw new RegistrationClosedError("This event has no ticket types open to the public", { reason: "NO_PUBLIC_TICKETS" });
+    }
     const [only, ...others] = active;
     if (!only || others.length > 0) {
       throw new TicketTypeRequiredError("This event has several ticket types: choose one", {
@@ -115,7 +128,11 @@ async function lockTicketType(input: RegisterInput, transaction: Transaction): P
     await ticketTypeRepository.findByEventAndId(organizationId, eventId, ticketTypeId, { transaction, lock: true }),
     "Ticket type not found",
   );
+  if (!visibleTo(source)(ticketType)) throw new NotFoundError("Ticket type not found");
   if (!ticketType.is_active) throw new TicketTypeInactiveError(undefined, { ticket_type_code: ticketType.code });
+  if (!isZeroAmount(ticketType.price)) {
+    throw new PaymentRequiredError(undefined, { ticket_type_code: ticketType.code, price: ticketType.price, currency: ticketType.currency });
+  }
   return ticketType;
 }
 
@@ -422,8 +439,8 @@ async function changeRegistrationStatus(
  * Move a confirmed guest to another ticket type of the same event (Phase 4d, decided 25 November 2026): the same row,
  * code and registered_at; no SMS (the confirmation doesn't name the ticket type). PUBLISHED events only, at any time
  * (also after sign-ups close or the event ended). The new ticket type must be active and have room under its own
- * limit; the event's total doesn't change, so its capacity isn't checked. Lock order: the event, then both ticket
- * types (by id), then the registration.
+ * limit; the event's total doesn't change, so its capacity isn't checked. Since Phase 7 the new type must be free
+ * (409 payment_required). Lock order: the event, then both ticket types (by id), then the registration.
  */
 async function changeRegistrationTicketType(
   organizationId: string,
@@ -455,6 +472,10 @@ async function changeRegistrationTicketType(
       return { registration: await toDto(organizationId, eventId, registrationId, transaction), changed: false };
     }
     if (!target.is_active) throw new TicketTypeInactiveError(undefined, { ticket_type_code: target.code });
+    // Phase 7: moving a guest onto a paid type would hand out a paid ticket without payment.
+    if (!isZeroAmount(target.price)) {
+      throw new PaymentRequiredError("A guest can't be moved to a ticket type with a price", { ticket_type_code: target.code, price: target.price, currency: target.currency });
+    }
     await assertTicketTypeHasRoom(event, target, transaction);
 
     await registrationRepository.updateByEventAndId(

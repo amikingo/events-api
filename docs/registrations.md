@@ -281,3 +281,12 @@ across organizers. Upcoming and ongoing events first (soonest first), then past 
 Registrations staff made for a linked profile also show: they're the guest's own.
 
 Migration `20261130000000-add-person-user-id-index` adds an index on `person(user_id)` for this lookup.
+
+## Phase 7 step 1: what changed for registrations (26 November 2026)
+
+- The public form only offers `PUBLIC` ticket types: a `STAFF_ONLY` type is 404 even by code, and an event with no
+  active public type is 409 `registration_closed` (`reason: NO_PUBLIC_TICKETS`). Staff may issue staff-only types.
+- A ticket type with a price can't be issued by either single-ticket endpoint (409 `payment_required`), nor can a
+  guest be moved onto one. Free tickets work as before.
+- A `DETAILED` event's `holder_fields` apply to the public form (400, `required` or `not_collected`).
+- Group orders, the per-mobile limit and paid checkout come in Phase 7 steps 2–3. Details in `docs/events.md`.
