@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Transaction } from "sequelize";
-import { CapacityReachedError, PurchaseLimitReachedError, RegistrationClosedError } from "../errors/app-errors.js";
+import { CapacityReachedError, PurchaseLimitReachedError, RegistrationClosedError, ValidationAppError } from "../errors/app-errors.js";
 import { registrationClosedReason } from "../mappers/event.mapper.js";
 import type { EventRow } from "../models/event.js";
 import type { OrderConfirmationPayload } from "../models/message-outbox.js";
@@ -56,8 +56,14 @@ async function newOrderReference(transaction: Transaction): Promise<string> {
  * included; held ones too; cancelled and released ones don't count) plus `requested` must stay within it. No limit,
  * or no buyer mobile, means nothing to check. `buyerMobile` is E.164, so "0911…" and "+251911…" are the same buyer.
  */
-async function assertBuyerAllowance(event: EventRow, buyerMobile: string | null, requested: number, transaction: Transaction): Promise<void> {
-  if (event.purchase_limit_per_mobile === null || buyerMobile === null) return;
+async function assertBuyerAllowance(event: EventRow, buyerMobile: string | null, requested: number, transaction: Transaction, field = "body.buyer_mobile"): Promise<void> {
+  if (event.purchase_limit_per_mobile === null) return;
+  // Phase 8: a capped event counts every ticket against a mobile, so a ticket without one could slip past the limit.
+  if (buyerMobile === null) {
+    throw new ValidationAppError("Request validation failed", {
+      issues: [{ path: field, message: "This event limits tickets per mobile number: an Ethiopian mobile is required", code: "buyer_mobile_required" }],
+    });
+  }
   const held = await registrationRepository.countConfirmedByBuyerMobile(event.organization_id, event.id, buyerMobile, { transaction });
   if (held + requested > event.purchase_limit_per_mobile) {
     throw new PurchaseLimitReachedError(undefined, { limit: event.purchase_limit_per_mobile, held, requested });

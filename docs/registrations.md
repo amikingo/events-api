@@ -426,3 +426,25 @@ endpoint refuses them (409 `ticket_not_issued`), and a cancelled paid ticket can
 | `PAYMENT_POLL_INTERVAL_MS` | `60000` |
 
 **Proof:** matrix rows 93–95, with the Cheche Pay client stubbed. Step 4 checks it against Cheche Pay itself.
+
+## Phase 8: the physical-event pilot (27 November 2026)
+
+### Step 1: the mobile limit on capped events
+
+When an event sets `purchase_limit_per_mobile`, **every path that takes a place needs a buyer mobile**. Each
+ticket then counts against a normalized Ethiopian number:
+- staff and public checkout;
+- staff and public single registration;
+- bringing a ticket back through the status route.
+
+Signed-in buyers use their account's verified mobile. Tickets and active holds are added up across ticket types, orders
+and channels for the same number (`0913…`, `+251913…` and `0913 …` are one buyer). On a capped event, a request
+without a usable mobile is 400 `validation_error` with issue code `buyer_mobile_required`. The issue's `path` names the
+field: `body.buyer_mobile`, `body.person_id`, `body.person.phone`, `body.phone`, or `registration` for reactivation. A
+guest whose only phone isn't an Ethiopian mobile counts as having none.
+
+**Uncapped events don't change:** staff may still issue a free order without a mobile.
+
+**Proof:** unit tests for each path, and matrix row 96. The tests were written first: only the free staff order, the
+staff registration of a guest without an Ethiopian mobile, and bringing back an unnamed ticket whose order had no
+mobile failed the rule. Only those three paths were changed (`ticketing.assertBuyerAllowance`).

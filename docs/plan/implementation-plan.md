@@ -567,3 +567,20 @@ Connect the staff and public screens to the API and run the full flow against Po
 **Step 3 (paid checkout, first on Cheche Pay's legacy API): built, verified on PostgreSQL and pushed on 26 November 2026.** Holds, the order token, issuing, late payments and the worker came from this step. Its legacy service code and unsigned callback were replaced in Step 3b.
 
 **Step 3b (Cheche Pay v2, as bookings uses it): built on 26 November 2026; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test` (rows 93–95).** Migrations `20261207000000-drop-organization-cheche-pay-service`, `…001-create-organization-cheche-pay-credential`, `…002-reshape-order-payment-for-cheche-pay-v2`. The Super Admin saves each organizer's own Cheche Pay secret key, stored encrypted; there is no platform key. Each payment attempt calls `transactions/initialize` with a fresh `tx_ref`. Webhooks (signed when a webhook secret is saved) and the buyer's return (`POST /v1/public/orders/{reference}/check`) are only triggers: tickets are issued only after `merchant-verify` confirms `SUCCEEDED` for the stored amount in ETB. Another amount is `MISMATCH`, a second paid attempt is flagged `PAID_TWICE`, and repeats change nothing. Payments can no longer be faked. Matrix rows 93–95 with the client stubbed. Details in `docs/registrations.md` (Phase 7 step 3b).
+
+### Phase 8 — Physical-event pilot (27 November 2026)
+
+Four steps, built one at a time:
+1. the mobile limit on capped events;
+2. check-in, with the QR payload being the ticket code;
+3. payment cases and the Payments module;
+4. partial returns.
+
+The plan follows the 27 November handoff.
+
+**Step 1 (the mobile limit): built; waiting on `npm run check`, then `TEST_DATABASE=1 npm test` (row 96). No migration.**
+- Tests written first showed three paths skipping the limit when no mobile was known:
+  - a free staff order;
+  - a staff registration of a guest without an Ethiopian mobile;
+  - bringing back an unnamed ticket whose order had no mobile.
+- On a capped event these now answer 400 `buyer_mobile_required`. Uncapped events are unchanged.

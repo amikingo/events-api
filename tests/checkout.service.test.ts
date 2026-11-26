@@ -222,6 +222,24 @@ test("the purchase limit combines what the buyer mobile already holds with this 
   assert.equal(calls.createOrder.mock.callCount(), 1);
 });
 
+// --- Phase 8 step 1: on a capped event every allocation needs a buyer mobile ----------------------------------
+
+test("on an event with a purchase limit, a free staff order without a buyer mobile is refused before anything is written", async () => {
+  const calls = arrange({ event: eventRow({ ...PUBLISHED, registration_mode: "QUICK", purchase_limit_per_mobile: 4 }) });
+  await assert.rejects(
+    checkoutService.checkoutInTransaction(quick([{ ticketTypeId: GA.id, quantity: 1 }], { source: "STAFF", actorId: IDS.user, buyer: { mobile: null, userId: null } }), FAKE_TX),
+    (error: unknown) => error instanceof ValidationAppError && JSON.stringify(issuesOf(error)) === JSON.stringify([["body.buyer_mobile", "buyer_mobile_required"]]),
+  );
+  assert.equal(calls.createOrder.mock.callCount(), 0);
+});
+
+test("without a purchase limit, staff may still issue a free order without a buyer mobile", async () => {
+  const calls = arrange({ event: eventRow({ ...PUBLISHED, registration_mode: "QUICK", purchase_limit_per_mobile: null }) });
+  await checkoutService.checkoutInTransaction(quick([{ ticketTypeId: GA.id, quantity: 1 }], { source: "STAFF", actorId: IDS.user, buyer: { mobile: null, userId: null } }), FAKE_TX);
+  assert.equal(calls.createOrder.mock.calls[0]?.arguments[0]?.buyer_mobile, null);
+  assert.equal(calls.countBuyer.mock.callCount(), 0);
+});
+
 const PAID_TYPES = [ticketTypeRow({ ...GA, price: "500.00" }), ticketTypeRow({ ...VIP, price: "1000.00" })];
 
 /** The organizer's saved Cheche Pay keys (step 3b): active by default. */

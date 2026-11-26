@@ -2508,9 +2508,11 @@ test("row 91: the last place goes to one of two racing orders; one mobile racing
 
   const crewByPublic = await postWithKey(`${checkoutFixture.quickPublic}/orders`, orderForm([{ ticket_type_code: "CREW", quantity: 1 }], "0913100006"), randomUUID());
   assert.equal(crewByPublic.status, 404);
-  const crewByStaff = await as("SELAM_OWNER", "POST", `${checkoutFixture.quickPath}/orders`, { items: [{ ticket_type_id: checkoutFixture.quickCrewId, quantity: 2 }] });
-  assert.deepEqual([crewByStaff.status, crewByStaff.body.data.ticket_count, crewByStaff.body.data.buyer_mobile], [201, 2, null]);
-  assert.equal(crewByStaff.body.data.confirmation, null, "no buyer mobile, no SMS");
+  // The festival has a limit of 4 per mobile (row 89), so since Phase 8 even staff tickets need a buyer mobile.
+  const crewNoMobile = await as("SELAM_OWNER", "POST", `${checkoutFixture.quickPath}/orders`, { items: [{ ticket_type_id: checkoutFixture.quickCrewId, quantity: 2 }] });
+  assert.deepEqual([crewNoMobile.status, crewNoMobile.body.error.details.issues[0].code], [400, "buyer_mobile_required"]);
+  const crewByStaff = await as("SELAM_OWNER", "POST", `${checkoutFixture.quickPath}/orders`, { buyer_mobile: "0913100007", items: [{ ticket_type_id: checkoutFixture.quickCrewId, quantity: 2 }] });
+  assert.deepEqual([crewByStaff.status, crewByStaff.body.data.ticket_count, crewByStaff.body.data.buyer_mobile], [201, 2, "+251913100007"]);
 
   const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
   assert.ok(abay);
@@ -2763,4 +2765,35 @@ test("row 95: with a webhook secret saved only signed webhooks count; the buyer'
   } finally {
     mock.restoreAll();
   }
+});
+
+// --- Phase 8 step 1: on a capped event every ticket counts against a mobile ---------------------------------------
+
+test("row 96: with a limit of 4 per mobile, 3 public tickets and 1 staff ticket for the same number (written two ways) fill it; a 5th is refused in both channels; a capped event refuses tickets without a mobile; an uncapped one doesn't", { skip }, async () => {
+  resetPublicLimit();
+  const capped = await publishedCheckoutEvent({ name: "Pilot Concert", registration_mode: "QUICK", purchase_limit_per_mobile: 4 });
+  const staffOrders = `${capped.path}/orders`;
+  const publicOrders = `${capped.publicPath}/orders`;
+
+  const three = await postWithKey(publicOrders, orderForm([{ ticket_type_code: "GA", quantity: 3 }], "0913300001"), randomUUID());
+  assert.equal(three.status, 201, JSON.stringify(three.body));
+  const one = await as("SELAM_OWNER", "POST", staffOrders, { buyer_mobile: "+251913300001", items: [{ ticket_type_id: capped.types.GA, quantity: 1 }] });
+  assert.equal(one.status, 201, JSON.stringify(one.body));
+
+  const fifthPublic = await postWithKey(publicOrders, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913 300 001"), randomUUID());
+  assert.deepEqual([fifthPublic.status, fifthPublic.body.error.code, fifthPublic.body.error.details], [409, "purchase_limit_reached", { limit: 4, held: 4, requested: 1 }]);
+  const fifthStaff = await as("SELAM_OWNER", "POST", staffOrders, { buyer_mobile: "0913300001", items: [{ ticket_type_id: capped.types.GA, quantity: 1 }] });
+  assert.equal(fifthStaff.body.error?.code, "purchase_limit_reached");
+
+  const noMobile = await as("SELAM_OWNER", "POST", staffOrders, { items: [{ ticket_type_id: capped.types.GA, quantity: 1 }] });
+  assert.deepEqual([noMobile.status, noMobile.body.error.details.issues[0].path, noMobile.body.error.details.issues[0].code], [400, "body.buyer_mobile", "buyer_mobile_required"]);
+  const phoneless = await as("SELAM_OWNER", "POST", `${capped.path}/registrations`, { person: { first_name: "Abel" } });
+  assert.deepEqual([phoneless.status, phoneless.body.error.details.issues[0].path, phoneless.body.error.details.issues[0].code], [400, "body.person.phone", "buyer_mobile_required"]);
+  const cappedRow = await AppEvent.findByPk(capped.id, { raw: true });
+  assert.equal(await Registration.count({ where: { event_id: cappedRow?.id, status: "CONFIRMED" } }), 4, "exactly the 4 allowed");
+
+  const uncapped = await publishedCheckoutEvent({ name: "Open Rehearsal", registration_mode: "QUICK" });
+  const free = await as("SELAM_OWNER", "POST", `${uncapped.path}/orders`, { items: [{ ticket_type_id: uncapped.types.GA, quantity: 1 }] });
+  assert.deepEqual([free.status, free.body.data.buyer_mobile], [201, null], "no limit: staff may still leave the mobile out");
+  assert.equal(free.body.data.confirmation, null, "no buyer mobile, no SMS");
 });

@@ -14,6 +14,7 @@ import {
   RegistrationClosedError,
   TicketTypeInactiveError,
   TicketTypeRequiredError,
+  ValidationAppError,
 } from "../src/errors/app-errors.js";
 import type { EventRow } from "../src/models/event.js";
 import type { MessageOutboxRow } from "../src/models/message-outbox.js";
@@ -747,4 +748,48 @@ test("an unnamed ticket comes back through the status endpoint with every check,
   await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user);
   assert.equal(calls.update.mock.calls[0]?.arguments[3]?.status, "CONFIRMED");
   assert.equal(calls.queue.mock.callCount(), 0, "the buyer already has the code");
+});
+
+// --- Phase 8 step 1: on a capped event every allocation needs a buyer mobile ----------------------------------
+
+const issueOf = (error: unknown) => ((error as ValidationAppError).details as { issues: Array<{ path: string; code: string; message: string }> } | undefined)?.issues[0];
+
+test("on an event with a purchase limit, a guest without an Ethiopian mobile can't take a place; without a limit they can", async () => {
+  const capped = eventRow({ ...PUBLISHED, purchase_limit_per_mobile: 4 });
+  const existingGuest = arrange({ event: capped, person: personRow({ phone: null }) });
+  await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user), (error: unknown) => {
+    assert.ok(error instanceof ValidationAppError);
+    assert.deepEqual([issueOf(error)?.path, issueOf(error)?.code], ["body.person_id", "buyer_mobile_required"]);
+    return true;
+  });
+  assert.equal(existingGuest.create.mock.callCount(), 0);
+  resetTransaction();
+
+  const foreign = arrange({ event: capped, person: personRow({ phone: "+14155550100" }) });
+  await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user), (error: unknown) => issueOf(error)?.code === "buyer_mobile_required");
+  assert.equal(foreign.create.mock.callCount(), 0, "a number that isn't an Ethiopian mobile can't be counted");
+  resetTransaction();
+
+  arrange({ event: capped, person: null });
+  mock.method(personRepository, "create", async () => personRow({ id: "new-person", phone: null }));
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person: { ...NEW_GUEST, phone: undefined } }, IDS.user),
+    (error: unknown) => issueOf(error)?.path === "body.person.phone" && issueOf(error)?.code === "buyer_mobile_required",
+  );
+  resetTransaction();
+
+  const uncapped = arrange({ person: personRow({ phone: null }) });
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.equal(uncapped.create.mock.callCount(), 1, "no limit: no mobile needed");
+});
+
+test("on an event with a purchase limit, an unnamed ticket whose order has no buyer mobile can't be brought back", async () => {
+  const calls = arrange({ event: eventRow({ ...PUBLISHED, purchase_limit_per_mobile: 4 }) });
+  calls.findOrder.mock.mockImplementation(async () => orderRow({ buyer_mobile: null }));
+  mock.method(registrationRepository, "findByEventAndId", async () => registrationRow({ person_id: null, status: "CANCELLED", cancelled_at: new Date() }));
+  await assert.rejects(
+    registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user),
+    (error: unknown) => issueOf(error)?.code === "buyer_mobile_required",
+  );
+  assert.equal(calls.update.mock.callCount(), 0);
 });

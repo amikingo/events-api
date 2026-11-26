@@ -233,6 +233,13 @@ async function queueConfirmation(event: EventRow, person: PersonRow, registratio
  * the guest, then either returns the same confirmed registration, refuses a second place, or takes a place (new or
  * reactivated) after both capacity checks, and queues the confirmation, all in the caller's transaction.
  */
+/** Which request field a missing buyer mobile is reported on (Phase 8: capped events need one for every ticket). */
+function mobileField(input: RegisterInput, reactivation: boolean): string {
+  if (reactivation) return "registration";
+  if ("personId" in input.guest) return "body.person_id";
+  return input.source === "PUBLIC" ? "body.phone" : "body.person.phone";
+}
+
 async function registerInTransaction(input: RegisterInput, transaction: Transaction): Promise<RegisterResult> {
   const { organizationId, eventId, source, actorId } = input;
   if (source === "STAFF" && actorId === null) throw new Error("A staff registration needs the staff member's id");
@@ -264,7 +271,7 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
     ? ensureFound(await ticketOrderRepository.findByEventAndId(organizationId, eventId, existing.order_id, { transaction }), "Order not found")
     : null;
   const buyerMobile = order ? order.buyer_mobile : person.phone === null ? null : normalizeEthiopianMobile(person.phone);
-  await ticketing.assertBuyerAllowance(event, buyerMobile, 1, transaction);
+  await ticketing.assertBuyerAllowance(event, buyerMobile, 1, transaction, mobileField(input, order !== null));
 
   const registeredBy = source === "STAFF" ? actorId : null;
   let registration: RegistrationRow;
@@ -441,7 +448,7 @@ async function reactivateUnnamedTicket(event: EventRow, registration: Registrati
   );
   await assertPlaceAvailable(event, ticketType, transaction);
   const order = ensureFound(await ticketOrderRepository.findByEventAndId(event.organization_id, event.id, registration.order_id, { transaction }), "Order not found");
-  await ticketing.assertBuyerAllowance(event, order.buyer_mobile, 1, transaction);
+  await ticketing.assertBuyerAllowance(event, order.buyer_mobile, 1, transaction, "registration");
   await registrationRepository.updateByEventAndId(
     event.organization_id,
     event.id,
