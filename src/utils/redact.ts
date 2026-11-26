@@ -14,6 +14,13 @@ const SENSITIVE_KEYS = new Set([
   "secret",
   "key",
   "credential",
+  // Cheche Pay v2 (Phase 7 step 3b): an organizer's keys and the order token header.
+  "secret_key",
+  "webhook_secret",
+  "x-api-key",
+  "x-order-token",
+  "secretkey",
+  "webhooksecret",
 ]);
 
 /** Deep-copies `value`, replacing sensitive keys with "[REDACTED]". Used for error details and logs. */
@@ -43,4 +50,9 @@ export const LOG_REDACT_PATHS = [
   "*.otp",
   "*.pin",
   "*.secret",
+  "*.secret_key",
+  "*.webhook_secret",
+  "*.secretKey",
+  "*.webhookSecret",
+  'req.headers["x-order-token"]',
 ];

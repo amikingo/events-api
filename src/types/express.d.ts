@@ -10,6 +10,8 @@ declare global {
       validated?: { params?: unknown; query?: unknown; body?: unknown; headers?: unknown };
       /** Set by requirePermission() for observability. */
       permissionResolution?: PermissionResolution;
+      /** The exact request bytes, kept only for Cheche Pay webhooks (their signature covers the raw body). */
+      rawBody?: Buffer;
     }
   }
 }

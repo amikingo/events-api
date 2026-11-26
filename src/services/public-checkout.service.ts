@@ -23,10 +23,10 @@ import { ticketing } from "./ticketing.js";
  * - Signed in with a Cheche account, the account's verified mobile is the buyer mobile (never the form's) and the
  *   order is linked to the account, so its tickets appear in My Tickets. The account is part of the retry-key hash.
  * - Only PUBLIC ticket types can be chosen, by code; prices come from the server.
- * - Step 3: the reply carries an order token, the buyer's key to the order page without an account. A paid order
- *   needs one of the organizer's Cheche Pay options (`payment_option_id`); its payment is started after the
- *   transaction commits, and the reply has the checkout URL (or none yet, if Cheche Pay is slow: the buyer retries
- *   through POST /v1/public/orders/{reference}/payment).
+ * - Step 3b: the reply carries an order token, the buyer's key to the order page without an account. A paid order's
+ *   Cheche Pay payment is started after the transaction commits, and the reply has the checkout URL (or none yet, if
+ *   Cheche Pay is slow: the buyer retries through POST /v1/public/orders/{reference}/payment). Back from paying, the
+ *   order page asks POST /v1/public/orders/{reference}/check, which verifies the payment with Cheche Pay.
  */
 async function checkoutFromPublicForm(
   organizationSlug: string,
@@ -53,8 +53,6 @@ async function checkoutFromPublicForm(
     buyerMobile = input.buyer_mobile;
   }
 
-  // A paid order's option is checked with Cheche Pay before the transaction: no network call under a lock.
-  const payment = input.payment_option_id === undefined ? null : await paymentService.resolvePaymentOption(event.organization_id, input.payment_option_id);
   const { token, hash } = ticketing.newOrderToken();
   const { orderId, outcome } = await runTransaction(async (transaction) => {
     const result = await checkoutService.checkoutOnce(
@@ -66,7 +64,6 @@ async function checkoutFromPublicForm(
         buyer: { mobile: buyerMobile, userId: account?.userId ?? null },
         items: input.items.map((item) => ({ ticketTypeCode: item.ticket_type_code, quantity: item.quantity, holders: item.holders })),
         accessTokenHash: hash,
-        payment,
         evidence: { privacyNoticeVersion: input.privacy_notice_version, shownAt: new Date() },
       },
       { scope: "PUBLIC_CHECKOUT", key: idempotencyKey, requestHash: requestHash({ event_id: event.id, body: input, user_id: account?.userId }) },
@@ -103,17 +100,21 @@ async function getOrder(reference: string, token: string): Promise<PublicOrderDt
   return buyerView(await orderForToken(reference, token));
 }
 
-/** Starts or resumes the payment (the same reference every time) and returns the order with the checkout URL. */
+/** Starts or resumes the payment (an unexpired checkout link is reused) and returns the order with the checkout URL. */
 async function startPayment(reference: string, token: string): Promise<PublicOrderDto> {
   const order = await orderForToken(reference, token);
   await paymentService.startPayment(order.organization_id, order.id);
   return buyerView(ensureFound(await ticketOrderRepository.findByOrganizationAndId(order.organization_id, order.id), "Order not found"));
 }
 
-/** The organizer's Cheche Pay options for the event page ([] when paid sales are off). */
-async function listPaymentOptions(organizationSlug: string, eventSlug: string): Promise<Array<{ id: string; name: string | null }>> {
-  const event = ensureFound(await eventRepository.findPublishedBySlugs(organizationSlug, eventSlug), "Event not found");
-  return paymentService.listOptionsForOrganization(event.organization_id);
+/**
+ * The buyer is back from Cheche Pay: the server asks merchant-verify about the current attempt and applies the answer,
+ * then returns the order (with every code once paid). Only the order token's holder can ask.
+ */
+async function checkPayment(reference: string, token: string): Promise<PublicOrderDto> {
+  const order = await orderForToken(reference, token);
+  await paymentService.checkPayment(order.organization_id, order.id);
+  return buyerView(ensureFound(await ticketOrderRepository.findByOrganizationAndId(order.organization_id, order.id), "Order not found"));
 }
 
-export const publicCheckoutService = { checkoutFromPublicForm, getOrder, startPayment, listPaymentOptions };
+export const publicCheckoutService = { checkoutFromPublicForm, getOrder, startPayment, checkPayment };

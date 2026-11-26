@@ -1,9 +1,12 @@
 import type { Transaction } from "sequelize";
-import { chechePayClient, type PaymentOption } from "../clients/cheche-pay.client.js";
+import { chechePayClient } from "../clients/cheche-pay.client.js";
+import { paymentConfig } from "../config/payment.js";
 import {
   CapacityReachedError,
   ConflictError,
   InvalidOrderStateError,
+  InvalidSignatureError,
+  NotFoundError,
   PaidSalesUnavailableError,
   PaymentProviderUnavailableError,
   PurchaseLimitReachedError,
@@ -14,113 +17,37 @@ import type { TicketOrderRow } from "../models/ticket-order.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { orderPaymentRepository } from "../repositories/order-payment.repository.js";
-import { organizationRepository } from "../repositories/organization.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
 import { ticketOrderRepository } from "../repositories/ticket-order.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { logger } from "../utils/logger.js";
-import { normalizeAmount } from "../utils/money.js";
-import type { ChechePayNotificationInput } from "../validators/payment.js";
+import { MONEY_PATTERN, normalizeAmount } from "../utils/money.js";
+import { chechePayCredentialService } from "./cheche-pay-credential.service.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 import { ticketing } from "./ticketing.js";
 
 /**
- * Paid orders through Cheche Pay (Phase 7 step 3), following bookings_api's integration:
- * - **The receiving merchant** is the organizer's Cheche Pay service code (set by the Super Admin). The buyer picks
- *   one of that code's payment options; the server refuses any other option, so the money can't go elsewhere.
- * - **Starting:** after checkout commits, createOrder with our payment row id as `transaction_id` (the same id on
- *   every retry). Never inside a database transaction.
- * - **The callback** (notify-from-chechepay, POST or GET), handled exactly as bookings does: it isn't signed, and the
- *   legacy API has no status check, so a callback is trusted on our payment id, the exact amount and a "Completed"
- *   status. A "Completed" callback for another amount is kept as MISMATCH and issues nothing; a repeat with the same
- *   Cheche Pay reference changes nothing; a different reference, or a non-completed status after payment, is refused
- *   (409); any other status is acknowledged and changes nothing (the hold lapses on its own).
+ * Paid orders through Cheche Pay v2 (Phase 7 step 3b), following bookings_api's integration:
+ * - **The receiving business** is the organizer's own Cheche Pay secret key (saved by the Super Admin): the buyer
+ *   never chooses where the money goes, and there is no platform key.
+ * - **Starting:** after checkout commits, transactions/initialize with the organizer's key and a fresh tx_ref
+ *   (`<payment id>-<suffix>`: v2 refuses a reused one). An unexpired checkout link is reused. Never inside a database
+ *   transaction.
+ * - **Settling:** webhooks and the buyer's return are only triggers. The payment's state always comes from
+ *   merchant-verify with the organizer's key (settle): SUCCEEDED for exactly the stored amount in ETB issues the
+ *   tickets; another amount is kept as MISMATCH and issues nothing; the same tx_ref again changes nothing; a second
+ *   attempt that also succeeded is flagged PAID_TWICE for a refund; anything else changes nothing (the hold lapses on
+ *   its own deadline).
+ * - **The webhook** is checked against the organizer's webhook secret when one is saved (401 otherwise), as bookings.
  * - **Issuing** runs under the event lock, then the order and payment locks: held tickets become CONFIRMED with codes
  *   and one SMS lists them.
  * - **Release:** an unpaid hold past hold_expires_at gives its places and purchase allowance back (EXPIRED).
  * - **A late payment** (after its places were released) takes them again when the event, ticket types and buyer's
  *   limit still allow; otherwise the order becomes REFUND_REQUIRED with its payment kept for follow-up. It never
  *   oversells.
- * Known risk (as in bookings): anyone who learns a payment id and its amount could fake a "Completed" callback, until
- * Cheche Pay offers a status check or signed callbacks.
  */
 
-/** Cheche Pay's "Completed" spellings, as bookings reads them. */
-function normalizeTradeStatus(value: string): string {
-  return ["completed", "success", "successful", "paid"].includes(value.trim().toLowerCase()) ? "Completed" : value.trim();
-}
-
-/** The payment option the buyer chose, checked against the organizer's service code (before any transaction). */
-async function resolvePaymentOption(organizationId: string, paymentOptionId: string): Promise<{ optionId: string; serviceCode: string }> {
-  const organization = ensureFound(await organizationRepository.findById(organizationId), "Organization not found");
-  if (organization.cheche_pay_service === null) throw new PaidSalesUnavailableError(undefined, { reason: "NO_CHECHE_PAY_SERVICE" });
-  const options = await chechePayClient.listPaymentOptions(organization.cheche_pay_service);
-  if (!options.some((option) => option.id === paymentOptionId)) {
-    throw new ValidationAppError("Request validation failed", {
-      issues: [{ path: "body.payment_option_id", message: "Choose one of this organizer's payment options", code: "unknown_payment_option" }],
-    });
-  }
-  return { optionId: paymentOptionId, serviceCode: organization.cheche_pay_service };
-}
-
-/** The organizer's payment options for the public event page ([] when paid sales are off). */
-async function listOptionsForOrganization(organizationId: string): Promise<Array<{ id: string; name: string | null }>> {
-  const organization = ensureFound(await organizationRepository.findById(organizationId), "Organization not found");
-  if (organization.cheche_pay_service === null) return [];
-  return (await chechePayClient.listPaymentOptions(organization.cheche_pay_service)).map((option) => ({ id: option.id, name: option.name }));
-}
-
-export type ChechePaySettingDto = {
-  cheche_pay_service: string | null;
-  payment_options: Array<{ id: string; name: string | null }>;
-  paid_sales_available: boolean;
-  warnings: Array<{ code: string; message: string }>;
-};
-
-function settingDto(code: string | null, options: PaymentOption[] | null, warnings: ChechePaySettingDto["warnings"] = []): ChechePaySettingDto {
-  return {
-    cheche_pay_service: code,
-    payment_options: (options ?? []).map((option) => ({ id: option.id, name: option.name })),
-    paid_sales_available: code !== null && (options?.length ?? 0) > 0,
-    warnings,
-  };
-}
-
-async function optionsOrNull(code: string): Promise<PaymentOption[] | null> {
-  try {
-    return await chechePayClient.listPaymentOptions(code);
-  } catch {
-    return null;
-  }
-}
-
-/** Platform scope: the organizer's service code and what Cheche Pay offers for it. */
-async function getChechePaySetting(organizationId: string): Promise<ChechePaySettingDto> {
-  const organization = ensureFound(await organizationRepository.findById(organizationId), "Organization not found");
-  if (organization.cheche_pay_service === null) return settingDto(null, null);
-  const options = await optionsOrNull(organization.cheche_pay_service);
-  return settingDto(organization.cheche_pay_service, options, options === null ? [{ code: "CHECHE_PAY_UNREACHABLE", message: "Cheche Pay couldn't be reached to list the payment options" }] : []);
-}
-
-/**
- * Platform scope: sets the code (upper-case) or clears it (paid sales off). As bookings, an unknown code is still
- * saved (Cheche Pay may register it later) with a warning; Cheche Pay is asked before the transaction.
- */
-async function setChechePayService(organizationId: string, code: string | null, actorId: string | null): Promise<ChechePaySettingDto> {
-  const options = code === null ? null : await optionsOrNull(code);
-  const warnings: ChechePaySettingDto["warnings"] = [];
-  if (code !== null && !options?.length) {
-    warnings.push({
-      code: "CHECHE_PAY_SERVICE_HAS_NO_OPTIONS",
-      message: `Saved, but Cheche Pay has no payment options for "${code}" yet. Paid sales stay off for this organizer until it has.`,
-    });
-  }
-  await runTransaction(async (transaction) => {
-    ensureFound(await organizationRepository.findById(organizationId, { transaction, lock: true }), "Organization not found");
-    await organizationRepository.updateSettings(organizationId, { cheche_pay_service: code, updated_by: actorId }, { transaction });
-  });
-  return settingDto(code, options, warnings);
-}
+const SUCCEEDED = "SUCCEEDED";
 
 /** The order and its payment, both locked, under the event lock (the lock order every place change uses). */
 async function lockOrder(organizationId: string, orderId: string, transaction: Transaction): Promise<{ order: TicketOrderRow; payment: OrderPaymentRow }> {
@@ -170,37 +97,146 @@ async function placesStillFree(order: TicketOrderRow, transaction: Transaction):
   }
 }
 
+export type SettleResult = {
+  acknowledged: true;
+  /** The payment was applied now (tickets issued, or the order marked REFUND_REQUIRED). */
+  processed: boolean;
+  /** This tx_ref had already been applied (or already kept as MISMATCH); nothing changed. */
+  duplicate: boolean;
+  /** Not ours (another integration on the same Cheche Pay business, or not a payment event): nothing read. */
+  ignored: boolean;
+  review_reason: "AMOUNT_MISMATCH" | "PAID_AFTER_RELEASE" | "PAID_TWICE" | null;
+  /** What merchant-verify said (SUCCEEDED, PENDING, FAILED…); null when Cheche Pay doesn't know the tx_ref. */
+  provider_status: string | null;
+  order_status: TicketOrderRow["status"] | null;
+};
+
+const IGNORED: SettleResult = { acknowledged: true, processed: false, duplicate: false, ignored: true, review_reason: null, provider_status: null, order_status: null };
+
+/** Cheche Pay's amount as an exact two-place string ("2000" → "2000.00"). */
+function verifiedAmount(value: string | number | null): string {
+  const text = value === null ? "" : String(value).trim();
+  if (!MONEY_PATTERN.test(text)) throw new ConflictError("Cheche Pay reported an invalid amount", { amount: value });
+  return normalizeAmount(text);
+}
+
 /**
- * Sends the buyer to pay: createOrder with the payment's id (the same id on every retry), the chosen option, the
- * amount and the buyer's mobile; saves the checkout URL. Refused unless the order is waiting for payment.
+ * Verifies one tx_ref with merchant-verify (before any transaction) and applies the answer. Safe to repeat. The
+ * organizer's key is used even if switched off since, so payments already started can still be confirmed.
+ */
+async function settle(txRef: string, options: { expectedOrganizationId?: string } = {}): Promise<SettleResult> {
+  const paymentId = chechePayClient.parseTxRef(txRef);
+  if (paymentId === null) return IGNORED;
+  const found = ensureFound(await orderPaymentRepository.findById(paymentId), "Payment not found");
+  if (options.expectedOrganizationId !== undefined && found.organization_id !== options.expectedOrganizationId) {
+    throw new ConflictError("This payment belongs to another organizer");
+  }
+  const keys = await chechePayCredentialService.resolve(found.organization_id, { includeInactive: true });
+  if (!keys) throw new PaidSalesUnavailableError("This organizer has no Cheche Pay keys to verify the payment", { reason: "NO_CHECHE_PAY_KEYS" });
+  const verified = await chechePayClient.verify(keys.secretKey, txRef);
+  const providerStatus = verified?.status ?? null;
+  const checked = { tx_ref: txRef, status: providerStatus, amount: verified?.amount ?? null, currency: verified?.currency ?? null, checked_at: new Date().toISOString() };
+
+  if (verified === null || providerStatus !== SUCCEEDED) {
+    // Pending, failed, declined or unknown: nothing to apply. The hold lapses on its own deadline.
+    await orderPaymentRepository.updateById(found.id, { last_verification: checked });
+    const order = await ticketOrderRepository.findByOrganizationAndId(found.organization_id, found.order_id);
+    return { acknowledged: true, processed: false, duplicate: false, ignored: false, review_reason: null, provider_status: providerStatus, order_status: order?.status ?? null };
+  }
+  if (verified.currency !== null && verified.currency !== "ETB") {
+    throw new ConflictError("Cheche Pay reported an unexpected currency", { currency: verified.currency });
+  }
+  const amount = verifiedAmount(verified.amount);
+
+  return runTransaction(async (transaction) => {
+    const { order, payment } = await lockOrder(found.organization_id, found.order_id, transaction);
+    const result = (processed: boolean, duplicate: boolean, review: SettleResult["review_reason"], status: TicketOrderRow["status"]): SettleResult => ({
+      acknowledged: true,
+      processed,
+      duplicate,
+      ignored: false,
+      review_reason: review,
+      provider_status: providerStatus,
+      order_status: status,
+    });
+    await orderPaymentRepository.updateById(payment.id, { last_verification: checked, provider_transaction_id: verified.transactionId ?? payment.provider_transaction_id }, { transaction });
+
+    if (normalizeAmount(payment.amount) !== amount) {
+      // A success for another amount is kept for staff, never applied.
+      if (payment.status !== "PAID") {
+        await orderPaymentRepository.updateById(payment.id, { status: "MISMATCH", last_error: `Cheche Pay verified ${amount} for ${txRef}; the order expects ${payment.amount}` }, { transaction });
+      }
+      logger.warn({ orderId: order.id, paymentId: payment.id }, "Cheche Pay verified a payment for another amount: nothing issued");
+      return result(false, payment.status === "MISMATCH", "AMOUNT_MISMATCH", order.status);
+    }
+
+    if (payment.status === "PAID") {
+      if (payment.paid_tx_ref === txRef) return result(false, true, order.status === "REFUND_REQUIRED" ? "PAID_AFTER_RELEASE" : null, order.status);
+      // Two attempts both succeeded: the buyer paid twice. Kept for a refund; answered 200 so Cheche Pay stops retrying.
+      await orderPaymentRepository.updateById(payment.id, { last_error: `A second Cheche Pay attempt (${txRef}) also succeeded: refund one of them` }, { transaction });
+      logger.warn({ orderId: order.id, paymentId: payment.id }, "A second Cheche Pay attempt also succeeded: refund required for one");
+      return result(false, false, "PAID_TWICE", order.status);
+    }
+
+    await orderPaymentRepository.updateById(payment.id, { status: "PAID", paid_tx_ref: txRef, verified_at: new Date(), last_error: null }, { transaction });
+    if (order.status === "PENDING_PAYMENT") {
+      await issueTickets(order, transaction);
+      return result(true, false, null, "CONFIRMED");
+    }
+    if (order.status === "EXPIRED" && (await placesStillFree(order, transaction))) {
+      await issueTickets(order, transaction);
+      return result(true, false, null, "CONFIRMED");
+    }
+    await ticketOrderRepository.updateById(order.organization_id, order.id, { status: "REFUND_REQUIRED" }, { transaction });
+    logger.warn({ orderId: order.id, paymentId: payment.id }, "Paid after its places were released and no room is left: refund required");
+    return result(true, false, "PAID_AFTER_RELEASE", "REFUND_REQUIRED");
+  });
+}
+
+function returnUrlFor(order: TicketOrderRow): string | null {
+  return paymentConfig.returnUrl === null ? null : `${paymentConfig.returnUrl}/orders/${order.reference}`;
+}
+
+function callbackUrlFor(organizationId: string): string | null {
+  return paymentConfig.publicApiBaseUrl === null ? null : `${paymentConfig.publicApiBaseUrl}/v1/payments/cheche/webhook/${organizationId}`;
+}
+
+/**
+ * Sends the buyer to pay: an unexpired checkout link is reused; otherwise the last attempt is verified first (so a
+ * buyer who already paid isn't charged twice), then a new attempt is initialized with a fresh tx_ref and the
+ * organizer's active key. Refused unless the order is waiting for payment and its payment hasn't been flagged.
  */
 async function startPayment(organizationId: string, orderId: string): Promise<OrderPaymentRow> {
   const order = ensureFound(await ticketOrderRepository.findByOrganizationAndId(organizationId, orderId), "Order not found");
   if (order.status !== "PENDING_PAYMENT") throw new InvalidOrderStateError(undefined, { status: order.status });
-  const payment = ensureFound(await orderPaymentRepository.findByOrder(organizationId, orderId), "Payment not found");
-  if (payment.checkout_url !== null) return payment;
-  const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, order.event_id), "Event not found");
-  const request = {
-    paymentOption_id: payment.payment_option_id,
-    title: event.name.slice(0, 120),
-    paymentType: "C2B" as const,
-    transaction_id: payment.id,
-    user_id: order.buyer_user_id,
-    amount: payment.amount,
-    phone_number: order.buyer_mobile as string,
-  };
-  await orderPaymentRepository.updateById(payment.id, { request_object: request });
+  let payment = ensureFound(await orderPaymentRepository.findByOrder(organizationId, orderId), "Payment not found");
+  if (payment.status !== "INITIATED") throw new InvalidOrderStateError("This order's payment is waiting for review", { status: order.status, payment_status: payment.status });
+  const now = new Date();
+  if (payment.checkout_url !== null && (payment.checkout_expires_at === null || payment.checkout_expires_at > now)) return payment;
+
+  if (payment.tx_ref !== null) {
+    const previous = await settle(payment.tx_ref, { expectedOrganizationId: organizationId });
+    if (previous.processed || previous.review_reason !== null) return ensureFound(await orderPaymentRepository.findByOrder(organizationId, orderId), "Payment not found");
+    payment = ensureFound(await orderPaymentRepository.findByOrder(organizationId, orderId), "Payment not found");
+  }
+
+  const keys = await chechePayCredentialService.requireForSale(organizationId);
+  const txRef = chechePayClient.newTxRef(payment.id);
+  const returnUrl = returnUrlFor(order);
+  const callbackUrl = callbackUrlFor(organizationId);
+  const phoneNumber = order.buyer_mobile as string;
+  // What is sent, for review; never the key.
+  const request = { amount: payment.amount, tx_ref: txRef, currency: "ETB", phone_number: phoneNumber, return_url: returnUrl, callback_url: callbackUrl };
+  await orderPaymentRepository.updateById(payment.id, { tx_ref: txRef, key_mode: keys.mode, checkout_url: null, checkout_expires_at: null, request_object: request });
   try {
-    const result = await chechePayClient.createOrder({
-      paymentOptionId: request.paymentOption_id,
-      title: request.title,
-      paymentType: request.paymentType,
-      transactionId: request.transaction_id,
-      userId: request.user_id,
-      amount: request.amount,
-      phoneNumber: request.phone_number,
+    const result = await chechePayClient.initialize({ secretKey: keys.secretKey, amount: payment.amount, txRef, phoneNumber, returnUrl, callbackUrl });
+    await orderPaymentRepository.updateById(payment.id, {
+      checkout_url: result.checkoutUrl,
+      checkout_expires_at: result.expiresAt,
+      provider_transaction_id: result.transactionId,
+      response_object: result.raw,
+      last_error: null,
     });
-    await orderPaymentRepository.updateById(payment.id, { checkout_url: result.url, provider_order_id: result.providerOrderId, response_object: result.raw, last_error: null });
   } catch (error) {
     if (error instanceof PaymentProviderUnavailableError) await orderPaymentRepository.updateById(payment.id, { last_error: error.message });
     throw error;
@@ -219,79 +255,41 @@ async function startPaymentIfPending(organizationId: string, orderId: string): P
   }
 }
 
-export type NotificationResult = {
-  acknowledged: true;
-  processed: boolean;
-  duplicate: boolean;
-  review_reason: "AMOUNT_MISMATCH" | "PAID_AFTER_RELEASE" | null;
-  order_status: TicketOrderRow["status"];
-};
-
-/** Finds the payment a callback is about: by our transaction id, or (as bookings) by Cheche Pay's own order id. */
-async function paymentForNotification(notification: ChechePayNotificationInput): Promise<OrderPaymentRow> {
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  let payment = notification.transactionId && uuid.test(notification.transactionId) ? await orderPaymentRepository.findById(notification.transactionId.toLowerCase()) : null;
-  const amountOf = (row: OrderPaymentRow | null) => row !== null && normalizeAmount(row.amount) === notification.amount;
-  if ((!payment || !amountOf(payment)) && notification.vendorRef) {
-    const byProviderOrder = await orderPaymentRepository.findByProviderOrderId(notification.vendorRef);
-    if (byProviderOrder && amountOf(byProviderOrder)) payment = byProviderOrder;
-  }
-  return ensureFound(payment, "Payment not found");
+/** The buyer is back from Cheche Pay (or asks again): verifies the current attempt, if there is one. */
+async function checkPayment(organizationId: string, orderId: string): Promise<SettleResult | null> {
+  const payment = await orderPaymentRepository.findByOrder(organizationId, orderId);
+  if (!payment || payment.tx_ref === null) return null;
+  return settle(payment.tx_ref, { expectedOrganizationId: organizationId });
 }
 
-/** Cheche Pay's callback (notify-from-chechepay), handled exactly as bookings handles it. Safe to repeat. */
-async function handleNotification(notification: ChechePayNotificationInput): Promise<NotificationResult> {
-  const tradeStatus = normalizeTradeStatus(notification.tradeStatus);
-  const found = await paymentForNotification(notification);
-  const amountMatches = normalizeAmount(found.amount) === notification.amount;
-  if (!amountMatches && tradeStatus !== "Completed") throw new ConflictError("Callback amount does not match the stored payment");
-
-  return runTransaction(async (transaction) => {
-    const { order, payment } = await lockOrder(found.organization_id, found.order_id, transaction);
-    const received = { ...notification.raw, received_at: new Date().toISOString() };
-    await orderPaymentRepository.updateById(payment.id, { last_notification: received }, { transaction });
-    const result = (processed: boolean, duplicate: boolean, review: NotificationResult["review_reason"], status: TicketOrderRow["status"]): NotificationResult => ({
-      acknowledged: true,
-      processed,
-      duplicate,
-      review_reason: review,
-      order_status: status,
-    });
-
-    if (!amountMatches) {
-      // A success report for another amount is kept for staff, never applied.
-      if (payment.status !== "PAID") {
-        await orderPaymentRepository.updateById(payment.id, { status: "MISMATCH", last_error: `Cheche Pay reported ${notification.amount}; the order expects ${payment.amount}` }, { transaction });
-      }
-      logger.warn({ orderId: order.id, paymentId: payment.id }, "Cheche Pay reported a payment for another amount: nothing issued");
-      return result(false, payment.status === "MISMATCH", "AMOUNT_MISMATCH", order.status);
-    }
-
-    if (payment.status === "PAID") {
-      if (payment.vendor_ref !== notification.vendorRef) throw new ConflictError("Callback vendor reference does not match the stored payment");
-      if (tradeStatus !== "Completed") throw new ConflictError("Contradictory payment notification");
-      return result(false, true, order.status === "REFUND_REQUIRED" ? "PAID_AFTER_RELEASE" : null, order.status);
-    }
-
-    // Anything but "Completed": acknowledged, nothing changes (the hold lapses on its own deadline).
-    if (tradeStatus !== "Completed") return result(false, false, null, order.status);
-    if (payment.vendor_ref !== null && payment.vendor_ref !== notification.vendorRef) {
-      throw new ConflictError("Callback vendor reference does not match the stored payment");
-    }
-
-    await orderPaymentRepository.updateById(payment.id, { status: "PAID", vendor_ref: notification.vendorRef, notify_time: new Date(), last_error: null }, { transaction });
-    if (order.status === "PENDING_PAYMENT") {
-      await issueTickets(order, transaction);
-      return result(true, false, null, "CONFIRMED");
-    }
-    if (order.status === "EXPIRED" && (await placesStillFree(order, transaction))) {
-      await issueTickets(order, transaction);
-      return result(true, false, null, "CONFIRMED");
-    }
-    await ticketOrderRepository.updateById(order.organization_id, order.id, { status: "REFUND_REQUIRED" }, { transaction });
-    logger.warn({ orderId: order.id, paymentId: payment.id }, "Paid after its places were released and no room is left: refund required");
-    return result(true, false, "PAID_AFTER_RELEASE", "REFUND_REQUIRED");
-  });
+/**
+ * Cheche Pay's webhook for one organizer (the id is in the callback address), as bookings. When the organizer's
+ * webhook secret is saved, X-Cheche-Signature must be the HMAC of the raw body (401 otherwise). The body only names
+ * the tx_ref; settle asks merchant-verify for its state. Other events and other systems' tx_refs are acknowledged.
+ */
+async function handleWebhook(input: { organizationId: string; rawBody: Buffer | null; signature: string | undefined }): Promise<SettleResult & { event: string | null }> {
+  if (input.rawBody === null) throw new ValidationAppError("The webhook body is missing");
+  const keys = await chechePayCredentialService.resolve(input.organizationId, { includeInactive: true });
+  if (keys !== null && keys.webhookSecret !== null && !chechePayClient.verifySignature(input.rawBody, input.signature, keys.webhookSecret)) {
+    throw new InvalidSignatureError();
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(input.rawBody.toString("utf8"));
+  } catch {
+    throw new ValidationAppError("The webhook body is not valid JSON");
+  }
+  const record = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+  const event = typeof record.event === "string" ? record.event : null;
+  const data = typeof record.data === "object" && record.data !== null ? (record.data as Record<string, unknown>) : {};
+  const txRef = typeof data.tx_ref === "string" ? data.tx_ref.trim() : "";
+  if (event?.startsWith("payment.") !== true || txRef === "" || chechePayClient.parseTxRef(txRef) === null) return { ...IGNORED, event };
+  try {
+    return { ...(await settle(txRef, { expectedOrganizationId: input.organizationId })), event };
+  } catch (error) {
+    if (error instanceof NotFoundError) logger.warn({ organizationId: input.organizationId }, "Cheche Pay webhook for a payment we don't have");
+    throw error;
+  }
 }
 
 /** An unpaid order past its hold: the places and the allowance go back. */
@@ -310,19 +308,17 @@ async function expireOrder(organizationId: string, orderId: string, now: Date): 
 /** One tick of the payment worker: unpaid holds past their time give their places back. */
 async function processDue(now: Date = new Date()): Promise<{ expired: number }> {
   let expired = 0;
-  for (const order of await ticketOrderRepository.listExpiredPending(now, 20)) {
+  for (const order of await ticketOrderRepository.listExpiredPending(now, paymentConfig.worker.batchSize)) {
     if (await expireOrder(order.organization_id, order.id, now)) expired += 1;
   }
   return { expired };
 }
 
 export const paymentService = {
-  resolvePaymentOption,
-  listOptionsForOrganization,
-  getChechePaySetting,
-  setChechePayService,
+  settle,
   startPayment,
   startPaymentIfPending,
-  handleNotification,
+  checkPayment,
+  handleWebhook,
   processDue,
 };

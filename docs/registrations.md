@@ -337,81 +337,92 @@ columns, Order and Buyer mobile. My Tickets also lists tickets of orders the acc
 
 **Proof:** matrix rows 89–92.
 
-## Phase 7 step 3: paid checkout through Cheche Pay, as bookings uses it (26 November 2026)
+## Phase 7 step 3b: paid checkout through Cheche Pay v2, as bookings uses it (26 November 2026)
 
-Paid checkout follows the bookings project's Cheche Pay integration (the legacy payments API, no API key), so both
-products talk to Cheche Pay the same way.
+Paid checkout follows the bookings project's **Cheche Pay v2** integration. Every payment is confirmed with Cheche Pay
+itself, so it can't be faked. (Step 3 first used Cheche Pay's legacy API, with a service code and an unsigned callback;
+3b replaced it.)
 
-**The money goes to the organizer.** Each organizer has a **Cheche Pay service code** (`organization.cheche_pay_service`,
-for example `SELAM`), registered with Cheche Pay against the organizer's receiving account. The Super Admin sets it at
-platform scope (`GET`, `PUT /v1/organizations/{id}/cheche-pay-service`, body `{ cheche_pay_service }`, upper-cased;
-`null` turns paid sales off). An Owner can't change it. The reply lists the code's payment options and
-`paid_sales_available`; a code Cheche Pay doesn't know is saved with the warning `CHECHE_PAY_SERVICE_HAS_NO_OPTIONS`.
+**The money goes to the organizer.** Each organizer has its own Cheche Pay secret key (`sk_test_…` or `sk_live_…`).
+- Only the Super Admin manages it, at platform scope: `GET`, `PUT`, `DELETE /v1/organizations/{id}/cheche-pay` and
+  `POST …/cheche-pay/check`. An Owner can't change it.
+- `PUT` takes `{ secret_key?, webhook_secret?, is_active? }`:
+  - `secret_key` is required the first time, and a `pk_` key is refused;
+  - `webhook_secret` set to `null` clears it;
+  - `is_active` set to `false` stops new payments, but payments already started can still be confirmed.
+- The keys are stored encrypted (AES-256-GCM with `CHECHE_PAY_CREDENTIALS_KEY`) and are never returned. The reply
+  shows the mode, the last 4 characters (`sk_test_••••ab12`), whether a webhook secret is saved, the `webhook_url` to
+  give Cheche Pay, and `paid_sales_available`.
+- **There is no platform key.** An organizer without active keys can't sell paid tickets: 409
+  `paid_sales_unavailable`, with `reason` `NO_CHECHE_PAY_KEYS`. When the server isn't set up for Cheche Pay, the
+  reason is `CHECHE_PAY_NOT_CONFIGURED`. Online payment is in ETB only.
 
-**Payment options:** `GET /v1/public/organizations/{orgSlug}/events/{eventSlug}/payment-options` lists the organizer's
-options (`[{ id, name }]`, such as Telebirr), read from Cheche Pay (`GET {base}/payment-services/{code}`). It returns `[]`
-when paid sales are off. The buyer picks one and sends it as `payment_option_id`; the server checks it against the
-organizer's own options **before** the transaction (400 `unknown_payment_option`). The buyer can't send the money
-anywhere else. With no service code, a paid order is 409 `paid_sales_unavailable`. Online payment is in ETB only.
+**A paid order** (a positive total, from the server's prices):
+1. **Checkout holds every place.**
+   - Tickets are `HELD` with no code, and the order is `PENDING_PAYMENT` until `hold_expires_at`
+     (`PAYMENT_HOLD_MINUTES`, default 15).
+   - Holds count toward the event's and each type's capacity and the buyer's purchase limit.
+   - An `order_payment` row (`INITIATED`) records the exact amount.
+   - A paid order needs a buyer mobile.
+2. **After the transaction commits, the server starts a payment attempt.**
+   - It calls `POST {finance}/transactions/initialize` with the organizer's key, the amount, ETB, the buyer's phone
+     and a fresh `tx_ref` (`<payment id>-<suffix>`; Cheche Pay refuses a reused one).
+   - It also sends `return_url` (`PAYMENT_RETURN_URL` + `/orders/{reference}`) and `callback_url`
+     (`PUBLIC_API_BASE_URL` + `/v1/payments/cheche/webhook/{organizationId}`). A localhost or private address is left
+     out, because Cheche Pay refuses the whole call.
+   - The reply carries `payment.checkout_url` and an `order_token`.
+3. **"Pay now"** (`POST /v1/public/orders/{reference}/payment`):
+   - an unexpired checkout link is reused;
+   - otherwise the last attempt is checked with Cheche Pay first, so a buyer who already paid isn't charged twice;
+   - then a new attempt starts.
+4. **Confirming a payment** happens in one place. Cheche Pay's webhook and the buyer's return
+   (`POST /v1/public/orders/{reference}/check` with the order token) are only triggers. Either way, the server asks
+   `merchant-verify/{tx_ref}` with the organizer's key:
 
-**A paid order** (positive total, from the server's prices):
-1. Checkout holds every place: tickets `HELD` with no code, the order `PENDING_PAYMENT` until `hold_expires_at`
-   (`PAYMENT_HOLD_MINUTES`, default 15). Holds count toward the event's and each type's capacity and the buyer's purchase
-   limit. An `order_payment` row (`INITIATED`) records the chosen option, the service code and the exact amount. Its
-   `id` is the `transaction_id` Cheche Pay echoes back. A paid order needs a buyer mobile.
-2. After the transaction commits, the server calls Cheche Pay's `POST {base}/createOrder/{paymentOption_id}` with
-   `{ title (the event name), paymentType: "C2B", transaction_id, user_id (the signed-in buyer, or null), amount,
-   phone_number }`, and saves the request, the reply and the checkout `url`. The checkout reply carries
-   `payment.checkout_url` and an `order_token` (the buyer's key to the order page; only its hash is stored, and a replay
-   of the same request returns a fresh one). If Cheche Pay is slow or down, the order stays pending and the buyer retries
-   through `POST /v1/public/orders/{reference}/payment`, always with the same `transaction_id`.
-3. **Cheche Pay's callback** (`POST` or `GET /v1/payments/cheche/notify`, no login, no signature: the same as bookings)
-   carries `transaction_id`, `trade_status`, `transaction_amount` and `vendor_ref`, under the same alias names bookings
-   accepts. The rules, in bookings' order:
-   - the payment is found by `transaction_id` (or by Cheche Pay's own order id in `vendor_ref`); unknown is 404;
-   - `trade_status` "Completed" (also completed, success, successful, paid) for **another amount**: the payment is
-     marked `MISMATCH` and kept for review; nothing is issued. Another amount with any other status is 409;
-   - already paid: the same `vendor_ref` and Completed is a duplicate and changes nothing; a different `vendor_ref` or a
-     non-Completed status is 409;
-   - any other status (Pending, Failed…): acknowledged; nothing changes, and the hold lapses on its own time;
-   - otherwise the payment becomes `PAID` (with `vendor_ref` and `notify_time`) and the tickets are issued.
-4. **Issuing** runs under the event lock, then the order and payment locks: the held tickets become `CONFIRMED` with
-   codes, the order `CONFIRMED`, and one SMS lists the codes. The codes are on the order page
-   (`GET /v1/public/orders/{reference}` with `X-Order-Token`) as soon as the payment is recorded, whether or not the SMS
-   has gone.
-5. **Release:** an unpaid hold past its time releases the places (tickets `RELEASED`, order `EXPIRED`) and gives the
-   purchase allowance back. Expired holds of an event are released inside every checkout before counting, and the
-   payment worker releases them on its own.
-6. **A late payment** (after its places were released) takes them again if the event and ticket types still have room
-   and the buyer is within the limit; otherwise the order becomes `REFUND_REQUIRED`, with its payment kept for follow-up.
-   It never oversells. (Bookings sends late payments to review; we keep the order when there is still room.) Refunds
-   themselves are out of scope.
+   | merchant-verify says | What happens |
+   |---|---|
+   | anything but `SUCCEEDED`, or an unknown `tx_ref` | Nothing changes; the hold lapses on its own time. |
+   | another currency | 409. |
+   | `SUCCEEDED` for another amount | The payment becomes `MISMATCH`, kept for review. Nothing is issued. |
+   | the same `tx_ref` again | A duplicate. Nothing changes. |
+   | a second attempt that also succeeded | `review_reason: "PAID_TWICE"`, noted on the payment for a refund. |
+   | otherwise | The payment becomes `PAID` (with `paid_tx_ref` and `verified_at`), and the tickets are issued. |
+5. **The webhook** (`POST /v1/payments/cheche/webhook/{organizationId}`, no login, rate limited per IP):
+   - when the organizer's webhook secret is saved, `X-Cheche-Signature` must be the hex HMAC-SHA256 of the raw body;
+     otherwise it's 401 `invalid_signature`;
+   - events other than `payment.*`, and other systems' `tx_ref`s, are acknowledged and ignored;
+   - a payment that belongs to another organizer is 409.
+6. **Issuing** runs under the event lock, then the order and payment locks. The held tickets become `CONFIRMED` with
+   codes, the order becomes `CONFIRMED`, and one SMS lists the codes. The codes are on the order page as soon as the
+   payment is confirmed, whether or not the SMS has gone.
+7. **Release:** an unpaid hold past its time releases the places (tickets `RELEASED`, order `EXPIRED`) and gives the
+   purchase allowance back. This happens inside every checkout and in the payment worker.
+8. **A late payment** (after its places were released) takes them again if there is still room and the buyer is
+   within the limit. Otherwise the order becomes `REFUND_REQUIRED`, with its payment kept for follow-up. It never
+   oversells, and refunds themselves are out of scope.
 
-**Known risk, as in bookings:** the callback isn't signed and Cheche Pay offers no status check on this API, so anyone
-who learns a payment's `transaction_id` and its amount could report it Completed. The id is a random UUID, never shown
-to buyers, which keeps this hard to guess. Receipt verification (Veriq) is a separate, later step.
+**Staff** may create a paid order (with a buyer mobile) and share its checkout link and order token with the buyer.
 
-**Staff** may create a paid order (with a buyer mobile and a payment option) and share its checkout link and order
-token with the buyer.
-
-**Tickets that aren't issued** (`HELD`, `RELEASED`) stay out of the guest list, the CSV and My Tickets; the status
+**Tickets that aren't issued** (`HELD`, `RELEASED`) stay out of the guest list, the CSV and My Tickets. The status
 endpoint refuses them (409 `ticket_not_issued`), and a cancelled paid ticket can't come back for free
 (`payment_required`).
 
-**The client:** `src/clients/cheche-pay.client.ts` (`listPaymentOptions`, `createOrder`). Any failure is 502
-`payment_provider_unavailable`, and nothing changes.
-
-**The payment worker** (`src/jobs/payment-worker.ts`, started by `server.ts` only, never in tests) runs every
-`PAYMENT_POLL_INTERVAL_MS` and releases holds past their time.
+**The code:**
+- `src/clients/cheche-pay.client.ts`: `initialize`, `verify`, `checkKey`, `verifySignature`. Failures are 502
+  `payment_provider_unavailable`, and the key never appears in a log or an error.
+- `src/utils/secret-box.ts`: the encryption.
+- `src/services/cheche-pay-credential.service.ts`: the keys.
+- `src/services/payment.service.ts`: `startPayment`, `settle`, `handleWebhook`, `checkPayment`, and the worker.
 
 | Setting | Default |
 |---|---|
-| `CHECHE_PAY_BASE_URL` | `https://pay.cheche.et/api/v1/payments` |
-| `CHECHE_PAY_TIMEOUT_MS` | `45000` (Cheche Pay often takes 15–25 s under load, as bookings found) |
+| `CHECHE_PAY_FINANCE_BASE_URL` | none (paid sales off); Cheche Pay's v2 API base |
+| `CHECHE_PAY_CREDENTIALS_KEY` | none (paid sales off); 32 bytes as 64 hex characters or base64. Changing it makes saved keys unreadable. |
+| `PAYMENT_RETURN_URL` | none; the website's base address |
+| `PUBLIC_API_BASE_URL` | none; this API's public address, for Cheche Pay's callback |
+| `CHECHE_PAY_TIMEOUT_MS` | `45000` (Cheche Pay often takes 15–25 s under load) |
 | `PAYMENT_HOLD_MINUTES` | `15` |
 | `PAYMENT_WORKER_ENABLED` | `true` |
 | `PAYMENT_POLL_INTERVAL_MS` | `60000` |
-
-The notify URL (`{API base}/v1/payments/cheche/notify`) is registered with Cheche Pay for each service code.
 
 **Proof:** matrix rows 93–95, with the Cheche Pay client stubbed. Step 4 checks it against Cheche Pay itself.

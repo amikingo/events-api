@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, mock, test } from "node:test";
@@ -27,6 +27,7 @@ import {
   MessageOutbox,
   OrderPayment,
   Organization,
+  OrganizationChechePayCredential,
   Person as PersonModel,
   Registration,
   Role,
@@ -2551,40 +2552,58 @@ test("row 92: cancelling a ticket frees its place and allowance; the guest list 
   assert.deepEqual([order?.buyer_mobile, order?.buyer_user_id], [GUESTS.SARA.mobile, GUESTS.SARA.id], "the account's verified mobile, not the form's");
 });
 
-// --- Phase 7 step 3: paid checkout through Cheche Pay (the client stubbed, as Central Auth is above) -------------
+// --- Phase 7 step 3b: paid checkout through Cheche Pay v2 (the client stubbed, as Central Auth is above) ----------
 
-/** Cheche Pay as the tests see it: the SELAM service code has one Telebirr option; createOrder returns a checkout URL. */
+/**
+ * Cheche Pay as the tests see it: initialize returns a checkout URL per tx_ref; merchant-verify answers from `ledger`
+ * (tx_ref → status and amount), so a test decides what Cheche Pay "saw" before the webhook arrives.
+ */
+const ledger = new Map<string, { status: string; amount: string }>();
+
 function stubChechePay() {
-  mock.method(chechePayClient, "listPaymentOptions", async (code: string) => (code === "SELAM" ? [{ id: "opt-telebirr", name: "Telebirr", raw: {} }] : []));
-  return mock.method(chechePayClient, "createOrder", async (input: { transactionId: string }) => ({
-    url: `https://pay.cheche.example/checkout/${input.transactionId}`,
-    providerOrderId: null,
+  ledger.clear();
+  const initialize = mock.method(chechePayClient, "initialize", async (input: { txRef: string; secretKey: string; amount: string }) => ({
+    checkoutUrl: `https://checkout.cheche.example/c/${input.txRef}`,
+    txRef: input.txRef,
+    transactionId: `cp-${input.txRef.slice(-6)}`,
+    expiresAt: new Date(Date.now() + 30 * 60_000),
     raw: { stubbed: true },
   }));
+  const verify = mock.method(chechePayClient, "verify", async (_key: string, txRef: string) => {
+    const seen = ledger.get(txRef);
+    return seen ? { status: seen.status, amount: seen.amount, currency: "ETB", isFinal: true, transactionId: "cp-1", raw: {} } : null;
+  });
+  return { initialize, verify };
 }
 
-/** Cheche Pay's callback, as it posts it to notify. */
-async function chechePayCallback(fields: Record<string, string>): Promise<TestResponse> {
+/** Cheche Pay's webhook for Selam, optionally signed. */
+async function chechePayWebhook(txRef: string, signature?: string): Promise<TestResponse> {
   return withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/v1/payments/cheche/notify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (signature !== undefined) headers["X-Cheche-Signature"] = signature;
+    const response = await fetch(`${baseUrl}/v1/payments/cheche/webhook/${fixture.selamId}`, { method: "POST", headers, body: webhookPayload(txRef) });
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
   });
 }
 
-/** The payment id (Cheche Pay's transaction_id) of an order, by its reference. */
-async function paymentIdOf(reference: string): Promise<string> {
+function webhookPayload(txRef: string): string {
+  return JSON.stringify({ event: "payment.succeeded", data: { tx_ref: txRef } });
+}
+
+/** The current attempt's tx_ref of an order, by its reference. */
+async function txRefOf(reference: string): Promise<string> {
   const order = await TicketOrder.findOne({ where: { reference }, raw: true });
   assert.ok(order);
   const payment = await OrderPayment.findOne({ where: { order_id: order.id }, raw: true });
-  assert.ok(payment);
-  return payment.id;
+  assert.ok(payment?.tx_ref);
+  return payment.tx_ref;
 }
 
-/** The buyer's order page, with the order token from checkout. */
-async function orderPage(reference: string, token: string): Promise<TestResponse> {
+/** The buyer's order page (GET) or payment check (POST …/check), with the order token from checkout. */
+async function orderPage(reference: string, token: string, check = false): Promise<TestResponse> {
   return withServer(app, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/v1/public/orders/${reference}`, { headers: { "X-Order-Token": token } });
+    const response = await fetch(`${baseUrl}/v1/public/orders/${reference}${check ? "/check" : ""}`, { method: check ? "POST" : "GET", headers: { "X-Order-Token": token } });
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
   });
@@ -2592,9 +2611,9 @@ async function orderPage(reference: string, token: string): Promise<TestResponse
 
 const paidFixture = { jazzPublic: "", jazzPath: "" };
 
-test("row 93: 2 General Admission at 500 ETB and 1 VIP at 1,000 ETB come to 2,000 ETB for Selam's Cheche Pay; a Completed callback gives 3 distinct codes; the same callback again changes nothing", { skip }, async () => {
+test("row 93: 2 General Admission at 500 ETB and 1 VIP at 1,000 ETB come to 2,000 ETB with Selam's own Cheche Pay key; a verified webhook gives 3 distinct codes; the same webhook again changes nothing", { skip }, async () => {
   resetPublicLimit();
-  const createOrder = stubChechePay();
+  const { initialize } = stubChechePay();
   try {
     const event = await publishedCheckoutEvent({ name: "Jazz Night", registration_mode: "QUICK" }, [{ code: "VIP", name: "VIP", price: "1000" }]);
     assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
@@ -2605,65 +2624,65 @@ test("row 93: 2 General Admission at 500 ETB and 1 VIP at 1,000 ETB come to 2,00
       { ticket_type_code: "VIP", quantity: 1 },
     ];
 
-    assert.deepEqual((await publicGet(`${event.publicPath}/payment-options`)).body.data, [], "no service code yet: no options");
-    const noCode = await postWithKey(orders, { ...orderForm(items, "0913200001"), payment_option_id: "opt-telebirr" }, randomUUID());
-    assert.deepEqual([noCode.status, noCode.body.error.code], [409, "paid_sales_unavailable"]);
-    const settingPath = `/v1/organizations/${fixture.selamId}/cheche-pay-service`;
-    assert.equal((await as("SELAM_OWNER", "PUT", settingPath, { cheche_pay_service: "OWN" })).status, 403, "an Owner can't redirect the money");
-    const saved = await as("SUPER", "PUT", settingPath, { cheche_pay_service: "selam" });
-    assert.deepEqual([saved.status, saved.body.data.cheche_pay_service, saved.body.data.paid_sales_available], [200, "SELAM", true]);
-    assert.deepEqual((await publicGet(`${event.publicPath}/payment-options`)).body.data, [{ id: "opt-telebirr", name: "Telebirr" }]);
+    const noKeys = await postWithKey(orders, orderForm(items, "0913200001"), randomUUID());
+    assert.deepEqual([noKeys.status, noKeys.body.error.code, noKeys.body.error.details.reason], [409, "paid_sales_unavailable", "NO_CHECHE_PAY_KEYS"]);
+    const keysPath = `/v1/organizations/${fixture.selamId}/cheche-pay`;
+    assert.equal((await as("SELAM_OWNER", "PUT", keysPath, { secret_key: "sk_test_ownersown1" })).status, 403, "an Owner can't redirect the money");
+    assert.equal((await as("SUPER", "PUT", keysPath, { secret_key: "pk_test_publishable" })).body.error.details.issues[0].code, "publishable_key");
+    const saved = await as("SUPER", "PUT", keysPath, { secret_key: "sk_test_selamkey1234" });
+    assert.deepEqual([saved.status, saved.body.data.secret_key_masked, saved.body.data.paid_sales_available], [200, "sk_test_••••1234", true]);
+    assert.ok(!JSON.stringify(saved.body).includes("sk_test_selamkey1234"), "the key never comes back");
+    const stored = await OrganizationChechePayCredential.findOne({ where: { organization_id: fixture.selamId }, raw: true });
+    assert.ok(stored && !stored.secret_key_encrypted.includes("selamkey"), "stored encrypted");
 
-    const noOption = await postWithKey(orders, orderForm(items, "0913200001"), randomUUID());
-    assert.deepEqual([noOption.status, noOption.body.error.details.issues[0].path], [400, "body.payment_option_id"]);
-    const wrongOption = await postWithKey(orders, { ...orderForm(items, "0913200001"), payment_option_id: "opt-elsewhere" }, randomUUID());
-    assert.deepEqual([wrongOption.status, wrongOption.body.error.details.issues[0].code], [400, "unknown_payment_option"]);
-
-    const created = await postWithKey(orders, { ...orderForm(items, "0913200001"), payment_option_id: "opt-telebirr" }, randomUUID());
+    const created = await postWithKey(orders, orderForm(items, "0913200001"), randomUUID());
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const order = created.body.data;
     assert.deepEqual([order.status, order.total_amount, order.currency], ["PENDING_PAYMENT", "2000.00", "ETB"]);
     assert.ok(order.tickets.every((ticket: { code: string | null; status: string }) => ticket.code === null && ticket.status === "HELD"), "no codes before payment");
-    const paymentId = await paymentIdOf(order.reference);
-    assert.equal(order.payment.checkout_url, `https://pay.cheche.example/checkout/${paymentId}`);
-    const sent = createOrder.mock.calls.at(-1)?.arguments[0] as unknown as { paymentOptionId: string; transactionId: string; amount: string; phoneNumber: string };
-    assert.deepEqual([sent.paymentOptionId, sent.transactionId, sent.amount, sent.phoneNumber], ["opt-telebirr", paymentId, "2000.00", "+251913200001"]);
+    const txRef = await txRefOf(order.reference);
+    assert.equal(order.payment.checkout_url, `https://checkout.cheche.example/c/${txRef}`);
+    const sent = initialize.mock.calls.at(-1)?.arguments[0] as unknown as { secretKey: string; amount: string; txRef: string };
+    assert.deepEqual([sent.secretKey, sent.amount, sent.txRef], ["sk_test_selamkey1234", "2000.00", txRef], "Selam's own key, the exact total");
+    assert.equal(chechePayClient.parseTxRef(txRef), (await OrderPayment.findOne({ where: { tx_ref: txRef }, raw: true }))?.id);
 
     assert.equal((await orderPage(order.reference, "x".repeat(43))).status, 404, "a wrong token looks like no order");
-    assert.equal((await orderPage(order.reference, order.order_token)).body.data.status, "PENDING_PAYMENT");
+    const pending = await chechePayWebhook(txRef);
+    assert.deepEqual([pending.status, pending.body.data.processed, pending.body.data.provider_status], [200, false, null], "Cheche Pay hasn't seen a payment: nothing changes");
 
-    const paid = await chechePayCallback({ transaction_id: paymentId, trade_status: "Completed", transaction_amount: "2000", vendor_ref: "CP-93" });
+    ledger.set(txRef, { status: "SUCCEEDED", amount: "2000.00" });
+    const paid = await chechePayWebhook(txRef);
     assert.deepEqual([paid.status, paid.body.data.processed, paid.body.data.order_status], [200, true, "CONFIRMED"]);
-    const again = await chechePayCallback({ transaction_id: paymentId, trade_status: "Completed", transaction_amount: "2000.00", vendor_ref: "CP-93" });
+    const again = await chechePayWebhook(txRef);
     assert.deepEqual([again.status, again.body.data.duplicate], [200, true]);
-    const otherRef = await chechePayCallback({ transaction_id: paymentId, trade_status: "Completed", transaction_amount: "2000", vendor_ref: "CP-OTHER" });
-    assert.equal(otherRef.status, 409);
 
     const page = await orderPage(order.reference, order.order_token);
     assert.equal(page.body.data.status, "CONFIRMED");
     const codes = page.body.data.tickets.map((ticket: { code: string }) => ticket.code);
     assert.equal(new Set(codes).size, 3);
-    const stored = await TicketOrder.findOne({ where: { reference: order.reference }, raw: true });
-    assert.equal(await MessageOutbox.count({ where: { order_id: stored?.id } }), 1, "one confirmation, however many callbacks");
+    const row = await TicketOrder.findOne({ where: { reference: order.reference }, raw: true });
+    assert.equal(await MessageOutbox.count({ where: { order_id: row?.id } }), 1, "one confirmation, however many webhooks");
     assert.equal((await as("SELAM_OWNER", "GET", `${event.path}/registrations`)).body.data.length, 3, "the guest list shows the paid tickets");
   } finally {
     mock.restoreAll();
   }
 });
 
-test("row 94: a Completed callback for another amount issues nothing; other statuses change nothing; an unpaid expiry frees the places and the allowance; a late payment with no room left becomes REFUND_REQUIRED", { skip }, async () => {
+test("row 94: SUCCEEDED for another amount issues nothing; a pending payment changes nothing; an unpaid expiry frees the places and the allowance; a late payment with no room left becomes REFUND_REQUIRED", { skip }, async () => {
   resetPublicLimit();
   stubChechePay();
   try {
     const orders = `${paidFixture.jazzPublic}/orders`;
-    const wrong = await postWithKey(orders, { ...orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913200002"), payment_option_id: "opt-telebirr" }, randomUUID());
+    const wrong = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913200002"), randomUUID());
     assert.equal(wrong.status, 201, JSON.stringify(wrong.body));
-    const wrongId = await paymentIdOf(wrong.body.data.reference);
-    const review = await chechePayCallback({ transaction_id: wrongId, trade_status: "Completed", transaction_amount: "1.00", vendor_ref: "CP-94-A" });
+    const wrongRef = await txRefOf(wrong.body.data.reference);
+    ledger.set(wrongRef, { status: "PENDING", amount: "500.00" });
+    assert.equal((await chechePayWebhook(wrongRef)).body.data.provider_status, "PENDING");
+    ledger.set(wrongRef, { status: "SUCCEEDED", amount: "1.00" });
+    const review = await chechePayWebhook(wrongRef);
     assert.deepEqual([review.status, review.body.data.review_reason], [200, "AMOUNT_MISMATCH"]);
-    const pending = await chechePayCallback({ transaction_id: wrongId, trade_status: "Pending", transaction_amount: "500", vendor_ref: "CP-94-A" });
-    assert.deepEqual([pending.status, pending.body.data.processed], [200, false]);
-    assert.equal((await OrderPayment.findByPk(wrongId, { raw: true }))?.status, "MISMATCH");
+    const wrongPayment = await OrderPayment.findOne({ where: { tx_ref: wrongRef }, raw: true });
+    assert.equal(wrongPayment?.status, "MISMATCH");
     const wrongOrder = await TicketOrder.findOne({ where: { reference: wrong.body.data.reference }, raw: true });
     assert.equal(wrongOrder?.status, "PENDING_PAYMENT");
     assert.equal(await Registration.count({ where: { order_id: wrongOrder?.id, status: "CONFIRMED" } }), 0);
@@ -2671,9 +2690,10 @@ test("row 94: a Completed callback for another amount issues nothing; other stat
     // The last place of a one-seat event: A holds it, doesn't pay in time; B buys it; A's late payment can't take it.
     const seat = await publishedCheckoutEvent({ name: "Private Tasting", registration_mode: "QUICK", capacity: 1, purchase_limit_per_mobile: 1 });
     assert.equal((await as("SELAM_OWNER", "PATCH", `${seat.path}/ticket-types/${seat.types.GA}`, { price: "500" })).status, 200);
-    const buy = (mobile: string) => postWithKey(`${seat.publicPath}/orders`, { ...orderForm([{ ticket_type_code: "GA", quantity: 1 }], mobile), payment_option_id: "opt-telebirr" }, randomUUID());
+    const buy = (mobile: string) => postWithKey(`${seat.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], mobile), randomUUID());
     const a = await buy("0913200003");
     assert.equal(a.status, 201, JSON.stringify(a.body));
+    const aRef = await txRefOf(a.body.data.reference);
     await TicketOrder.update({ hold_expires_at: new Date(Date.now() - 60_000) }, { where: { reference: a.body.data.reference } });
     await paymentService.processDue(new Date());
     assert.equal((await TicketOrder.findOne({ where: { reference: a.body.data.reference }, raw: true }))?.status, "EXPIRED");
@@ -2684,10 +2704,12 @@ test("row 94: a Completed callback for another amount issues nothing; other stat
 
     const b = await buy("0913200004");
     assert.equal(b.status, 201, JSON.stringify(b.body));
-    const bPaid = await chechePayCallback({ transaction_id: await paymentIdOf(b.body.data.reference), trade_status: "Completed", transaction_amount: "500", vendor_ref: "CP-94-B" });
-    assert.equal(bPaid.body.data.order_status, "CONFIRMED");
+    const bRef = await txRefOf(b.body.data.reference);
+    ledger.set(bRef, { status: "SUCCEEDED", amount: "500.00" });
+    assert.equal((await chechePayWebhook(bRef)).body.data.order_status, "CONFIRMED");
 
-    const late = await chechePayCallback({ transaction_id: await paymentIdOf(a.body.data.reference), trade_status: "Completed", transaction_amount: "500", vendor_ref: "CP-94-LATE" });
+    ledger.set(aRef, { status: "SUCCEEDED", amount: "500.00" });
+    const late = await chechePayWebhook(aRef);
     assert.deepEqual([late.body.data.order_status, late.body.data.review_reason], ["REFUND_REQUIRED", "PAID_AFTER_RELEASE"]);
     assert.equal(await Registration.count({ where: { event_id: seat.id, status: "CONFIRMED" } }), 1, "never oversold");
   } finally {
@@ -2695,36 +2717,49 @@ test("row 94: a Completed callback for another amount issues nothing; other stat
   }
 });
 
-test("row 95: a held order blocks the last place while pending; a delayed SMS leaves the codes readable; staff paid orders need a buyer mobile and an option; the service code is platform-only", { skip }, async () => {
+test("row 95: with a webhook secret saved only signed webhooks count; the buyer's check confirms a payment; a held order blocks the last place; staff paid orders need a buyer mobile; the keys are platform-only", { skip }, async () => {
   resetPublicLimit();
   stubChechePay();
   try {
+    const keysPath = `/v1/organizations/${fixture.selamId}/cheche-pay`;
+    const secret = "whsec_selamtest123";
+    assert.equal((await as("SUPER", "PUT", keysPath, { webhook_secret: secret })).body.data.has_webhook_secret, true);
+
     const seat = await publishedCheckoutEvent({ name: "Chef's Table", registration_mode: "QUICK", capacity: 1 });
     assert.equal((await as("SELAM_OWNER", "PATCH", `${seat.path}/ticket-types/${seat.types.GA}`, { price: "750" })).status, 200);
-    const holding = await postWithKey(`${seat.publicPath}/orders`, { ...orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913200005"), payment_option_id: "opt-telebirr" }, randomUUID());
+    const holding = await postWithKey(`${seat.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913200005"), randomUUID());
     assert.equal(holding.status, 201, JSON.stringify(holding.body));
-    const blocked = await postWithKey(`${seat.publicPath}/orders`, { ...orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913200006"), payment_option_id: "opt-telebirr" }, randomUUID());
+    const blocked = await postWithKey(`${seat.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913200006"), randomUUID());
     assert.deepEqual([blocked.status, blocked.body.error.code], [409, "capacity_reached"]);
 
-    await chechePayCallback({ transaction_id: await paymentIdOf(holding.body.data.reference), trade_status: "success", transaction_amount: "750", vendor_ref: "CP-95" });
-    const paid = await orderPage(holding.body.data.reference, holding.body.data.order_token);
-    assert.equal(paid.body.data.status, "CONFIRMED");
+    const txRef = await txRefOf(holding.body.data.reference);
+    ledger.set(txRef, { status: "SUCCEEDED", amount: "750.00" });
+    assert.equal((await chechePayWebhook(txRef)).status, 401, "unsigned while a secret is saved");
+    assert.equal((await chechePayWebhook(txRef, "sha256=deadbeef")).status, 401);
+    assert.equal((await TicketOrder.findOne({ where: { reference: holding.body.data.reference }, raw: true }))?.status, "PENDING_PAYMENT", "nothing changed");
+
+    // The webhook never arrives correctly; the buyer comes back and the order page checks.
+    const checked = await orderPage(holding.body.data.reference, holding.body.data.order_token, true);
+    assert.deepEqual([checked.status, checked.body.data.status], [200, "CONFIRMED"]);
     const order = await TicketOrder.findOne({ where: { reference: holding.body.data.reference }, raw: true });
     assert.equal((await MessageOutbox.findOne({ where: { order_id: order?.id }, raw: true }))?.status, "PENDING", "the SMS hasn't gone yet");
-    assert.match(String(paid.body.data.tickets[0].code), /^[A-HJKMNP-Z2-9]{8}$/, "the code is on the order page anyway");
+    assert.match(String(checked.body.data.tickets[0].code), /^[A-HJKMNP-Z2-9]{8}$/, "the code is on the order page anyway");
+    const signature = createHmac("sha256", secret).update(webhookPayload(txRef)).digest("hex");
+    assert.equal((await chechePayWebhook(txRef, signature)).body.data.duplicate, true, "a correctly signed webhook afterwards changes nothing");
 
     const gaId = (await as("SELAM_OWNER", "GET", `${paidFixture.jazzPath}/ticket-types`)).body.data[0].id;
-    const noMobile = await as("SELAM_OWNER", "POST", `${paidFixture.jazzPath}/orders`, { payment_option_id: "opt-telebirr", items: [{ ticket_type_id: gaId, quantity: 1 }] });
+    const noMobile = await as("SELAM_OWNER", "POST", `${paidFixture.jazzPath}/orders`, { items: [{ ticket_type_id: gaId, quantity: 1 }] });
     assert.deepEqual([noMobile.status, noMobile.body.error.details.issues[0].path], [400, "body.buyer_mobile"]);
-    const staffPaid = await as("SELAM_OWNER", "POST", `${paidFixture.jazzPath}/orders`, { buyer_mobile: "0913200007", payment_option_id: "opt-telebirr", items: [{ ticket_type_id: gaId, quantity: 1 }] });
-    assert.deepEqual([staffPaid.status, staffPaid.body.data.status], [201, "PENDING_PAYMENT"]);
-    assert.match(staffPaid.body.data.payment.checkout_url, /pay\.cheche\.example/);
+    const staffPaid = await as("SELAM_OWNER", "POST", `${paidFixture.jazzPath}/orders`, { buyer_mobile: "0913200007", items: [{ ticket_type_id: gaId, quantity: 1 }] });
+    assert.deepEqual([staffPaid.status, staffPaid.body.data.status, staffPaid.body.data.payment.key_mode], [201, "PENDING_PAYMENT", "test"]);
+    assert.match(staffPaid.body.data.payment.checkout_url, /checkout\.cheche\.example/);
     assert.equal(typeof staffPaid.body.data.order_token, "string", "staff share the link and token with the buyer");
 
     const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
     assert.ok(abay);
-    assert.equal((await as("SELAM_OWNER", "GET", `/v1/organizations/${abay.id}/cheche-pay-service`)).status, 403);
-    assert.equal((await as("SELAM_OWNER", "GET", `/v1/organizations/${fixture.selamId}/cheche-pay-service`)).status, 403, "not even their own: platform scope");
+    assert.equal((await as("SELAM_OWNER", "GET", `/v1/organizations/${abay.id}/cheche-pay`)).status, 403);
+    assert.equal((await as("SELAM_OWNER", "GET", keysPath)).status, 403, "not even their own: platform scope");
+    assert.equal((await as("SUPER", "GET", keysPath)).body.data.secret_key_masked, "sk_test_••••1234");
   } finally {
     mock.restoreAll();
   }

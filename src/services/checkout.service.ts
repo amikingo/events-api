@@ -1,6 +1,6 @@
 import type { Transaction } from "sequelize";
 import { paymentConfig } from "../config/payment.js";
-import { ConflictError, IdempotencyKeyReusedError, NotFoundError, PaidSalesUnavailableError, TicketTypeInactiveError, ValidationAppError } from "../errors/app-errors.js";
+import { IdempotencyKeyReusedError, NotFoundError, PaidSalesUnavailableError, TicketTypeInactiveError, ValidationAppError } from "../errors/app-errors.js";
 import { toOrderDto, toOrderSummaryDto, type OrderDto, type OrderSummaryDto } from "../mappers/order.mapper.js";
 import type { EventRow } from "../models/event.js";
 import type { OrderPaymentRow } from "../models/order-payment.js";
@@ -11,7 +11,6 @@ import type { TicketTypeRow } from "../models/ticket-type.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { messageOutboxRepository } from "../repositories/message-outbox.repository.js";
 import { orderPaymentRepository } from "../repositories/order-payment.repository.js";
-import { organizationRepository } from "../repositories/organization.repository.js";
 import { personRepository } from "../repositories/person.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
 import { submissionKeyRepository } from "../repositories/submission-key.repository.js";
@@ -23,6 +22,7 @@ import { buildPagination } from "../utils/pagination.js";
 import { requestHash } from "../utils/request-hash.js";
 import type { OrderListQuery, StaffOrderInput } from "../validators/order.js";
 import { ensureFound, runTransaction } from "./helpers.js";
+import { chechePayCredentialService } from "./cheche-pay-credential.service.js";
 import { paymentService } from "./payment.service.js";
 import { MAX_TICKETS_PER_ORDER, ticketing } from "./ticketing.js";
 
@@ -32,16 +32,14 @@ import { MAX_TICKETS_PER_ORDER, ticketing } from "./ticketing.js";
  * in id order. Expired holds of the event are released first. Every check runs before anything is written:
  * 1. the event takes registrations; 2. each ticket type exists, is active and open to the caller (STAFF_ONLY for
  * staff only); 3. at most 20 tickets; 4. a DETAILED event's holder details (one holder per ticket, its required and
- * hidden fields); 5. prices from the server; a paid order needs the organizer's Cheche Pay service code, one of its
- * payment options (checked by the caller before the transaction), ETB prices and a buyer mobile; 6. the event's and
- * each type's capacity
+ * hidden fields); 5. prices from the server; a paid order needs the organizer's active Cheche Pay keys (and a server
+ * set up for Cheche Pay), ETB prices and a buyer mobile; 6. the event's and each type's capacity
  * for the whole order (held places count); 7. the buyer mobile's purchase limit (held tickets count).
  * Then the order and one ticket per unit (a holder profile when DETAILED, none when QUICK):
  * - free: CONFIRMED tickets with codes, and one SMS to the buyer with every code;
- * - paid (step 3): PENDING_PAYMENT with every place HELD (no codes) until hold_expires_at, and an INITIATED Cheche
- *   Pay payment (its id is the transaction_id Cheche Pay echoes) for exactly this amount, the chosen option and the
- *   organizer's service code. Cheche Pay is called only after the transaction commits
- *   (paymentService.startPaymentIfPending); codes come with its "Completed" callback (paymentService).
+ * - paid (step 3b): PENDING_PAYMENT with every place HELD (no codes) until hold_expires_at, and an INITIATED Cheche
+ *   Pay payment for exactly this amount. Cheche Pay is called only after the transaction commits
+ *   (paymentService.startPaymentIfPending); codes come once merchant-verify confirms the payment (paymentService.settle).
  */
 export type CheckoutItem = {
   /** Staff choose by id; the public form by code. */
@@ -62,8 +60,6 @@ export type CheckoutInput = {
   items: CheckoutItem[];
   /** SHA-256 of the order token returned to the caller (the buyer's key to the order without an account). */
   accessTokenHash: string | null;
-  /** A paid order's Cheche Pay option, already checked against the organizer's service code (paymentService.resolvePaymentOption). */
-  payment?: { optionId: string; serviceCode: string } | null | undefined;
   /** Privacy-notice evidence from the public form; staff checkout has none. */
   evidence?: { privacyNoticeVersion: string; shownAt: Date } | undefined;
 };
@@ -137,28 +133,18 @@ function priceOrder(resolved: ResolvedItem[]): { total: string; currency: string
 }
 
 /**
- * Paid sales for this order: the organizer's Cheche Pay service code (trusted server configuration: the buyer never
- * chooses where the money goes), the option the caller checked against it, ETB prices (Cheche Pay works in ETB) and
- * a buyer mobile (Cheche Pay needs the phone).
+ * Paid sales for this order: the organizer's active Cheche Pay keys (trusted server configuration: the buyer never
+ * chooses where the money goes), ETB prices (Cheche Pay works in ETB) and a buyer mobile (Cheche Pay needs the phone).
+ * A database read only: the keys are decrypted and Cheche Pay is called after the transaction commits.
  */
-async function paidSales(input: CheckoutInput, currency: string, transaction: Transaction): Promise<{ optionId: string; serviceCode: string }> {
-  const organization = ensureFound(await organizationRepository.findById(input.organizationId, { transaction }), "Organization not found");
-  if (organization.cheche_pay_service === null) throw new PaidSalesUnavailableError(undefined, { reason: "NO_CHECHE_PAY_SERVICE" });
+async function assertPaidSales(input: CheckoutInput, currency: string, transaction: Transaction): Promise<void> {
+  await chechePayCredentialService.assertAvailable(input.organizationId, { transaction });
   if (currency !== "ETB") throw new PaidSalesUnavailableError("Online payment is in ETB only", { reason: "CURRENCY", currency });
-  if (!input.payment) {
-    throw new ValidationAppError("Request validation failed", {
-      issues: [{ path: "body.payment_option_id", message: "Choose how to pay: one of this organizer's payment options", code: "required" }],
-    });
-  }
-  if (input.payment.serviceCode !== organization.cheche_pay_service) {
-    throw new ConflictError("The organizer's payment settings changed while you were ordering. Try again", { field: "payment_option_id" });
-  }
   if (input.buyer.mobile === null) {
     throw new ValidationAppError("Request validation failed", {
       issues: [{ path: "body.buyer_mobile", message: "A paid order needs the buyer's mobile number", code: "required" }],
     });
   }
-  return input.payment;
 }
 
 /** The checkout core. See the module comment for the order of checks; nothing is written before all of them pass. */
@@ -179,11 +165,11 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
   }
   assertHolders(event, resolved);
   const { total, currency } = priceOrder(resolved);
-  const account = isZeroAmount(total) ? null : await paidSales(input, currency, transaction);
+  const paid = !isZeroAmount(total);
+  if (paid) await assertPaidSales(input, currency, transaction);
   await ticketing.assertRoom(event, resolved.map(({ ticketType, item }) => ({ ticketType, quantity: item.quantity })), transaction);
   await ticketing.assertBuyerAllowance(event, input.buyer.mobile, count, transaction);
 
-  const paid = account !== null;
   const order = await ticketOrderRepository.create(
     {
       organization_id: organizationId,
@@ -258,7 +244,7 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
     }
   }
 
-  if (!account) {
+  if (!paid) {
     await ticketing.queueOrderConfirmation(event, order, tickets.map((ticket) => ticket.code as string), transaction);
     return { order, tickets, payment: null };
   }
@@ -266,19 +252,9 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
     {
       organization_id: organizationId,
       order_id: order.id,
-      payment_option_id: account.optionId,
-      cheche_pay_service: account.serviceCode,
       amount: total,
       currency,
       status: "INITIATED",
-      checkout_url: null,
-      vendor_ref: null,
-      provider_order_id: null,
-      notify_time: null,
-      request_object: null,
-      response_object: null,
-      last_notification: null,
-      last_error: null,
     },
     { transaction },
   );
@@ -334,8 +310,6 @@ async function createStaffOrder(
   idempotencyKey?: string,
 ): Promise<{ order: OrderDto; outcome: CheckoutOutcome }> {
   const { token, hash } = ticketing.newOrderToken();
-  // Checked with Cheche Pay before the transaction: no network call under a lock.
-  const payment = body.payment_option_id === undefined ? null : await paymentService.resolvePaymentOption(organizationId, body.payment_option_id);
   const { orderId, outcome } = await runTransaction(async (transaction) => {
     const input: CheckoutInput = {
       organizationId,
@@ -345,7 +319,6 @@ async function createStaffOrder(
       buyer: { mobile: body.buyer_mobile ?? null, userId: null },
       items: body.items.map((item) => ({ ticketTypeId: item.ticket_type_id, quantity: item.quantity, holders: item.holders })),
       accessTokenHash: hash,
-      payment,
     };
     const result =
       idempotencyKey === undefined

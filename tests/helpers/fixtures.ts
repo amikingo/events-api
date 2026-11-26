@@ -10,6 +10,7 @@ import type { OrganizationRow } from "../../src/models/organization.js";
 import type { PersonRow } from "../../src/models/person.js";
 import type { RegistrationRow } from "../../src/models/registration.js";
 import type { OrderPaymentRow } from "../../src/models/order-payment.js";
+import type { OrganizationChechePayCredentialRow } from "../../src/models/organization-cheche-pay-credential.js";
 import type { TicketOrderRow } from "../../src/models/ticket-order.js";
 import type { RoleRow } from "../../src/models/role.js";
 import type { StoredFileRow } from "../../src/models/stored-file.js";
@@ -54,7 +55,6 @@ export function organizationRow(overrides: Partial<OrganizationRow> = {}): Organ
     timezone: "Africa/Addis_Ababa",
     default_currency: "ETB",
     is_active: true,
-    cheche_pay_service: null,
     ...audit,
     ...overrides,
   };
@@ -312,27 +312,46 @@ export function centralAccessToken(): string {
   });
 }
 
-/** Phase 7 step 3: the Cheche Pay payment of a 2,000 ETB order, started with a Telebirr option. */
+/** Phase 7 step 3b: the Cheche Pay v2 payment of a 2,000 ETB order, with one attempt started. */
+export const PAYMENT_ID = "c0000000-0000-4000-8000-000000000001";
+export const TX_REF = `${PAYMENT_ID}-mabc123def`;
+
 export function orderPaymentRow(overrides: Partial<OrderPaymentRow> = {}): OrderPaymentRow {
   return {
-    id: "c0000000-0000-4000-8000-000000000001",
+    id: PAYMENT_ID,
     organization_id: IDS.orgA,
     order_id: IDS.registration,
-    payment_option_id: "opt-telebirr",
-    cheche_pay_service: "SELAM",
     amount: "2000.00",
     currency: "ETB",
     status: "INITIATED",
-    checkout_url: "https://pay.cheche.example/checkout/1",
-    vendor_ref: null,
-    provider_order_id: null,
-    notify_time: null,
+    tx_ref: TX_REF,
+    checkout_url: "https://checkout.cheche.example/c/1",
+    checkout_expires_at: null,
+    provider_transaction_id: null,
+    key_mode: "test",
+    paid_tx_ref: null,
+    verified_at: null,
     request_object: null,
     response_object: null,
-    last_notification: null,
+    last_verification: null,
     last_error: null,
     created_at: new Date("2026-11-26T08:00:00Z"),
     updated_at: new Date("2026-11-26T08:00:00Z"),
+    ...overrides,
+  };
+}
+
+/** Phase 7 step 3b: an organizer's saved Cheche Pay keys (encrypted values are opaque placeholders here). */
+export function chechePayCredentialRow(overrides: Partial<OrganizationChechePayCredentialRow> = {}): OrganizationChechePayCredentialRow {
+  return {
+    id: "c1000000-0000-4000-8000-000000000001",
+    organization_id: IDS.orgA,
+    key_mode: "test",
+    secret_key_encrypted: "v1:encrypted-secret-key",
+    secret_key_last4: "ab12",
+    webhook_secret_encrypted: null,
+    is_active: true,
+    ...audit,
     ...overrides,
   };
 }

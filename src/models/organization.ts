@@ -19,8 +19,6 @@ export class Organization extends Model<InferAttributes<Organization>, InferCrea
   declare timezone: CreationOptional<string>;
   declare default_currency: CreationOptional<string>;
   declare is_active: CreationOptional<boolean>;
-  /** Phase 7 step 3: the Cheche Pay service code that receives this organizer's money; null means paid sales off. */
-  declare cheche_pay_service: CreationOptional<string | null>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
   declare created_by: string | null;
@@ -40,7 +38,6 @@ Organization.init(
     timezone: { type: DataTypes.STRING(64), allowNull: false, defaultValue: "Africa/Addis_Ababa" },
     default_currency: { type: DataTypes.STRING(3), allowNull: false, defaultValue: "ETB" },
     is_active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
-    cheche_pay_service: { type: DataTypes.STRING(80), allowNull: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,
     created_by: { type: DataTypes.UUID, allowNull: true },

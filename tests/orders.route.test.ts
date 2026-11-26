@@ -7,7 +7,8 @@ import type { CustomerAuthContext } from "../src/middleware/authentication.js";
 import { publicRegistrationLimiter } from "../src/middleware/rate-limit.js";
 import { checkoutService } from "../src/services/checkout.service.js";
 import { permissionResolutionService, type PermissionScope } from "../src/services/permission-resolution.service.js";
-import { paymentService } from "../src/services/payment.service.js";
+import { chechePayCredentialService } from "../src/services/cheche-pay-credential.service.js";
+import { paymentService, type SettleResult } from "../src/services/payment.service.js";
 import { publicCheckoutService } from "../src/services/public-checkout.service.js";
 import type { PublicOrderInput, StaffOrderInput } from "../src/validators/order.js";
 import { centralAccessToken, IDS, staffToken } from "./helpers/fixtures.js";
@@ -22,6 +23,17 @@ const ITEM = { ticket_type_id: IDS.ticketType, quantity: 2 };
 const ORDER = { id: "order-1", reference: "ORDER23456", ticket_count: 2, tickets: [] } as unknown as OrderDto;
 const PUBLIC_ORDER = { reference: "ORDER23456", tickets: [{ code: "K7M2Q9XP" }, { code: "M2Q9XPK7" }] } as unknown as PublicOrderDto;
 const PUBLIC_FORM = { buyer_mobile: "0913 000 001", privacy_notice_version: PRIVACY_NOTICE_VERSION, items: [{ ticket_type_code: "ga", quantity: 3 }] };
+
+const WEBHOOK_RESULT: SettleResult & { event: string | null } = {
+  acknowledged: true,
+  processed: true,
+  duplicate: false,
+  ignored: false,
+  review_reason: null,
+  provider_status: "SUCCEEDED",
+  order_status: "CONFIRMED",
+  event: "payment.succeeded",
+};
 
 function allowPermissions(allowed: boolean) {
   return mock.method(permissionResolutionService, "resolvePermission", async (input: { scope: PermissionScope }) => ({
@@ -119,14 +131,17 @@ test("the public checkout needs an Idempotency-Key, takes codes upper-cased and 
   assert.ok(checkout.mock.calls[1]?.arguments[4], "the guest's account reaches the service");
 });
 
-// --- Phase 7 step 3 ------------------------------------------------------------------------------------
+// --- Phase 7 step 3b: Cheche Pay v2 ----------------------------------------------------------------------
 
-test("the Cheche Pay service code is platform scope (ORGANIZATIONS view and update) and stored upper-case; null turns paid sales off", async () => {
+test("the organizer's Cheche Pay keys are platform scope: ORGANIZATIONS view to read, update to save, remove and check", async () => {
   const permission = allowPermissions(false);
   await withServer(app, async (baseUrl) => {
     const token = staffToken();
-    await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/cheche-pay-service`, { token });
-    await call(baseUrl, "PUT", `/v1/organizations/${IDS.orgA}/cheche-pay-service`, { token, body: { cheche_pay_service: "selam" } });
+    const path = `/v1/organizations/${IDS.orgA}/cheche-pay`;
+    await call(baseUrl, "GET", path, { token });
+    await call(baseUrl, "PUT", path, { token, body: { secret_key: "sk_test_abcd1234" } });
+    await call(baseUrl, "DELETE", path, { token });
+    await call(baseUrl, "POST", `${path}/check`, { token });
   });
   const asked = permission.mock.calls.map((entry) => {
     const input = entry.arguments[0] as { moduleCode: string; action: string; scope: PermissionScope };
@@ -135,61 +150,60 @@ test("the Cheche Pay service code is platform scope (ORGANIZATIONS view and upda
   assert.deepEqual(asked, [
     ["ORGANIZATIONS", "view", "platform"],
     ["ORGANIZATIONS", "update", "platform"],
+    ["ORGANIZATIONS", "update", "platform"],
+    ["ORGANIZATIONS", "update", "platform"],
   ]);
-
-  mock.restoreAll();
-  allowPermissions(true);
-  const save = mock.method(paymentService, "setChechePayService", async (_o: string, code: string | null) => ({ cheche_pay_service: code, payment_options: [], paid_sales_available: false, warnings: [] }));
-  await withServer(app, async (baseUrl) => {
-    const token = staffToken();
-    const path = `/v1/organizations/${IDS.orgA}/cheche-pay-service`;
-    for (const body of [{}, { cheche_pay_service: "has space" }, { cheche_pay_service: "SELAM", secret_key: "sk" }]) {
-      assert.equal((await call(baseUrl, "PUT", path, { token, body })).status, 400, JSON.stringify(body));
-    }
-    assert.equal((await call(baseUrl, "PUT", path, { token, body: { cheche_pay_service: " selam " } })).status, 200);
-    assert.equal((await call(baseUrl, "PUT", path, { token, body: { cheche_pay_service: null } })).status, 200);
-  });
-  assert.deepEqual(save.mock.calls.map((callArgs) => callArgs.arguments[1]), ["SELAM", null]);
 });
 
-test("the buyer's order page needs the order token in X-Order-Token; the payment options are public", async () => {
+test("saving keys: at least one field, nothing unknown; the secret key, a null webhook secret and is_active reach the service", async () => {
+  allowPermissions(true);
+  const save = mock.method(chechePayCredentialService, "save", async () => ({}) as never);
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    const path = `/v1/organizations/${IDS.orgA}/cheche-pay`;
+    for (const body of [{}, { cheche_pay_service: "SELAM" }, { secret_key: "" }, { is_active: "yes" }]) {
+      assert.equal((await call(baseUrl, "PUT", path, { token, body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call(baseUrl, "PUT", path, { token, body: { secret_key: " sk_test_abcd1234 ", webhook_secret: null, is_active: false } })).status, 200);
+  });
+  assert.deepEqual(save.mock.calls[0]?.arguments.slice(0, 2), [IDS.orgA, { secret_key: "sk_test_abcd1234", webhook_secret: null, is_active: false }]);
+});
+
+test("the buyer's order page and payment check need the order token in X-Order-Token", async () => {
   const read = mock.method(publicCheckoutService, "getOrder", async () => PUBLIC_ORDER);
-  const options = mock.method(publicCheckoutService, "listPaymentOptions", async () => [{ id: "opt-telebirr", name: "Telebirr" }]);
+  const check = mock.method(publicCheckoutService, "checkPayment", async () => PUBLIC_ORDER);
   await withServer(app, async (baseUrl) => {
     // References use the code alphabet (no O, 0, I, 1 or L).
     assert.equal((await fetch(`${baseUrl}/v1/public/orders/ABCDE23456`)).status, 400, "no token");
     assert.equal((await fetch(`${baseUrl}/v1/public/orders/ABCDE23456`, { headers: { "X-Order-Token": "t".repeat(43) } })).status, 200);
     assert.equal((await fetch(`${baseUrl}/v1/public/orders/order-23456`, { headers: { "X-Order-Token": "t".repeat(43) } })).status, 400, "a malformed reference");
-    const listed = await fetch(`${baseUrl}/v1/public/organizations/selam-events/events/jazz-night/payment-options`);
-    assert.deepEqual([listed.status, ((await listed.json()) as { data: unknown }).data], [200, [{ id: "opt-telebirr", name: "Telebirr" }]]);
+    assert.equal((await fetch(`${baseUrl}/v1/public/orders/ABCDE23456/check`, { method: "POST" })).status, 400, "no token");
+    assert.equal((await fetch(`${baseUrl}/v1/public/orders/ABCDE23456/check`, { method: "POST", headers: { "X-Order-Token": "t".repeat(43) } })).status, 200);
   });
   assert.deepEqual(read.mock.calls[0]?.arguments, ["ABCDE23456", "t".repeat(43)]);
-  assert.deepEqual(options.mock.calls[0]?.arguments, ["selam-events", "jazz-night"]);
+  assert.deepEqual(check.mock.calls[0]?.arguments, ["ABCDE23456", "t".repeat(43)]);
 });
 
-test("Cheche Pay's callback is accepted as POST (body) and GET (query) with bookings' aliases; a missing vendor_ref is 400", async () => {
-  const notify = mock.method(paymentService, "handleNotification", async () => ({ acknowledged: true as const, processed: true, duplicate: false, review_reason: null, order_status: "CONFIRMED" as const }));
+test("Cheche Pay's webhook needs no login and reaches the service with the exact raw bytes and the signature header", async () => {
+  const webhook = mock.method(paymentService, "handleWebhook", async () => ({ ...WEBHOOK_RESULT }));
+  const raw = '{"event":"payment.succeeded",  "data":{"tx_ref":"c0000000-0000-4000-8000-000000000001-mabc123def"}}';
   await withServer(app, async (baseUrl) => {
-    const posted = await fetch(`${baseUrl}/v1/payments/cheche/notify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transaction_id: "c0000000-0000-4000-8000-000000000001", trade_status: "Completed", transaction_amount: 2000, vendor_ref: "CP-1", extra: "ignored" }),
-    });
+    const posted = await fetch(`${baseUrl}/v1/payments/cheche/webhook/${IDS.orgA}`, { method: "POST", headers: { "Content-Type": "application/json", "X-Cheche-Signature": "sha256=abc" }, body: raw });
     assert.equal(posted.status, 200);
-    const got = await fetch(`${baseUrl}/v1/payments/cheche/notify?transactionId=c0000000-0000-4000-8000-000000000001&tradeStatus=success&amount=2000.00&merch_order_id=CP-1`);
-    assert.equal(got.status, 200);
-    const missing = await fetch(`${baseUrl}/v1/payments/cheche/notify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trade_status: "Completed", amount: "1" }) });
-    assert.equal(missing.status, 400);
+    const badId = await fetch(`${baseUrl}/v1/payments/cheche/webhook/not-a-uuid`, { method: "POST", headers: { "Content-Type": "application/json" }, body: raw });
+    assert.equal(badId.status, 400);
   });
-  assert.equal(notify.mock.callCount(), 2);
-  assert.deepEqual(
-    notify.mock.calls.map((callArgs) => {
-      const input = callArgs.arguments[0] as { amount: string; vendorRef: string; tradeStatus: string };
-      return [input.amount, input.vendorRef, input.tradeStatus];
-    }),
-    [
-      ["2000.00", "CP-1", "Completed"],
-      ["2000.00", "CP-1", "success"],
-    ],
-  );
+  assert.equal(webhook.mock.callCount(), 1);
+  const input = webhook.mock.calls[0]?.arguments[0] as { organizationId: string; rawBody: Buffer; signature: string };
+  assert.deepEqual([input.organizationId, input.rawBody.toString("utf8"), input.signature], [IDS.orgA, raw, "sha256=abc"], "the spacing is kept: the signature covers these bytes");
+});
+
+test("payment_option_id is gone: sending it is a 400 on the public and staff checkout", async () => {
+  allowPermissions(true);
+  mock.method(publicCheckoutService, "checkoutFromPublicForm", async () => ({ order: PUBLIC_ORDER, outcome: "CREATED" as const }));
+  mock.method(checkoutService, "createStaffOrder", async () => ({ order: ORDER, outcome: "CREATED" as const }));
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await postPublic(baseUrl, { ...PUBLIC_FORM, payment_option_id: "opt-telebirr" })).status, 400);
+    assert.equal((await call(baseUrl, "POST", ordersPath, { token: staffToken(), body: { items: [ITEM], payment_option_id: "opt-telebirr" } })).status, 400);
+  });
 });

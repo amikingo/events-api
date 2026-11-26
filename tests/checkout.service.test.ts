@@ -3,7 +3,6 @@ import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
 import {
   CapacityReachedError,
-  ConflictError,
   IdempotencyKeyReusedError,
   NotFoundError,
   PaidSalesUnavailableError,
@@ -21,6 +20,7 @@ import type { TicketTypeRow } from "../src/models/ticket-type.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
 import { messageOutboxRepository } from "../src/repositories/message-outbox.repository.js";
 import { orderPaymentRepository } from "../src/repositories/order-payment.repository.js";
+import { organizationChechePayCredentialRepository } from "../src/repositories/organization-cheche-pay-credential.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { personRepository } from "../src/repositories/person.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
@@ -29,7 +29,7 @@ import { ticketOrderRepository } from "../src/repositories/ticket-order.reposito
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { checkoutService, type CheckoutInput } from "../src/services/checkout.service.js";
 import { transactionManager } from "../src/services/helpers.js";
-import { eventRow, IDS, orderRow, organizationRow, personRow, registrationRow, ticketTypeRow } from "./helpers/fixtures.js";
+import { chechePayCredentialRow, eventRow, IDS, orderRow, organizationRow, personRow, registrationRow, ticketTypeRow } from "./helpers/fixtures.js";
 
 /** The checkout core (Phase 7 step 2) against mocked repositories and a fake transaction: no database needed. */
 const FAKE_TX = { id: "fake-transaction" } as unknown as Transaction;
@@ -223,33 +223,34 @@ test("the purchase limit combines what the buyer mobile already holds with this 
 });
 
 const PAID_TYPES = [ticketTypeRow({ ...GA, price: "500.00" }), ticketTypeRow({ ...VIP, price: "1000.00" })];
-const TELEBIRR = { optionId: "opt-telebirr", serviceCode: "SELAM" };
 
-test("a paid order needs the organizer's Cheche Pay service code, ETB and a chosen option; a closed event is refused first", async () => {
+/** The organizer's saved Cheche Pay keys (step 3b): active by default. */
+function keys(row: ReturnType<typeof chechePayCredentialRow> | null = chechePayCredentialRow()) {
+  return mock.method(organizationChechePayCredentialRepository, "findByOrganization", async () => row);
+}
+
+test("a paid order needs the organizer's active Cheche Pay keys and ETB; a closed event is refused first", async () => {
   const calls = arrange({ ticketTypes: PAID_TYPES });
-  const organization = mock.method(organizationRepository, "findById", async () => organizationRow({ cheche_pay_service: null }));
+  const saved = keys(null);
   await assert.rejects(
-    checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }], { payment: TELEBIRR }), FAKE_TX),
-    (error: unknown) => error instanceof PaidSalesUnavailableError && (error.details as { reason: string }).reason === "NO_CHECHE_PAY_SERVICE",
+    checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }]), FAKE_TX),
+    (error: unknown) => error instanceof PaidSalesUnavailableError && (error.details as { reason: string }).reason === "NO_CHECHE_PAY_KEYS",
   );
-  organization.mock.mockImplementation(async () => organizationRow({ cheche_pay_service: "SELAM" }));
-  await assert.rejects(checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }]), FAKE_TX), (error: unknown) => {
-    assert.deepEqual(issuesOf(error), [["body.payment_option_id", "required"]]);
-    return true;
-  });
+  saved.mock.mockImplementation(async () => chechePayCredentialRow({ is_active: false }));
   await assert.rejects(
-    checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }], { payment: { ...TELEBIRR, serviceCode: "OLD" } }), FAKE_TX),
-    ConflictError,
-    "the organizer's code changed since the option was checked",
+    checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }]), FAKE_TX),
+    (error: unknown) => error instanceof PaidSalesUnavailableError && (error.details as { reason: string }).reason === "NO_CHECHE_PAY_KEYS",
+    "switched-off keys sell nothing",
   );
+  assert.equal(saved.mock.calls[0]?.arguments[1]?.transaction, FAKE_TX, "read inside the checkout transaction");
   assert.equal(calls.createOrder.mock.callCount(), 0);
   mock.restoreAll();
   mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
 
   arrange({ ticketTypes: [ticketTypeRow({ ...GA, price: "20.00", currency: "USD" })] });
-  mock.method(organizationRepository, "findById", async () => organizationRow({ cheche_pay_service: "SELAM" }));
+  keys();
   await assert.rejects(
-    checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }], { payment: TELEBIRR }), FAKE_TX),
+    checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }]), FAKE_TX),
     (error: unknown) => error instanceof PaidSalesUnavailableError && (error.details as { reason: string }).reason === "CURRENCY",
   );
   mock.restoreAll();
@@ -259,14 +260,14 @@ test("a paid order needs the organizer's Cheche Pay service code, ETB and a chos
   await assert.rejects(checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }]), FAKE_TX), RegistrationClosedError);
 });
 
-test("a paid order: prices from the server, every place held without a code until the hold expires, one Cheche Pay payment for the chosen option, no SMS yet", async () => {
+test("a paid order: prices from the server, every place held without a code until the hold expires, one INITIATED payment for the total, no SMS yet", async () => {
   const calls = arrange({ ticketTypes: PAID_TYPES });
-  mock.method(organizationRepository, "findById", async () => organizationRow({ name: "Selam Events", cheche_pay_service: "SELAM" }));
+  keys();
   const createPayment = mock.method(orderPaymentRepository, "create", async (values: Partial<OrderPaymentRow>) => ({ ...values, id: "payment-1" }) as OrderPaymentRow);
 
   const before = Date.now();
   const { order, payment } = await checkoutService.checkoutInTransaction(
-    quick([{ ticketTypeCode: "GA", quantity: 2 }, { ticketTypeCode: "VIP", quantity: 1 }], { accessTokenHash: "a".repeat(64), payment: TELEBIRR }),
+    quick([{ ticketTypeCode: "GA", quantity: 2 }, { ticketTypeCode: "VIP", quantity: 1 }], { accessTokenHash: "a".repeat(64) }),
     FAKE_TX,
   );
 
@@ -283,23 +284,17 @@ test("a paid order: prices from the server, every place held without a code unti
     ],
   );
   const [paymentValues] = createPayment.mock.calls[0]?.arguments ?? [];
-  assert.deepEqual(
-    [paymentValues?.payment_option_id, paymentValues?.cheche_pay_service, paymentValues?.amount, paymentValues?.currency, paymentValues?.status],
-    ["opt-telebirr", "SELAM", "2000.00", "ETB", "INITIATED"],
-  );
+  assert.deepEqual([paymentValues?.amount, paymentValues?.currency, paymentValues?.status], ["2000.00", "ETB", "INITIATED"]);
   assert.equal(order.status, "PENDING_PAYMENT");
   assert.equal(payment?.id, "payment-1");
-  assert.equal(calls.queue.mock.callCount(), 0, "the SMS comes with Cheche Pay's Completed callback");
+  assert.equal(calls.queue.mock.callCount(), 0, "the SMS comes once Cheche Pay confirms the payment");
 });
 
 test("a paid order needs a buyer mobile (staff may leave it out of a free order only)", async () => {
   arrange({ ticketTypes: [ticketTypeRow({ ...GA, price: "500.00" })] });
-  mock.method(organizationRepository, "findById", async () => organizationRow({ cheche_pay_service: "SELAM" }));
+  keys();
   await assert.rejects(
-    checkoutService.checkoutInTransaction(
-      quick([{ ticketTypeId: GA.id, quantity: 1 }], { source: "STAFF", actorId: IDS.user, buyer: { mobile: null, userId: null }, payment: TELEBIRR }),
-      FAKE_TX,
-    ),
+    checkoutService.checkoutInTransaction(quick([{ ticketTypeId: GA.id, quantity: 1 }], { source: "STAFF", actorId: IDS.user, buyer: { mobile: null, userId: null } }), FAKE_TX),
     (error: unknown) => JSON.stringify(issuesOf(error)) === JSON.stringify([["body.buyer_mobile", "required"]]),
   );
 });

@@ -68,7 +68,15 @@ export function createApp(): Express {
     }),
   );
 
-  app.use(express.json({ limit: env.JSON_BODY_LIMIT }));
+  app.use(
+    express.json({
+      limit: env.JSON_BODY_LIMIT,
+      // Cheche Pay webhooks are signed over the exact bytes received, so those (only) are kept.
+      verify: (req, _res, buf) => {
+        if ((req as express.Request).originalUrl.startsWith("/v1/payments/cheche/webhook/")) (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
 
   app.use(rootRouter);
 

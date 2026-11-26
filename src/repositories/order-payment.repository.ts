@@ -8,18 +8,19 @@ const attributes = [
   "id",
   "organization_id",
   "order_id",
-  "payment_option_id",
-  "cheche_pay_service",
   "amount",
   "currency",
   "status",
+  "tx_ref",
   "checkout_url",
-  "vendor_ref",
-  "provider_order_id",
-  "notify_time",
+  "checkout_expires_at",
+  "provider_transaction_id",
+  "key_mode",
+  "paid_tx_ref",
+  "verified_at",
   "request_object",
   "response_object",
-  "last_notification",
+  "last_verification",
   "last_error",
   "created_at",
   "updated_at",
@@ -36,20 +37,28 @@ async function findByOrder(organizationId: string, orderId: string, options: Rep
   return toPlain<OrderPaymentRow>(row);
 }
 
-/** By its id: the `transaction_id` Cheche Pay echoes in its callback. */
+/** By its id (read back from a Cheche Pay tx_ref). */
 async function findById(id: string, options: RepoOptions = {}): Promise<OrderPaymentRow | null> {
   const row = await OrderPayment.findOne({ where: { id }, attributes: [...attributes], ...txOptions(options), ...lockOptions(options) });
   return toPlain<OrderPaymentRow>(row);
 }
 
-/** By Cheche Pay's own order id from createOrder (the callback fallback, as bookings does with merch_order_id). */
-async function findByProviderOrderId(providerOrderId: string, options: RepoOptions = {}): Promise<OrderPaymentRow | null> {
-  const row = await OrderPayment.findOne({ where: { provider_order_id: providerOrderId }, attributes: [...attributes], ...txOptions(options), ...lockOptions(options) });
-  return toPlain<OrderPaymentRow>(row);
-}
-
 export type PaymentUpdateValues = Partial<
-  Pick<OrderPaymentRow, "status" | "checkout_url" | "vendor_ref" | "provider_order_id" | "notify_time" | "request_object" | "response_object" | "last_notification" | "last_error">
+  Pick<
+    OrderPaymentRow,
+    | "status"
+    | "tx_ref"
+    | "checkout_url"
+    | "checkout_expires_at"
+    | "provider_transaction_id"
+    | "key_mode"
+    | "paid_tx_ref"
+    | "verified_at"
+    | "request_object"
+    | "response_object"
+    | "last_verification"
+    | "last_error"
+  >
 >;
 
 async function updateById(id: string, values: PaymentUpdateValues, options: WriteOptions = {}): Promise<void> {
@@ -57,4 +66,4 @@ async function updateById(id: string, values: PaymentUpdateValues, options: Writ
   await OrderPayment.update({ ...values, ...lastError }, { where: { id }, ...txOptions(options) });
 }
 
-export const orderPaymentRepository = { create, findByOrder, findById, findByProviderOrderId, updateById };
+export const orderPaymentRepository = { create, findByOrder, findById, updateById };

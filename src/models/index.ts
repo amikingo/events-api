@@ -5,6 +5,7 @@ import { AppEvent } from "./event.js";
 import { initAssociations } from "./init-associations.js";
 import { MessageOutbox } from "./message-outbox.js";
 import { Organization } from "./organization.js";
+import { OrganizationChechePayCredential } from "./organization-cheche-pay-credential.js";
 import { Person } from "./person.js";
 import { Registration } from "./registration.js";
 import { Role } from "./role.js";
@@ -51,6 +52,7 @@ export {
   MessageOutbox,
   OrderPayment,
   Organization,
+  OrganizationChechePayCredential,
   Person,
   Registration,
   Role,

@@ -1,4 +1,4 @@
-import type { OrderPaymentRow, PaymentStatus } from "../models/order-payment.js";
+import type { KeyMode, OrderPaymentRow, PaymentStatus } from "../models/order-payment.js";
 import type { OrderSource, OrderStatus, TicketOrderRow } from "../models/ticket-order.js";
 import type { RegistrationStatus } from "../models/registration.js";
 import type { RegistrationWithDetails } from "../repositories/registration.repository.js";
@@ -20,14 +20,19 @@ export type OrderTicketDto = {
   holder: { person_id: string; first_name: string; last_name: string | null; phone: string | null; email: string | null; affiliation_name: string | null } | null;
 };
 
-/** A paid order's Cheche Pay payment: where the buyer pays, and what Cheche Pay reported. null for a free order. */
+/**
+ * A paid order's Cheche Pay payment (step 3b): where the buyer pays (the current attempt), and what merchant-verify
+ * confirmed. null for a free order.
+ */
 export type OrderPaymentDto = {
   id: string;
   status: PaymentStatus;
-  payment_option_id: string;
   checkout_url: string | null;
-  vendor_ref: string | null;
-  notify_time: Date | null;
+  checkout_expires_at: Date | null;
+  tx_ref: string | null;
+  provider_transaction_id: string | null;
+  key_mode: KeyMode | null;
+  verified_at: Date | null;
   last_error: string | null;
 } | null;
 
@@ -80,10 +85,12 @@ function toOrderPaymentDto(payment: OrderPaymentRow | null): OrderPaymentDto {
     ? {
         id: payment.id,
         status: payment.status,
-        payment_option_id: payment.payment_option_id,
         checkout_url: payment.checkout_url,
-        vendor_ref: payment.vendor_ref,
-        notify_time: payment.notify_time,
+        checkout_expires_at: payment.checkout_expires_at,
+        tx_ref: payment.tx_ref,
+        provider_transaction_id: payment.provider_transaction_id,
+        key_mode: payment.key_mode,
+        verified_at: payment.verified_at,
         last_error: payment.last_error,
       }
     : null;
@@ -150,7 +157,7 @@ export type PublicOrderDto = {
   total_amount: string;
   currency: string;
   hold_expires_at: Date | null;
-  payment: { status: PaymentStatus; checkout_url: string | null } | null;
+  payment: { status: PaymentStatus; checkout_url: string | null; checkout_expires_at: Date | null } | null;
   created_at: Date;
   event: PublicOrderContext["event"];
   organization: PublicOrderContext["organization"];
@@ -178,7 +185,7 @@ export function toPublicOrderDto(
     total_amount: order.total_amount,
     currency: order.currency,
     hold_expires_at: order.hold_expires_at,
-    payment: payment ? { status: payment.status, checkout_url: payment.checkout_url } : null,
+    payment: payment ? { status: payment.status, checkout_url: payment.checkout_url, checkout_expires_at: payment.checkout_expires_at } : null,
     created_at: order.created_at,
     event: context.event,
     organization: context.organization,

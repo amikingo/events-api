@@ -4,7 +4,7 @@ import { checkoutService } from "../services/checkout.service.js";
 import { publicCheckoutService } from "../services/public-checkout.service.js";
 import { sendList, sendSuccess } from "../utils/http.js";
 import { createPublicOrderRequest, createStaffOrderRequest, getOrderRequest, listOrdersRequest } from "../validators/order.js";
-import { getPublicOrderRequest, listPublicPaymentOptionsRequest, startPublicPaymentRequest } from "../validators/payment.js";
+import { checkPublicPaymentRequest, getPublicOrderRequest, startPublicPaymentRequest } from "../validators/payment.js";
 import { getActorId, getOptionalCustomerAuth } from "./helpers.js";
 
 /** Checkout (Phase 7): 201 for a new order; 200 with the same order when the same request (Idempotency-Key) is sent again. */
@@ -64,9 +64,10 @@ async function startPublicPayment(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, await publicCheckoutService.startPayment(params.reference, headers["x-order-token"]), "Payment ready");
 }
 
-async function listPublicPaymentOptions(req: Request, res: Response): Promise<void> {
-  const { params } = getValidated(req, listPublicPaymentOptionsRequest);
-  sendSuccess(res, 200, await publicCheckoutService.listPaymentOptions(params.organizationSlug, params.eventSlug), "Payment options retrieved");
+/** The buyer is back from Cheche Pay: verify the payment now and return the order (codes once paid). */
+async function checkPublicPayment(req: Request, res: Response): Promise<void> {
+  const { params, headers } = getValidated(req, checkPublicPaymentRequest);
+  sendSuccess(res, 200, await publicCheckoutService.checkPayment(params.reference, headers["x-order-token"]), "Payment checked");
 }
 
-export const orderController = { createStaffOrder, listOrders, getOrder, createPublicOrder, getPublicOrder, startPublicPayment, listPublicPaymentOptions };
+export const orderController = { createStaffOrder, listOrders, getOrder, createPublicOrder, getPublicOrder, startPublicPayment, checkPublicPayment };

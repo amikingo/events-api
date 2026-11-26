@@ -214,13 +214,23 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
   `ck_ticket_order_access_token_hash_format`); `idx_ticket_order_status_hold_expires`.
 - `registration`: statuses `HELD` and `RELEASED`; `code` nullable for those only (`ck_registration_issued_has_code`);
   `ck_registration_cancelled_at_status` now reads "cancelled_at exactly when CANCELLED".
-- `organization`: `cheche_pay_service` (VARCHAR(80), nullable; the organizer's Cheche Pay service code,
-  `ck_organization_cheche_pay_service_format`: upper-case letters, digits, `-` and `_`). Null means no paid sales.
-- `order_payment` (new, shaped like bookings' payment record): `id` (UUID, sent to Cheche Pay as `transaction_id`),
-  `organization_id`, `order_id` (`uq_order_payment_order_id`, tenant composite `fk_order_payment_organization_order`),
-  `payment_option_id`, `cheche_pay_service` (the code at checkout time), `amount` (`ck_order_payment_amount_positive`),
-  `currency` (`ck_order_payment_currency_format`), `status` (`INITIATED`, `PAID`, `MISMATCH`; `ck_order_payment_status`),
-  `checkout_url`, `vendor_ref` (Cheche Pay's reference, unique once set: `uq_order_payment_vendor_ref`),
-  `provider_order_id` (`idx_order_payment_provider_order_id`), `notify_time`, `request_object`, `response_object`,
-  `last_notification` (JSONB, kept for review), `last_error`. A `PAID` row has `vendor_ref` and `notify_time`
-  (`ck_order_payment_paid_has_vendor_ref`).
+- `order_payment` (new, `20261206000003`): one per paid order (`uq_order_payment_order_id`, tenant composite
+  `fk_order_payment_organization_order`), `amount` (`ck_order_payment_amount_positive`), `currency`, `status`
+  (`INITIATED`, `PAID`, `MISMATCH`), `checkout_url`, `request_object`, `response_object`, `last_error`. Its
+  legacy-only columns were reshaped in step 3b, below.
+
+### Phase 7 step 3b (Cheche Pay v2)
+- `organization`: `cheche_pay_service` (added in step 3) is dropped (`20261207000000`).
+- `organization_cheche_pay_credential` (new, `20261207000001`): one per organizer
+  (`uq_organization_cheche_pay_credential_organization_id`, FK `organization`):
+  - `key_mode` (`test` / `live`, `ck_organization_cheche_pay_credential_key_mode`);
+  - `secret_key_encrypted`, `secret_key_last4` (`ck_organization_cheche_pay_credential_last4`),
+    `webhook_secret_encrypted` (nullable): the secrets are AES-256-GCM, encrypted by the app;
+  - `is_active`, and the audit columns.
+- `order_payment` (`20261207000002`):
+  - **dropped:** `payment_option_id`, `cheche_pay_service`, `provider_order_id`;
+  - **renamed, keeping the data:** `vendor_ref` to `paid_tx_ref` (`uq_order_payment_paid_tx_ref`), `notify_time` to
+    `verified_at`, `last_notification` to `last_verification`;
+  - **added:** `tx_ref` (the latest attempt, `uq_order_payment_tx_ref`), `provider_transaction_id`,
+    `checkout_expires_at`, `key_mode` (`ck_order_payment_key_mode`);
+  - **constraint:** a `PAID` row has `paid_tx_ref` and `verified_at` (`ck_order_payment_paid_verified`).

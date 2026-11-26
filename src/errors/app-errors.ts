@@ -281,7 +281,12 @@ export class PurchaseLimitReachedError extends AppError {
   }
 }
 
-/** Phase 7 step 3: this organizer can't sell paid tickets yet (no payment provider, or no enabled, verified account). */
+/**
+ * Phase 7 step 3b: this organizer can't sell paid tickets yet. `details.reason`: NO_CHECHE_PAY_KEYS (no active keys
+ * saved for the organizer), CHECHE_PAY_NOT_CONFIGURED (the server has no Cheche Pay address or credentials key),
+ * CHECHE_PAY_KEY_UNREADABLE (a saved key can't be decrypted: the credentials key changed) or CURRENCY (online payment
+ * is in ETB only).
+ */
 export class PaidSalesUnavailableError extends AppError {
   constructor(message = "Paid tickets aren't available for this event yet", details?: unknown, options?: ErrorOptions) {
     super(message, { statusCode: 409, code: "paid_sales_unavailable", details, cause: options?.cause });
@@ -306,6 +311,16 @@ export class InvalidOrderStateError extends AppError {
 export class PaymentProviderUnavailableError extends AppError {
   constructor(message = "The payment provider is not available right now. Try again in a moment", details?: unknown, options?: ErrorOptions) {
     super(message, { statusCode: 502, code: "payment_provider_unavailable", details, cause: options?.cause });
+  }
+}
+
+/**
+ * Phase 7 step 3b: a Cheche Pay webhook whose X-Cheche-Signature doesn't match the organizer's webhook secret (or is
+ * missing while a secret is saved). Nothing was read or changed.
+ */
+export class InvalidSignatureError extends AppError {
+  constructor(message = "Invalid Cheche Pay webhook signature", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 401, code: "invalid_signature", details, cause: options?.cause });
   }
 }
 

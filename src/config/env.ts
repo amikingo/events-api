@@ -74,10 +74,26 @@ const EnvSchema = z.object({
   OUTBOX_WORKER_ENABLED: z.stringbool().default(true),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(1000).max(600_000).default(10_000),
 
-  // Paid checkout through Cheche Pay (Phase 7 step 3), the legacy payments API bookings_api uses (no API key). Which
-  // merchant receives the money is each organizer's service code, set by the Super Admin. Held places are released
-  // after PAYMENT_HOLD_MINUTES.
-  CHECHE_PAY_BASE_URL: z.url().default("https://pay.cheche.et/api/v1/payments"),
+  // Paid checkout through Cheche Pay v2 (Phase 7 step 3b), as bookings_api: each organizer's own secret key (saved
+  // encrypted by the Super Admin) starts payments (transactions/initialize) and confirms them (merchant-verify).
+  // All optional: without the finance base URL or the credentials key, paid sales are simply unavailable.
+  // - CHECHE_PAY_FINANCE_BASE_URL: Cheche Pay's v2 API base (from Cheche Pay).
+  // - CHECHE_PAY_CREDENTIALS_KEY: 32 bytes (64 hex characters or base64) that encrypt the stored keys. Generate with
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))". Changing it makes saved keys unreadable.
+  // - PAYMENT_RETURN_URL: the website's base address; Cheche Pay sends the buyer back to {base}/orders/{reference}.
+  // - PUBLIC_API_BASE_URL: this API's public address, for Cheche Pay's callback ({base}/v1/payments/cheche/webhook/{id}).
+  // Held places are released after PAYMENT_HOLD_MINUTES.
+  CHECHE_PAY_FINANCE_BASE_URL: z.url().optional(),
+  CHECHE_PAY_CREDENTIALS_KEY: z
+    .string()
+    .trim()
+    .refine(
+      (value) => /^[0-9a-fA-F]{64}$/.test(value) || (/^[A-Za-z0-9+/]+={0,2}$/.test(value) && Buffer.from(value, "base64").length === 32),
+      "must be 32 bytes: 64 hex characters or base64",
+    )
+    .optional(),
+  PAYMENT_RETURN_URL: z.url().optional(),
+  PUBLIC_API_BASE_URL: z.url().optional(),
   CHECHE_PAY_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(45_000),
   PAYMENT_HOLD_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
   PAYMENT_WORKER_ENABLED: z.stringbool().default(true),

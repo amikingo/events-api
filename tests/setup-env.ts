@@ -28,6 +28,12 @@ const defaults: Record<string, string> = {
   CENTRAL_AUTH_SERVICE_ID: "00000000-0000-4000-8000-000000000001",
   // One trusted site, so tests can prove other sites are refused (an empty list allows all outside production).
   AUTH_REFRESH_TRUSTED_ORIGINS: "http://localhost:3000",
+  // Paid checkout (Cheche Pay v2): a fake address the tests never reach (the client is stubbed) and a fixed test-only
+  // encryption key. Not secrets.
+  CHECHE_PAY_FINANCE_BASE_URL: "http://cheche-pay.test/api/v1",
+  CHECHE_PAY_CREDENTIALS_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+  PAYMENT_RETURN_URL: "https://events.example.test",
+  PUBLIC_API_BASE_URL: "https://api.events.example.test",
 };
 
 for (const [key, value] of Object.entries(defaults)) {

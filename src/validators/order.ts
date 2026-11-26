@@ -22,11 +22,8 @@ import { publicEventParamsSchema } from "./public-event.js";
  * - `buyer_mobile`: the Ethiopian mobile the codes are sent to, stored as +251…; what the purchase limit counts by.
  *   On the public form it is required unless the buyer is signed in (then the account's verified mobile is used).
  * Prices are never sent: the server resolves them from the ticket types.
- * - `payment_option_id` (Phase 7 step 3): for a paid order, one of the organizer's Cheche Pay payment options (from
- *   GET /v1/public/organizations/{orgSlug}/events/{eventSlug}/payment-options); the server checks it. Ignored for a
- *   free order.
+ * A paid order (Phase 7 step 3b) needs nothing more: the organizer's Cheche Pay keys decide where the money goes.
  */
-const paymentOptionIdSchema = z.string().trim().min(1).max(100);
 export const holderSchema = z.strictObject({
   first_name: z.string().trim().min(1).max(100).optional(),
   last_name: nullableText(100),
@@ -54,7 +51,6 @@ const staffItemSchema = z.strictObject({ ticket_type_id: uuidSchema, quantity: q
 
 export const publicOrderSchema = z.strictObject({
   buyer_mobile: mobileSchema.optional(),
-  payment_option_id: paymentOptionIdSchema.optional(),
   /** The privacy notice the form showed (from the event page). */
   privacy_notice_version: z.string().trim().min(1).max(40),
   items: z
@@ -66,7 +62,6 @@ export const publicOrderSchema = z.strictObject({
 
 export const staffOrderSchema = z.strictObject({
   buyer_mobile: mobileSchema.optional(),
-  payment_option_id: paymentOptionIdSchema.optional(),
   items: z
     .array(staffItemSchema)
     .min(1)
