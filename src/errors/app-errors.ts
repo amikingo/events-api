@@ -347,6 +347,13 @@ export class OwnAssignmentError extends AppError {
   }
 }
 
+/** Phase 2e: a role can't be made from a switched-off template. */
+export class RoleTemplateInactiveError extends AppError {
+  constructor(message = "This template is switched off", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "role_template_inactive", details, cause: options?.cause });
+  }
+}
+
 /** Phase 2e: the same role can't be held organization-wide and on a branch at the same time. */
 export class AssignmentScopeConflictError extends AppError {
   constructor(message = "This person already has this role for the whole organization or for a branch. Use one or the other", details?: unknown, options?: ErrorOptions) {

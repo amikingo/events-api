@@ -1,15 +1,16 @@
 import type { Transaction } from "sequelize";
-import { ConflictError, RoleInUseError, RoleLockedError } from "../errors/app-errors.js";
-import { toRoleDto, type RoleDto } from "../mappers/staff.mapper.js";
+import { ConflictError, RoleInUseError, RoleLockedError, RoleTemplateInactiveError } from "../errors/app-errors.js";
+import { toRoleDto, type RoleDto, type RoleTemplateRef } from "../mappers/staff.mapper.js";
 import type { RoleRow } from "../models/role.js";
 import { moduleRepository } from "../repositories/module.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { roleModuleAccessRepository } from "../repositories/role-module-access.repository.js";
+import { roleTemplateRepository } from "../repositories/role-template.repository.js";
 import { roleRepository } from "../repositories/role.repository.js";
 import { userRoleRepository } from "../repositories/user-role.repository.js";
 import { OWNER_ROLE_CODE } from "../utils/default-roles.js";
 import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, TENANT_GRANTABLE, type GrantableAction } from "../utils/rbac.js";
-import type { RoleCreateInput, RoleGrantInput, RoleUpdateInput } from "../validators/role.js";
+import type { RoleCreateInput, RoleGrantInput, RoleListQuery, RoleUpdateInput } from "../validators/role.js";
 import { grantRules, type GrantEntry } from "./grant-rules.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 
@@ -23,18 +24,32 @@ import { ensureFound, runTransaction } from "./helpers.js";
  */
 export type RoleEditor = { userId: string; assignmentId: string };
 
-async function listRoles(organizationId: string): Promise<RoleDto[]> {
-  const roles = await roleRepository.listByOrganization(organizationId);
+/** The templates these roles were made from, by id (one query). */
+async function templatesOf(roles: RoleRow[], transaction?: Transaction): Promise<Map<string, RoleTemplateRef>> {
+  const ids = [...new Set(roles.map((role) => role.role_template_id).filter((id): id is string => id !== null))];
+  const templates = await roleTemplateRepository.listByIds(ids, { transaction: transaction ?? null });
+  return new Map(templates.map((template) => [template.id, { id: template.id, code: template.code, name: template.name }]));
+}
+
+async function dtosOf(organizationId: string, roles: RoleRow[], transaction?: Transaction): Promise<RoleDto[]> {
+  const options = { transaction: transaction ?? null };
   const ids = roles.map((role) => role.id);
-  const grants = await roleModuleAccessRepository.listWithModulesByRoleIds(ids);
-  const members = await userRoleRepository.countActiveByRoles(organizationId, ids);
-  return roles.map((role) => toRoleDto(role, grants, members.get(role.id) ?? 0));
+  const grants = await roleModuleAccessRepository.listWithModulesByRoleIds(ids, options);
+  const members = await userRoleRepository.countActiveByRoles(organizationId, ids, options);
+  const templates = await templatesOf(roles, transaction);
+  return roles.map((role) =>
+    toRoleDto(role, grants, members.get(role.id) ?? 0, role.role_template_id ? (templates.get(role.role_template_id) ?? null) : null),
+  );
+}
+
+async function listRoles(organizationId: string, query: RoleListQuery = {}): Promise<RoleDto[]> {
+  return dtosOf(organizationId, await roleRepository.listByOrganization(organizationId, { roleTemplateId: query.role_template_id }));
 }
 
 async function getRole(organizationId: string, roleId: string): Promise<RoleDto> {
   const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId), "Role not found");
-  const members = await userRoleRepository.countActiveByRoles(organizationId, [role.id]);
-  return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id]), members.get(role.id) ?? 0);
+  const [dto] = await dtosOf(organizationId, [role]);
+  return dto as RoleDto;
 }
 
 const grantedActions = (grant: RoleGrantInput): GrantableAction[] => GRANTABLE_ACTIONS.filter((action) => grant[action] === true);
@@ -111,8 +126,31 @@ function assertUnlocked(role: RoleRow): void {
 
 async function roleDto(organizationId: string, roleId: string, transaction: Transaction): Promise<RoleDto> {
   const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId, { transaction }), "Role not found");
-  const members = await userRoleRepository.countActiveByRoles(organizationId, [role.id], { transaction });
-  return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id], { transaction }), members.get(role.id) ?? 0);
+  const [dto] = await dtosOf(organizationId, [role], transaction);
+  return dto as RoleDto;
+}
+
+/**
+ * The grants a new role starts with (Phase 2e): the form's when sent, otherwise a copy of the template's. The template
+ * must exist and be active. Returns the template id the role will remember.
+ */
+async function startingGrants(input: RoleCreateInput, transaction: Transaction): Promise<{ grants: RoleGrantInput[]; templateId: string | null }> {
+  if (input.role_template_id === undefined) return { grants: input.grants ?? [], templateId: null };
+  const template = ensureFound(await roleTemplateRepository.findById(input.role_template_id, { transaction }), "Role template not found");
+  if (!template.is_active) throw new RoleTemplateInactiveError(undefined, { role_template_id: template.id });
+  if (input.grants !== undefined) return { grants: input.grants, templateId: template.id };
+  const rows = await roleTemplateRepository.listGrantsWithModules([template.id], { transaction });
+  const grants = rows.map((row) => ({
+    module_code: row.module.code,
+    view: row.can_view,
+    create: row.can_create,
+    update: row.can_update,
+    delete: row.can_delete,
+    import: row.can_import,
+    export: row.can_export,
+    notify: row.can_notify,
+  }));
+  return { grants, templateId: template.id };
 }
 
 async function createRole(organizationId: string, input: RoleCreateInput, editor: RoleEditor): Promise<RoleDto> {
@@ -122,8 +160,10 @@ async function createRole(organizationId: string, input: RoleCreateInput, editor
       throw new ConflictError("Another role already uses this code", { field: "code" });
     }
     await assertNameFree(organizationId, input.name, transaction);
-    const moduleIds = await assertGrantable(input.grants, transaction);
-    await assertNoEscalation(organizationId, editor, input.grants, new Map());
+    const { grants, templateId } = await startingGrants(input, transaction);
+    // A copied template grant goes through the same checks as one the form sent.
+    const moduleIds = await assertGrantable(grants, transaction);
+    await assertNoEscalation(organizationId, editor, grants, new Map());
 
     const role = await roleRepository.create(
       {
@@ -131,13 +171,14 @@ async function createRole(organizationId: string, input: RoleCreateInput, editor
         code: input.code,
         name: input.name,
         description: input.description ?? null,
+        role_template_id: templateId,
         is_active: true,
         created_by: editor.userId,
         updated_by: editor.userId,
       },
       { transaction },
     );
-    await roleModuleAccessRepository.replaceForRole(role.id, grantRows(role.id, input.grants, moduleIds, editor.userId), { transaction });
+    await roleModuleAccessRepository.replaceForRole(role.id, grantRows(role.id, grants, moduleIds, editor.userId), { transaction });
     return roleDto(organizationId, role.id, transaction);
   });
 }

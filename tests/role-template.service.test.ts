@@ -6,6 +6,7 @@ import { SEED_ROLE_TEMPLATES } from "../src/migrations/20261201000002-seed-role-
 import { OWNER_ALL_ACTIONS_GRANT } from "../src/migrations/20261202000000-grant-all-actions-to-owner-roles.js";
 import type { RoleTemplateRow } from "../src/models/role-template.js";
 import { moduleRepository } from "../src/repositories/module.repository.js";
+import { roleRepository } from "../src/repositories/role.repository.js";
 import { roleTemplateRepository, type RoleTemplateGrantRow } from "../src/repositories/role-template.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { roleTemplateService } from "../src/services/role-template.service.js";
@@ -159,9 +160,32 @@ test("new organizations get the active templates for new organizations, and fall
 
   const templates = await roleTemplateService.templatesForNewOrganization(FAKE_TX);
   assert.deepEqual(templates.map((entry) => entry.code), ["OWNER", "GATE"], "active and for new organizations only");
+  assert.deepEqual(templates.map((entry) => entry.templateId), [OWNER_T.id, forNew.id], "new roles remember their template");
   assert.deepEqual(templates[0]?.grants, [{ moduleCode: "REGISTRATIONS", actions: ["view", "update", "export"] }]);
 
   mock.restoreAll();
   arrange([forNew]);
   assert.equal(await roleTemplateService.templatesForNewOrganization(FAKE_TX), DEFAULT_TENANT_ROLES, "no OWNER template: the code's defaults");
 });
+
+test("the Super Admin sees every organization's roles made from a template", async () => {
+  arrange();
+  mock.method(roleRepository, "listByTemplate", async () => [
+    { ...roleRowLike("role-1", "DOOR_STAFF"), organization: { id: IDS.orgA, name: "Selam Events", slug: "selam-events" } },
+  ]);
+  const roles = await roleTemplateService.listTemplateRoles(DOOR_T.id);
+  assert.deepEqual(roles, [{ id: "role-1", code: "DOOR_STAFF", name: "DOOR_STAFF", is_active: true, organization: { id: IDS.orgA, name: "Selam Events", slug: "selam-events" } }]);
+});
+
+function roleRowLike(id: string, code: string) {
+  return {
+    id,
+    organization_id: IDS.orgA,
+    code,
+    name: code,
+    description: null,
+    role_template_id: DOOR_T.id,
+    is_active: true,
+    ...audit,
+  };
+}

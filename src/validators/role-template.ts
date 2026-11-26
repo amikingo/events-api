@@ -37,3 +37,4 @@ export const createRoleTemplateRequest = { body: roleTemplateCreateSchema } sati
 export const updateRoleTemplateRequest = { params: roleTemplateParamsSchema, body: roleTemplateUpdateSchema } satisfies RequestContract;
 export const changeRoleTemplateStatusRequest = { params: roleTemplateParamsSchema, body: statusChangeSchema } satisfies RequestContract;
 export const listOrganizationRoleTemplatesRequest = { params: organizationIdParamsSchema } satisfies RequestContract;
+export const listTemplateRolesRequest = { params: roleTemplateParamsSchema } satisfies RequestContract;

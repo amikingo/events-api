@@ -14,6 +14,8 @@ export type RoleDto = {
   grant_count: number;
   /** Active staff assignments holding this role (Phase 2e). */
   member_count: number;
+  /** The template the role was made from (Phase 2e); a copy, so later template edits don't change the role. */
+  role_template: { id: string; code: string; name: string } | null;
   grants: Array<{
     module_code: string;
     module_name: string;
@@ -30,7 +32,9 @@ export type RoleDto = {
 const givesAnything = (grant: RoleGrantRow): boolean =>
   grant.can_view || grant.can_create || grant.can_update || grant.can_delete || grant.can_import || grant.can_export || grant.can_notify;
 
-export function toRoleDto(role: RoleRow, grants: RoleGrantRow[], memberCount = 0): RoleDto {
+export type RoleTemplateRef = { id: string; code: string; name: string };
+
+export function toRoleDto(role: RoleRow, grants: RoleGrantRow[], memberCount = 0, template: RoleTemplateRef | null = null): RoleDto {
   const own = grants.filter((grant) => grant.role_id === role.id);
   return {
     id: role.id,
@@ -40,6 +44,7 @@ export function toRoleDto(role: RoleRow, grants: RoleGrantRow[], memberCount = 0
     is_active: role.is_active,
     grant_count: own.filter(givesAnything).length,
     member_count: memberCount,
+    role_template: template ? { id: template.id, code: template.code, name: template.name } : null,
     grants: own
       .map((grant) => ({
         module_code: grant.module.code,

@@ -2291,7 +2291,7 @@
     },
     "/v1/organizations/{organizationId}/roles": {
       "get": {
-        "summary": "The organization's roles and what each may do, module by module",
+        "summary": "The organization's roles and what each may do, module by module, with grant_count, member_count and role_template. Filter: role_template_id",
         "tags": [
           "Access control"
         ],
@@ -2305,6 +2305,16 @@
             "name": "organizationId",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "role_template_id",
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "string",
               "format": "uuid",
@@ -2329,8 +2339,8 @@
         }
       },
       "post": {
-        "summary": "Create a role with its grants: all 7 actions per module (view, create, update required; delete, import, export, notify optional, left out means no). The code is fixed afterwards",
-        "description": "Errors: 400 validation_error (a module or action a tenant role may not hold, named in issues[].path); 403 grant_exceeds_own_access (details.module_code and action: you can't grant what you don't hold); 409 conflict (field code or name).",
+        "summary": "Create a role with its grants: all 7 actions per module (view, create, update required; delete, import, export, notify optional, left out means no). Optional role_template_id (an active template): without grants its grants are copied; the role remembers the template. The code is fixed afterwards",
+        "description": "Errors: 400 validation_error (a module or action a tenant role may not hold, named in issues[].path; or neither grants nor role_template_id); 403 grant_exceeds_own_access (details.module_code and action: you can't grant what you don't hold); 404 unknown template; 409 role_template_inactive; 409 conflict (field code or name).",
         "tags": [
           "Access control"
         ],
@@ -3286,6 +3296,46 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/role-templates/{templateId}/roles": {
+      "get": {
+        "summary": "The roles made from this template, in every organization (platform scope). Copies: they don't change when the template does",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "templateId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
@@ -5333,6 +5383,11 @@
             "type": "string",
             "maxLength": 2000
           },
+          "role_template_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
           "grants": {
             "maxItems": 30,
             "type": "array",
@@ -5378,8 +5433,7 @@
         },
         "required": [
           "code",
-          "name",
-          "grants"
+          "name"
         ],
         "additionalProperties": false
       },

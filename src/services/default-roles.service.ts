@@ -36,6 +36,7 @@ async function createDefaultRoles(organizationId: string, actorId: string | null
         code: template.code,
         name: template.name,
         description: template.description,
+        role_template_id: template.templateId ?? null,
         is_active: true,
         created_by: actorId,
         updated_by: actorId,

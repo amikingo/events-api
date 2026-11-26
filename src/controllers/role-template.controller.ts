@@ -7,6 +7,7 @@ import {
   createRoleTemplateRequest,
   getRoleTemplateRequest,
   listOrganizationRoleTemplatesRequest,
+  listTemplateRolesRequest,
   updateRoleTemplateRequest,
 } from "../validators/role-template.js";
 import { getActorId } from "./helpers.js";
@@ -37,9 +38,23 @@ async function changeTemplateStatus(req: Request, res: Response): Promise<void> 
   sendSuccess(res, 200, template, body.is_active ? "Role template switched on" : "Role template switched off");
 }
 
+/** Every organization's roles made from this template (Phase 2e). */
+async function listTemplateRoles(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, listTemplateRolesRequest);
+  sendSuccess(res, 200, await roleTemplateService.listTemplateRoles(params.templateId), "Roles made from this template retrieved");
+}
+
 async function listForOrganization(req: Request, res: Response): Promise<void> {
   const { params } = getValidated(req, listOrganizationRoleTemplatesRequest);
   sendSuccess(res, 200, await roleTemplateService.listForOrganization(params.organizationId), "Role templates retrieved");
 }
 
-export const roleTemplateController = { listTemplates, getTemplate, createTemplate, updateTemplate, changeTemplateStatus, listForOrganization };
+export const roleTemplateController = {
+  listTemplates,
+  getTemplate,
+  createTemplate,
+  updateTemplate,
+  changeTemplateStatus,
+  listTemplateRoles,
+  listForOrganization,
+};

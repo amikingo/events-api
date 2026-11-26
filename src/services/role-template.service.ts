@@ -3,6 +3,7 @@ import { ConflictError, RoleLockedError } from "../errors/app-errors.js";
 import { toRoleTemplateDto, type RoleTemplateDto } from "../mappers/role-template.mapper.js";
 import type { RoleTemplateRow } from "../models/role-template.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
+import { roleRepository } from "../repositories/role.repository.js";
 import { roleTemplateRepository, type RoleTemplateGrantRow } from "../repositories/role-template.repository.js";
 import { DEFAULT_TENANT_ROLES, OWNER_ROLE_CODE, type DefaultRoleTemplate } from "../utils/default-roles.js";
 import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, PERMISSION_ACTIONS, type GrantableAction, type PermissionAction } from "../utils/rbac.js";
@@ -169,6 +170,7 @@ async function templatesForNewOrganization(transaction: Transaction): Promise<re
     { transaction },
   );
   return templates.map((template) => ({
+    templateId: template.id,
     code: template.code,
     name: template.name,
     description: template.description ?? "",
@@ -178,7 +180,23 @@ async function templatesForNewOrganization(transaction: Transaction): Promise<re
   }));
 }
 
+/** A role made from a template, in any organization (Phase 2e). */
+export type TemplateRoleDto = { id: string; code: string; name: string; is_active: boolean; organization: { id: string; name: string; slug: string } };
+
+/** The Super Admin's "roles using this template": every organization's roles made from it. Still copies, not links. */
+async function listTemplateRoles(templateId: string): Promise<TemplateRoleDto[]> {
+  ensureFound(await roleTemplateRepository.findById(templateId), "Role template not found");
+  return (await roleRepository.listByTemplate(templateId)).map((role) => ({
+    id: role.id,
+    code: role.code,
+    name: role.name,
+    is_active: role.is_active,
+    organization: { id: role.organization.id, name: role.organization.name, slug: role.organization.slug },
+  }));
+}
+
 export const roleTemplateService = {
+  listTemplateRoles,
   listTemplates,
   listForOrganization,
   getTemplate,

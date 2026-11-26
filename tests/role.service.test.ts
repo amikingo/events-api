@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
-import { ConflictError, GrantExceedsOwnAccessError, RoleInUseError, RoleLockedError, ValidationAppError } from "../src/errors/app-errors.js";
+import { ConflictError, GrantExceedsOwnAccessError, RoleInUseError, RoleLockedError, RoleTemplateInactiveError, ValidationAppError } from "../src/errors/app-errors.js";
 import type { RoleRow } from "../src/models/role.js";
 import { moduleRepository } from "../src/repositories/module.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { roleModuleAccessRepository, type RoleGrantRow } from "../src/repositories/role-module-access.repository.js";
 import { roleRepository } from "../src/repositories/role.repository.js";
+import { roleTemplateRepository, type RoleTemplateGrantRow } from "../src/repositories/role-template.repository.js";
 import { userRoleRepository } from "../src/repositories/user-role.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { permissionResolutionService, type PermissionScope } from "../src/services/permission-resolution.service.js";
@@ -82,6 +83,7 @@ function arrange(options: Arrange = {}) {
     }),
     holders: mock.method(userRoleRepository, "countActiveByRole", async () => options.holders ?? 0),
     members: mock.method(userRoleRepository, "countActiveByRoles", async () => new Map<string, number>()),
+    templates: mock.method(roleTemplateRepository, "listByIds", async () => []),
     permission: mock.method(
       permissionResolutionService,
       "resolvePermission",
@@ -136,6 +138,7 @@ test("creating a role stores it with its grants in one transaction; a box left o
     code: "GATE",
     name: "Gate",
     description: "At the door",
+    role_template_id: null,
     is_active: true,
     created_by: IDS.user,
     updated_by: IDS.user,
@@ -376,4 +379,82 @@ test("the grantable modules list is the active permission modules that TENANT_GR
   assert.deepEqual(modules.map((module) => module.module_code), ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "CUSTOMERS", "REGISTRATIONS"], "never platform modules");
   assert.deepEqual(modules.find((module) => module.module_code === "ORGANIZATIONS")?.actions, TENANT_GRANTABLE.ORGANIZATIONS);
   assert.deepEqual(modules.find((module) => module.module_code === "REGISTRATIONS")?.actions, TENANT_GRANTABLE.REGISTRATIONS);
+});
+
+// --- Phase 2e step 3: a role remembers its template ------------------------------------------------------
+
+const TEMPLATE = {
+  id: "template-door",
+  code: "DOOR_HELPER",
+  name: "Door helper",
+  description: null,
+  is_active: true,
+  for_new_organizations: false,
+  created_at: new Date("2026-01-01T00:00:00Z"),
+  updated_at: new Date("2026-01-01T00:00:00Z"),
+  created_by: null,
+  updated_by: null,
+};
+const templateGrant = (moduleCode: string, flags: Partial<Record<"can_view" | "can_update" | "can_delete", boolean>>) =>
+  ({
+    role_template_id: TEMPLATE.id,
+    module_id: `module-${moduleCode}`,
+    can_view: false,
+    can_create: false,
+    can_update: false,
+    can_delete: false,
+    can_import: false,
+    can_export: false,
+    can_notify: false,
+    ...flags,
+    module: { code: moduleCode, module_name: moduleCode, sno: 1 },
+  }) as unknown as RoleTemplateGrantRow;
+
+test("a role made from a template copies its grants (through the same checks) and remembers it; sent grants win over the template's", async () => {
+  const fakes = arrange();
+  mock.method(roleTemplateRepository, "findById", async () => TEMPLATE);
+  mock.method(roleTemplateRepository, "listGrantsWithModules", async () => [templateGrant("REGISTRATIONS", { can_view: true, can_update: true, can_delete: true })]);
+
+  await roleService.createRole(IDS.orgA, { code: "DOOR_HELPER", name: "Door helper", description: undefined, role_template_id: TEMPLATE.id }, EDITOR);
+  assert.equal(fakes.create.mock.calls[0]?.arguments[0]?.role_template_id, TEMPLATE.id);
+  const [, rows] = fakes.replace.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(
+    (rows as Array<Record<string, unknown>>).map((row) => [row.module_id, row.can_view, row.can_update, row.can_delete]),
+    [["module-REGISTRATIONS", true, true, true]],
+  );
+  assert.deepEqual(
+    fakes.permission.mock.calls.map((call) => call.arguments[0].action),
+    ["view", "update", "delete"],
+    "copied grants still pass the escalation rule",
+  );
+
+  await roleService.createRole(
+    IDS.orgA,
+    { code: "DOOR_LITE", name: "Door lite", description: undefined, role_template_id: TEMPLATE.id, grants: [grant("REGISTRATIONS", { view: true })] },
+    EDITOR,
+  );
+  const [, edited] = fakes.replace.mock.calls[1]?.arguments ?? [];
+  assert.deepEqual((edited as Array<Record<string, unknown>>).map((row) => [row.can_view, row.can_update]), [[true, false]]);
+  assert.equal(fakes.create.mock.calls[1]?.arguments[0]?.role_template_id, TEMPLATE.id, "still remembered");
+});
+
+test("a switched-off template can't be used (409 role_template_inactive); nothing is written", async () => {
+  const fakes = arrange();
+  mock.method(roleTemplateRepository, "findById", async () => ({ ...TEMPLATE, is_active: false }));
+  await assert.rejects(
+    roleService.createRole(IDS.orgA, { code: "X", name: "X", description: undefined, role_template_id: TEMPLATE.id }, EDITOR),
+    RoleTemplateInactiveError,
+  );
+  assert.equal(fakes.create.mock.callCount(), 0);
+});
+
+test("roles carry the template they came from, and the list filters by it", async () => {
+  const fromTemplate = roleRow({ id: "role-made", code: "MADE", name: "Made", role_template_id: TEMPLATE.id });
+  const fakes = arrange({ roles: [OWNER, fromTemplate] });
+  fakes.templates.mock.mockImplementation(async () => [TEMPLATE]);
+  const list = mock.method(roleRepository, "listByOrganization", async (_o: string, _options?: unknown) => [OWNER, fromTemplate]);
+  const roles = await roleService.listRoles(IDS.orgA, { role_template_id: TEMPLATE.id });
+  assert.deepEqual((list.mock.calls[0]?.arguments[1] as { roleTemplateId: string }).roleTemplateId, TEMPLATE.id);
+  assert.deepEqual(roles.find((role) => role.code === "MADE")?.role_template, { id: TEMPLATE.id, code: "DOOR_HELPER", name: "Door helper" });
+  assert.equal(roles.find((role) => role.code === "OWNER")?.role_template, null);
 });

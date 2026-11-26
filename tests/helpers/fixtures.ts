@@ -203,7 +203,7 @@ export function fileRow(overrides: Partial<StoredFileRow> = {}): StoredFileRow {
 }
 
 export function roleRow(overrides: Partial<RoleRow> = {}): RoleRow {
-  return { id: IDS.roleA, organization_id: IDS.orgA, code: "MANAGER", name: "Manager", description: null, is_active: true, ...audit, ...overrides };
+  return { id: IDS.roleA, organization_id: IDS.orgA, code: "MANAGER", name: "Manager", description: null, role_template_id: null, is_active: true, ...audit, ...overrides };
 }
 
 export function moduleRow(overrides: Partial<ModuleRow> = {}): ModuleRow {

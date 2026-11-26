@@ -32,13 +32,23 @@ export const grantsSchema = z
     });
   });
 
-/** A new role of this organization. The code is fixed afterwards (assignments and scripts use it). */
-export const roleCreateSchema = z.strictObject({
-  code: codeSchema,
-  name: z.string().trim().min(1).max(250),
-  description: nullableText(2000),
-  grants: grantsSchema,
-});
+/**
+ * A new role of this organization. The code is fixed afterwards (assignments and scripts use it). Phase 2e: it may be
+ * made from a template (`role_template_id`, an active one): without `grants` the server copies the template's grants;
+ * with `grants` it uses those (the form after editing). Either way the role remembers the template. A copy, never a link.
+ */
+export const roleCreateSchema = z
+  .strictObject({
+    code: codeSchema,
+    name: z.string().trim().min(1).max(250),
+    description: nullableText(2000),
+    role_template_id: uuidSchema.optional(),
+    grants: grantsSchema.optional(),
+  })
+  .refine((value) => value.grants !== undefined || value.role_template_id !== undefined, {
+    message: "Send grants, or role_template_id to copy a template's grants",
+    path: ["grants"],
+  });
 
 /** `grants` replaces the role's whole grant set; leave it out to keep the grants as they are. */
 export const roleUpdateSchema = z
@@ -54,7 +64,11 @@ export type RoleCreateInput = z.output<typeof roleCreateSchema>;
 export type RoleUpdateInput = z.output<typeof roleUpdateSchema>;
 
 // One contract per endpoint (see middleware/validate.ts).
-export const listRolesRequest = { params: organizationIdParamsSchema } satisfies RequestContract;
+/** `role_template_id` lists the roles made from one template (Phase 2e). */
+export const roleListQuerySchema = z.strictObject({ role_template_id: uuidSchema.optional() });
+export type RoleListQuery = z.output<typeof roleListQuerySchema>;
+
+export const listRolesRequest = { params: organizationIdParamsSchema, query: roleListQuerySchema } satisfies RequestContract;
 
 export const getRoleRequest = { params: roleParamsSchema } satisfies RequestContract;
 

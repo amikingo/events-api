@@ -1957,3 +1957,40 @@ test("row 80: deleting an assignment removes it and its overrides; the last Owne
   const lastOwner = await as("SUPER", "DELETE", `/v1/organizations/${abay.id}/staff-assignments/${await assignmentIdOf(ABAY_OWNER_ID)}`);
   assert.deepEqual([lastOwner.status, lastOwner.body.error.code], [409, "last_owner_assignment"]);
 });
+
+// --- Phase 2e step 3: a role remembers its template ------------------------------------------------------
+
+test("row 81: a role made from a template copies its grants and remembers it; a switched-off template is refused; the Super Admin sees who uses it; template edits never reach the role", { skip }, async () => {
+  const templateId = templateFixture.doorTemplateId;
+  assert.ok(templateId, "row 73 made the Door helper template");
+  const template = (await as("SUPER", "GET", `/v1/role-templates/${templateId}`)).body.data as {
+    grants: Array<{ module_code: string; view: boolean; create: boolean; update: boolean }>;
+  };
+
+  const made = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "door_copy", name: "Door copy", role_template_id: templateId });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.data.role_template, { id: templateId, code: "DOOR_HELPER", name: "Door helper" });
+  const shape = (grants: Array<{ module_code: string; view: boolean; create: boolean; update: boolean }>) =>
+    grants.map((grant) => `${grant.module_code}:${grant.view}${grant.create}${grant.update}`).sort();
+  assert.deepEqual(shape(made.body.data.grants), shape(template.grants), "the template's grants, copied");
+
+  const filtered = await as("SELAM_OWNER", "GET", `${staffBase()}/roles?role_template_id=${templateId}`);
+  assert.deepEqual(filtered.body.data.map((role: { code: string }) => role.code), ["DOOR_COPY"]);
+
+  const usedBy = await as("SUPER", "GET", `/v1/role-templates/${templateId}/roles`);
+  assert.ok(usedBy.body.data.some((role: { code: string; organization: { slug: string } }) => role.code === "DOOR_COPY" && role.organization.slug === "selam-events"));
+  assert.equal((await as("SELAM_OWNER", "GET", `/v1/role-templates/${templateId}/roles`)).status, 403, "platform scope");
+
+  assert.equal((await as("SUPER", "PATCH", `/v1/role-templates/${templateId}/status`, { is_active: false })).status, 200);
+  try {
+    const refused = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "door_late", name: "Door late", role_template_id: templateId });
+    assert.deepEqual([refused.status, refused.body.error.code], [409, "role_template_inactive"]);
+  } finally {
+    assert.equal((await as("SUPER", "PATCH", `/v1/role-templates/${templateId}/status`, { is_active: true })).status, 200);
+  }
+
+  const edited = await as("SUPER", "PATCH", `/v1/role-templates/${templateId}`, { grants: [grantOf("CUSTOMERS", true, false, false)] });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const role = await as("SELAM_OWNER", "GET", `${staffBase()}/roles/${made.body.data.id}`);
+  assert.deepEqual(shape(role.body.data.grants), shape(made.body.data.grants), "a copy, never a link");
+});

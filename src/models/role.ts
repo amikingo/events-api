@@ -14,6 +14,8 @@ export class Role extends Model<InferAttributes<Role>, InferCreationAttributes<R
   declare code: string;
   declare name: string;
   declare description: string | null;
+  /** The template the role was made from (Phase 2e): the origin only, never a link. */
+  declare role_template_id: CreationOptional<string | null>;
   declare is_active: CreationOptional<boolean>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
@@ -30,6 +32,7 @@ Role.init(
     code: { type: DataTypes.STRING(80), allowNull: false },
     name: { type: DataTypes.STRING(250), allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: true },
+    role_template_id: { type: DataTypes.UUID, allowNull: true, defaultValue: null },
     is_active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,

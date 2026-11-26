@@ -2,6 +2,8 @@ import { MODULE_CODES, type ModuleCode } from "./module-codes.js";
 import type { PermissionAction } from "./rbac.js";
 
 export type DefaultRoleTemplate = {
+  /** The role template this came from, when it came from the database (Phase 2e); the new role remembers it. */
+  templateId?: string;
   code: string;
   name: string;
   description: string;

@@ -12,7 +12,7 @@ import { call, withServer } from "./helpers/http.js";
 /** HTTP-level tests of the Phase 2c role and organization endpoints: real auth, validation and envelope; services stubbed. */
 const app = createApp();
 const base = `/v1/organizations/${IDS.orgA}`;
-const ROLE: RoleDto = { id: IDS.roleA, code: "DOOR_STAFF", name: "Door staff", description: null, is_active: true, grant_count: 0, member_count: 0, grants: [] };
+const ROLE: RoleDto = { id: IDS.roleA, code: "DOOR_STAFF", name: "Door staff", description: null, is_active: true, grant_count: 0, member_count: 0, role_template: null, grants: [] };
 const GRANT = { module_code: "registrations", view: true, create: false, update: true };
 
 function allowPermissions(allowed: boolean) {
@@ -77,7 +77,7 @@ test("creating a role: 201 with the editor's user and assignment; codes are uppe
   });
 
   const [organizationId, input, editor] = create.mock.calls[0]?.arguments ?? [];
-  assert.deepEqual([organizationId, input?.code, input?.grants[0]?.module_code], [IDS.orgA, "DOOR_STAFF", "REGISTRATIONS"]);
+  assert.deepEqual([organizationId, input?.code, input?.grants?.[0]?.module_code], [IDS.orgA, "DOOR_STAFF", "REGISTRATIONS"]);
   assert.deepEqual(editor, { userId: IDS.user, assignmentId: IDS.assignment });
 });
 
@@ -124,4 +124,22 @@ test("organizations: name and description are editable, the slug is not; status 
   assert.deepEqual(status.mock.calls[0]?.arguments, [IDS.orgA, false, IDS.user]);
   const [createBody] = (create.mock.calls[0]?.arguments ?? []) as unknown as [{ owner_mobile?: string }];
   assert.equal(createBody.owner_mobile, "+251911234567", "normalized before the service sees it");
+});
+
+// --- Phase 2e step 3 ------------------------------------------------------------------------------------
+
+test("a role may be created from a template without grants; neither grants nor a template is 400; the list filters by template", async () => {
+  allowPermissions(true);
+  const create = mock.method(roleService, "createRole", async () => ROLE);
+  const list = mock.method(roleService, "listRoles", async (_o: string, _query?: unknown) => [ROLE]);
+  const template = "77777777-7777-4777-8777-777777777772";
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    assert.equal((await call(baseUrl, "POST", `${base}/roles`, { token, body: { code: "GATE", name: "Gate", role_template_id: template } })).status, 201);
+    assert.equal((await call(baseUrl, "POST", `${base}/roles`, { token, body: { code: "GATE", name: "Gate" } })).status, 400);
+    assert.equal((await call(baseUrl, "GET", `${base}/roles?role_template_id=${template}`, { token })).status, 200);
+    assert.equal((await call(baseUrl, "GET", `${base}/roles?role_template_id=nope`, { token })).status, 400);
+  });
+  assert.equal(create.mock.callCount(), 1);
+  assert.deepEqual(list.mock.calls[0]?.arguments[1], { role_template_id: template });
 });

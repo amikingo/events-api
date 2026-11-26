@@ -1,5 +1,6 @@
 import type { CreationAttributes } from "sequelize";
-import { Role } from "../models/index.js";
+import { Organization, Role } from "../models/index.js";
+import type { OrganizationRow } from "../models/organization.js";
 import type { RoleRow } from "../models/role.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
 import { lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
@@ -10,6 +11,7 @@ const attributes = [
   "code",
   "name",
   "description",
+  "role_template_id",
   "is_active",
   "created_at",
   "updated_at",
@@ -57,9 +59,9 @@ async function updateByOrganizationAndId(
   return findByOrganizationAndId(organizationId, roleId, options);
 }
 
-async function listByOrganization(organizationId: string, options: RepoOptions = {}): Promise<RoleRow[]> {
+async function listByOrganization(organizationId: string, options: RepoOptions & { roleTemplateId?: string | undefined } = {}): Promise<RoleRow[]> {
   const rows = await Role.findAll({
-    where: { organization_id: organizationId },
+    where: { organization_id: organizationId, ...(options.roleTemplateId ? { role_template_id: options.roleTemplateId } : {}) },
     attributes: [...attributes],
     order: [
       ["is_active", "DESC"],
@@ -70,7 +72,26 @@ async function listByOrganization(organizationId: string, options: RepoOptions =
   return toPlainList<RoleRow>(rows);
 }
 
+/** A role made from a template, with its organization (the Super Admin's "roles using this template", Phase 2e). */
+export type TemplateRoleRow = RoleRow & { organization: Pick<OrganizationRow, "id" | "name" | "slug"> };
+
+/** Every organization's roles made from this template, platform roles excluded. */
+async function listByTemplate(templateId: string, options: RepoOptions = {}): Promise<TemplateRoleRow[]> {
+  const rows = await Role.findAll({
+    where: { role_template_id: templateId },
+    attributes: [...attributes],
+    include: [{ model: Organization, as: "organization", required: true, attributes: ["id", "name", "slug"] }],
+    order: [
+      [{ model: Organization, as: "organization" }, "name", "ASC"],
+      ["code", "ASC"],
+    ],
+    ...txOptions(options),
+  });
+  return toPlainList<TemplateRoleRow>(rows);
+}
+
 export const roleRepository = {
+  listByTemplate,
   findPlatformRoleByCode,
   findByOrganizationAndCode,
   findByOrganizationAndId,

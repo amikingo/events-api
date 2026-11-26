@@ -10,6 +10,7 @@ import {
   getRoleTemplateRequest,
   listOrganizationRoleTemplatesRequest,
   listRoleTemplatesRequest,
+  listTemplateRolesRequest,
   updateRoleTemplateRequest,
 } from "../../validators/role-template.js";
 
@@ -41,6 +42,15 @@ roleTemplatesRouter.get(
   validate(getRoleTemplateRequest),
   requirePermission({ moduleCode: MODULE_CODES.ROLE_TEMPLATES, action: "view", scope: "platform" }),
   roleTemplateController.getTemplate,
+);
+
+// Phase 2e: which organizations' roles were made from this template.
+roleTemplatesRouter.get(
+  "/:templateId/roles",
+  requireStaffAuthentication,
+  validate(listTemplateRolesRequest),
+  requirePermission({ moduleCode: MODULE_CODES.ROLE_TEMPLATES, action: "view", scope: "platform" }),
+  roleTemplateController.listTemplateRoles,
 );
 
 roleTemplatesRouter.patch(

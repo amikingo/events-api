@@ -273,3 +273,14 @@ platform scope; adding staff never returns a token; every route checks a permiss
 - `DELETE /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` (Staff Assignments › delete): deletes the
   assignment for good, with its overrides (foreign key CASCADE); 204. Refused for the last active Owner
   (409 `last_owner_assignment`) and for your own (409 `own_assignment`). Switching off stays the normal way.
+
+**Step 3: a role remembers its template.**
+- `role.role_template_id` (migration `20261203000000`, nullable, ON DELETE SET NULL): the origin only. **Still a copy,
+  never a link:** editing a template never changes a role made from it.
+- `POST /roles` accepts `role_template_id` (an active template; 409 `role_template_inactive`). Without `grants` the
+  server copies the template's grants; with `grants` it uses them. The copied grants go through the same grantable and
+  escalation checks as sent ones.
+- Roles carry `role_template: { id, code, name } | null`; `GET /roles?role_template_id=` filters by it.
+- New organizations' roles copied from templates remember them too.
+- `GET /v1/role-templates/{templateId}/roles` (platform, `ROLE_TEMPLATES.view`): every organization's roles made from
+  the template, with the organization's name and slug.

@@ -25,8 +25,8 @@ async function listGrantableModules(req: Request, res: Response): Promise<void> 
 }
 
 async function listRoles(req: Request, res: Response): Promise<void> {
-  const { params } = getValidated(req, listRolesRequest);
-  sendSuccess(res, 200, await roleService.listRoles(params.organizationId), "Roles retrieved");
+  const { params, query } = getValidated(req, listRolesRequest);
+  sendSuccess(res, 200, await roleService.listRoles(params.organizationId, query), "Roles retrieved");
 }
 
 async function getRole(req: Request, res: Response): Promise<void> {

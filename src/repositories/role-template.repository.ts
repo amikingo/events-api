@@ -65,6 +65,12 @@ async function findById(templateId: string, options: RepoOptions = {}): Promise<
   return toPlain<RoleTemplateRow>(row);
 }
 
+async function listByIds(templateIds: readonly string[], options: RepoOptions = {}): Promise<RoleTemplateRow[]> {
+  if (templateIds.length === 0) return [];
+  const rows = await RoleTemplate.findAll({ where: { id: { [Op.in]: [...templateIds] } }, attributes: [...attributes], ...txOptions(options) });
+  return toPlainList<RoleTemplateRow>(rows);
+}
+
 async function findByCode(code: string, options: RepoOptions = {}): Promise<RoleTemplateRow | null> {
   const row = await RoleTemplate.findOne({ where: { code }, attributes: [...attributes], ...txOptions(options) });
   return toPlain<RoleTemplateRow>(row);
@@ -102,4 +108,4 @@ async function replaceGrants(
   if (values.length > 0) await RoleTemplateModuleAccess.bulkCreate(values, { transaction: options.transaction });
 }
 
-export const roleTemplateRepository = { list, findById, findByCode, create, updateById, listGrantsWithModules, replaceGrants };
+export const roleTemplateRepository = { list, listByIds, findById, findByCode, create, updateById, listGrantsWithModules, replaceGrants };
