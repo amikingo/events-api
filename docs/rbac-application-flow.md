@@ -284,3 +284,12 @@ platform scope; adding staff never returns a token; every route checks a permiss
 - New organizations' roles copied from templates remember them too.
 - `GET /v1/role-templates/{templateId}/roles` (platform, `ROLE_TEMPLATES.view`): every organization's roles made from
   the template, with the organization's name and slug.
+
+**Step 4: creating Cheche accounts and editing names.**
+- `POST …/staff-assignments` accepts `new_account: { firstname, middlename?, lastname, password }`. When the mobile has
+  no Cheche account, a verified one is created with the Owner's password (shown once by the screen, never stored,
+  logged or returned) and the role is given; the reply says `account_created`. An existing account is used as it is.
+  Without `new_account`, an unknown mobile is still `404 central_account_not_found`.
+- `PATCH …/staff-assignments/{assignmentId}/profile` (`USER_ROLES.update`) changes the person's names in auth-cheche:
+  names only, never mobile, email, password or status; `409 central_auth_refused` when auth-cheche says no.
+- Adding staff never returns a token for that person (a bookings hole that stays closed).

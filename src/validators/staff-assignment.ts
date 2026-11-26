@@ -8,11 +8,34 @@ import { booleanQuerySchema, codeSchema, organizationIdParamsSchema, paginationQ
  * server; a user_id from the browser is never trusted. `branch_id` limits the role to one branch (only when the
  * organization has branches).
  */
+const nameSchema = z.string().trim().min(1).max(100);
+
+/**
+ * Phase 2e: a Cheche account to create when the mobile has none. The Owner sets the password (8 to 128 characters) and
+ * hands it over; it is sent to auth-cheche once and never stored, logged or returned. Ignored when an account exists.
+ */
+export const newStaffAccountSchema = z.strictObject({
+  firstname: nameSchema,
+  middlename: z.string().trim().max(100).nullable().optional(),
+  lastname: nameSchema,
+  password: z.string().min(8).max(128),
+});
+
 export const staffAssignmentCreateSchema = z.strictObject({
   mobile: mobileSchema,
   role_id: uuidSchema,
   branch_id: uuidSchema.optional(),
+  new_account: newStaffAccountSchema.optional(),
 });
+
+/** Phase 2e: a staff member's names in auth-cheche. Names only: never mobile, email, password or status. */
+export const staffProfileUpdateSchema = z
+  .strictObject({
+    firstname: nameSchema.optional(),
+    middlename: z.string().trim().max(100).nullable().optional(),
+    lastname: nameSchema.optional(),
+  })
+  .refine((value) => Object.values(value).some((field) => field !== undefined), { message: "Provide at least one name to change" });
 
 /** null branch_id makes the assignment organization-wide again. */
 export const staffAssignmentUpdateSchema = z
@@ -64,6 +87,7 @@ export type StaffOverrideInput = z.output<typeof staffOverrideSchema>;
 export type StaffOverridesReplaceInput = z.output<typeof staffOverridesReplaceSchema>;
 
 export type StaffAssignmentCreateInput = z.output<typeof staffAssignmentCreateSchema>;
+export type StaffProfileUpdateInput = z.output<typeof staffProfileUpdateSchema>;
 export type StaffAssignmentUpdateInput = z.output<typeof staffAssignmentUpdateSchema>;
 export type StaffAssignmentListQuery = z.output<typeof staffAssignmentListQuerySchema>;
 
@@ -85,3 +109,5 @@ export const deleteStaffAssignmentRequest = { params: staffAssignmentParamsSchem
 export const listStaffOverridesRequest = { params: staffAssignmentParamsSchema } satisfies RequestContract;
 
 export const replaceStaffOverridesRequest = { params: staffAssignmentParamsSchema, body: staffOverridesReplaceSchema } satisfies RequestContract;
+
+export const updateStaffProfileRequest = { params: staffAssignmentParamsSchema, body: staffProfileUpdateSchema } satisfies RequestContract;

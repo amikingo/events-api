@@ -4,6 +4,7 @@ import { authConfig } from "../config/auth.js";
 import {
   CentralAuthRateLimitedError,
   CentralAuthUnavailableError,
+  CentralAuthRefusedError,
   ConflictError,
   InvalidCredentialsError,
   MalformedCentralAuthResponseError,
@@ -86,7 +87,17 @@ function serviceToken(): string {
   );
 }
 
-async function call(path: string, init: { method: "GET" | "POST"; body?: unknown; credentialsFlow?: boolean; asService?: boolean }) {
+async function call(
+  path: string,
+  init: {
+    method: "GET" | "POST" | "PUT";
+    body?: unknown;
+    credentialsFlow?: boolean;
+    asService?: boolean;
+    /** A refused service token is 409 central_auth_refused (an edit auth-cheche said no to), not 503. */
+    serviceRefusalIsConflict?: boolean;
+  },
+) {
   try {
     const response = await requestJson(new URL(`${authConfig.centralAuthUrl}${path}`), {
       upstream: UPSTREAM,
@@ -104,6 +115,7 @@ async function call(path: string, init: { method: "GET" | "POST"; body?: unknown
       if (response.status === 429) throw new CentralAuthRateLimitedError(undefined, undefined, { cause });
       // A refused service token is our configuration (APP_AUTH_TOKEN or service id), never the staff member's fault.
       if (init.asService && (response.status === 401 || response.status === 403)) {
+        if (init.serviceRefusalIsConflict) throw new CentralAuthRefusedError(undefined, undefined, { cause });
         throw new CentralAuthUnavailableError("Central Auth refused this API's service token", undefined, { cause });
       }
       if (init.credentialsFlow && CREDENTIALS_REFUSED_STATUSES.includes(response.status)) {
@@ -308,6 +320,51 @@ async function signInWithCode(input: { mobile: string; otp: string }): Promise<C
   return parseGuestTokens(await call("/v1/auth/otp-login", { method: "POST", body: input }));
 }
 
+// --- Staff accounts (Phase 2e): creating an account and editing names, with the service token -------------------
+//
+// docs/authentication.md "Creating staff accounts" and "Editing a staff member's details". Replies are read leniently
+// (the account may come back at the top level or under `user`, as `id` or `user_id`); when the reply has no usable
+// account, the caller looks the mobile up again.
+
+export type NewStaffAccount = { mobile: string; firstname: string; middlename?: string | null; lastname: string; password: string };
+
+/**
+ * Creates a verified Cheche account (no SMS code) registered to this service. 409 (ConflictError) means the account
+ * already exists. Returns the account when the reply names it, otherwise null. The password is sent once and never
+ * kept.
+ */
+async function createVerifiedUser(input: NewStaffAccount): Promise<CentralUser | null> {
+  const query = new URLSearchParams({ service_id: authConfig.centralAuthServiceId });
+  const payload = await call(`/v1/users/create-verified?${query.toString()}`, {
+    method: "POST",
+    asService: true,
+    body: {
+      mobile: input.mobile,
+      firstname: input.firstname,
+      ...(input.middlename ? { middlename: input.middlename } : {}),
+      lastname: input.lastname,
+      password: input.password,
+    },
+  });
+  const candidate = field(payload, "user") ?? payload;
+  try {
+    return candidate && typeof candidate === "object" ? toCentralUser(candidate) : null;
+  } catch {
+    return null;
+  }
+}
+
+export type StaffNames = { firstname?: string | undefined; middlename?: string | null | undefined; lastname?: string | undefined };
+
+/**
+ * Changes a person's names in auth-cheche. **Names only:** never mobile, email, status, PIN or password (a Cheche
+ * account is the same person in every Cheche app). A refusal of the service token is 409 central_auth_refused.
+ */
+async function updateUserNames(userId: string, names: StaffNames): Promise<void> {
+  const body = Object.fromEntries(Object.entries(names).filter(([, value]) => value !== undefined));
+  await call(`/v1/users/${encodeURIComponent(userId)}`, { method: "PUT", asService: true, serviceRefusalIsConflict: true, body });
+}
+
 export const centralAuthClient = {
   passwordLogin,
   emailLogin,
@@ -319,4 +376,6 @@ export const centralAuthClient = {
   verifyCode,
   sendCode,
   signInWithCode,
+  createVerifiedUser,
+  updateUserNames,
 };

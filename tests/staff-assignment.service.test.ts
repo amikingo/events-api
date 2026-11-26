@@ -9,6 +9,7 @@ import {
   ConflictError,
   InvalidBranchStateError,
   LastOwnerAssignmentError,
+  MalformedCentralAuthResponseError,
   NotFoundError,
   OwnAssignmentError,
   RoleInactiveError,
@@ -288,4 +289,63 @@ test("an assignment is deleted for good under the Owner lock; the last active Ow
   await assert.rejects(staffAssignmentService.remove(IDS.orgA, "assignment-1", IDS.user), LastOwnerAssignmentError);
   await assert.rejects(staffAssignmentService.remove(IDS.orgA, "assignment-1", PERSON_ID), OwnAssignmentError);
   assert.equal(refused.mock.callCount(), 0);
+});
+
+// --- Phase 2e step 4: creating a Cheche account when adding staff; editing names ------------------------------
+
+const NEW_ACCOUNT = { firstname: "Hana", middlename: undefined, lastname: "Bekele", password: "secret-123" };
+
+test("no account and new_account: a verified account is created with the Owner's password, then the role is given", async () => {
+  const fakes = arrange({ person: null });
+  const create = mock.method(centralAuthClient, "createVerifiedUser", async (_input: unknown) => PERSON);
+  const { outcome, accountCreated } = await staffAssignmentService.assign(IDS.orgA, { mobile: "+251911234567", role_id: VIEWER.id, new_account: NEW_ACCOUNT }, IDS.user);
+  assert.deepEqual([outcome, accountCreated], ["CREATED", true]);
+  assert.deepEqual(create.mock.calls[0]?.arguments[0], { mobile: "+251911234567", ...NEW_ACCOUNT });
+  assert.equal(fakes.create.mock.calls[0]?.arguments[0]?.user_id, PERSON_ID);
+});
+
+test("an existing account is used as it is: no account is created, and a 409 from a race uses the account found again", async () => {
+  arrange();
+  const create = mock.method(centralAuthClient, "createVerifiedUser", async () => PERSON);
+  const existing = await staffAssignmentService.assign(IDS.orgA, { mobile: "+251911234567", role_id: VIEWER.id, new_account: NEW_ACCOUNT }, IDS.user);
+  assert.deepEqual([existing.accountCreated, create.mock.callCount()], [false, 0], "the password is ignored");
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  const fakes = arrange();
+  let lookups = 0;
+  fakes.lookUp.mock.mockImplementation(async () => (lookups++ === 0 ? null : PERSON));
+  mock.method(centralAuthClient, "createVerifiedUser", async () => {
+    throw new ConflictError("User already exists");
+  });
+  const raced = await staffAssignmentService.assign(IDS.orgA, { mobile: "+251911234567", role_id: VIEWER.id, new_account: NEW_ACCOUNT }, IDS.user);
+  assert.deepEqual([raced.accountCreated, raced.outcome], [false, "CREATED"]);
+});
+
+test("a created account the reply doesn't name is looked up again; still missing is a clear 502; no new_account is 404 as before", async () => {
+  const fakes = arrange({ person: null });
+  let lookups = 0;
+  fakes.lookUp.mock.mockImplementation(async () => (lookups++ === 0 ? null : PERSON));
+  mock.method(centralAuthClient, "createVerifiedUser", async () => null);
+  const found = await staffAssignmentService.assign(IDS.orgA, { mobile: "+251911234567", role_id: VIEWER.id, new_account: NEW_ACCOUNT }, IDS.user);
+  assert.equal(found.accountCreated, true);
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  arrange({ person: null });
+  mock.method(centralAuthClient, "createVerifiedUser", async () => null);
+  await assert.rejects(
+    staffAssignmentService.assign(IDS.orgA, { mobile: "+251911234567", role_id: VIEWER.id, new_account: NEW_ACCOUNT }, IDS.user),
+    MalformedCentralAuthResponseError,
+  );
+  await assert.rejects(staffAssignmentService.assign(IDS.orgA, { mobile: "+251911234567", role_id: VIEWER.id }, IDS.user), CentralAccountNotFoundError);
+});
+
+test("editing names sends the names for this organization's assignment and returns it with the fresh names", async () => {
+  const fakes = arrange();
+  const rename = mock.method(centralAuthClient, "updateUserNames", async (_id: string, _names: unknown) => undefined);
+  const updated = await staffAssignmentService.updateProfile(IDS.orgA, "assignment-1", { firstname: "Hanna", middlename: undefined, lastname: undefined });
+  assert.deepEqual(rename.mock.calls[0]?.arguments, [PERSON_ID, { firstname: "Hanna", middlename: undefined, lastname: undefined }]);
+  assert.deepEqual(fakes.current.mock.calls[0]?.arguments.slice(0, 2), [IDS.orgA, "assignment-1"], "scoped to the organization");
+  assert.equal(updated.profile?.firstname, "Hana", "read back from auth-cheche");
 });

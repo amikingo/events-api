@@ -14,6 +14,7 @@ import {
   lookUpStaffRequest,
   replaceStaffOverridesRequest,
   updateStaffAssignmentRequest,
+  updateStaffProfileRequest,
 } from "../../validators/staff-assignment.js";
 
 /**
@@ -69,6 +70,15 @@ staffAssignmentsRouter.patch(
   validate(changeStaffAssignmentStatusRequest),
   requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "update", scope: organizationScopeFromParams }),
   staffAssignmentController.changeStatus,
+);
+
+// Phase 2e: the person's names in auth-cheche (names only, never mobile, email, password or status).
+staffAssignmentsRouter.patch(
+  "/staff-assignments/:assignmentId/profile",
+  requireStaffAuthentication,
+  validate(updateStaffProfileRequest),
+  requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "update", scope: organizationScopeFromParams }),
+  staffAssignmentController.updateProfile,
 );
 
 // Phase 2e: delete for good (any assignment but the last active Owner, never your own); overrides go with it.

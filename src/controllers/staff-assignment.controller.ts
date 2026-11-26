@@ -12,6 +12,7 @@ import {
   lookUpStaffRequest,
   replaceStaffOverridesRequest,
   updateStaffAssignmentRequest,
+  updateStaffProfileRequest,
 } from "../validators/staff-assignment.js";
 import { getActorId, getStaffAuth } from "./helpers.js";
 
@@ -34,12 +35,14 @@ async function get(req: Request, res: Response): Promise<void> {
 /** 201 when the person was given the role (new or reactivated); 200 when they already had it. */
 async function assign(req: Request, res: Response): Promise<void> {
   const { params, body } = getValidated(req, createStaffAssignmentRequest);
-  const { assignment, outcome } = await staffAssignmentService.assign(params.organizationId, body, getActorId(req));
+  const { assignment, outcome, accountCreated } = await staffAssignmentService.assign(params.organizationId, body, getActorId(req));
+  const data = { ...assignment, account_created: accountCreated };
   if (outcome === "UNCHANGED") {
-    sendSuccess(res, 200, assignment, "This person already has this role");
+    sendSuccess(res, 200, data, "This person already has this role");
     return;
   }
-  sendSuccess(res, 201, assignment, outcome === "REACTIVATED" ? "Staff assignment reactivated" : "Staff assignment created");
+  const done = outcome === "REACTIVATED" ? "Staff assignment reactivated" : "Staff assignment created";
+  sendSuccess(res, 201, data, accountCreated ? `Cheche account created. ${done}` : done);
 }
 
 /** When the role changed and the person still has permission overrides, the message says so (Phase 2d). */
@@ -52,6 +55,12 @@ async function update(req: Request, res: Response): Promise<void> {
       ? `Role changed. This person still has ${count} permission override${count === 1 ? "" : "s"}: review them.`
       : "Staff assignment updated";
   sendSuccess(res, 200, assignment, message);
+}
+
+/** Changes the person's names in auth-cheche (names only). */
+async function updateProfile(req: Request, res: Response): Promise<void> {
+  const { params, body } = getValidated(req, updateStaffProfileRequest);
+  sendSuccess(res, 200, await staffAssignmentService.updateProfile(params.organizationId, params.assignmentId, body), "Staff names updated");
 }
 
 /** 204: the assignment and its overrides are gone. */
@@ -83,4 +92,4 @@ async function changeStatus(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, assignment, "Staff assignment status updated");
 }
 
-export const staffAssignmentController = { lookUp, list, get, assign, update, changeStatus, remove, listOverrides, replaceOverrides };
+export const staffAssignmentController = { lookUp, list, get, assign, updateProfile, update, changeStatus, remove, listOverrides, replaceOverrides };

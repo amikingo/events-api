@@ -153,3 +153,29 @@ test("the grantable modules list takes Roles › view or Staff Assignments › v
   ]);
   assert.deepEqual(remove.mock.calls[0]?.arguments, [IDS.orgA, ASSIGNMENT, IDS.user]);
 });
+
+test("editing names needs Staff Assignments › update and takes names only; a new account's password must be 8 or more characters", async () => {
+  const permission = allowPermissions(true);
+  const rename = mock.method(staffAssignmentService, "updateProfile", async () => ({ id: ASSIGNMENT }) as never);
+  const assign = mock.method(staffAssignmentService, "assign", async () => ({ assignment: { id: ASSIGNMENT } as never, outcome: "CREATED" as const, accountCreated: true }));
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    const path = `/v1/organizations/${IDS.orgA}/staff-assignments/${ASSIGNMENT}/profile`;
+    for (const body of [{}, { mobile: "0911223344" }, { firstname: "Hana", email: "h@x.et" }, { password: "secret-123" }]) {
+      assert.equal((await call(baseUrl, "PATCH", path, { token, body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call(baseUrl, "PATCH", path, { token, body: { firstname: "Hanna" } })).status, 200);
+
+    const add = `/v1/organizations/${IDS.orgA}/staff-assignments`;
+    const role_id = "55555555-5555-4555-8555-555555555552";
+    const short = await call(baseUrl, "POST", add, { token, body: { mobile: "0911223344", role_id, new_account: { firstname: "H", lastname: "B", password: "short" } } });
+    assert.equal(short.status, 400);
+    const created = await call(baseUrl, "POST", add, { token, body: { mobile: "0911223344", role_id, new_account: { firstname: "H", lastname: "B", password: "long-enough" } } });
+    assert.deepEqual([created.status, created.body.data.account_created, created.body.message], [201, true, "Cheche account created. Staff assignment created"]);
+    assert.ok(!JSON.stringify(created.body).includes("long-enough"), "the password is never returned");
+  });
+  assert.equal(rename.mock.callCount(), 1);
+  assert.equal(assign.mock.callCount(), 1);
+  const asked = permission.mock.calls.map((entry) => [(entry.arguments[0] as { moduleCode: string }).moduleCode, (entry.arguments[0] as { action: string }).action]);
+  assert.deepEqual(asked[0], ["USER_ROLES", "update"]);
+});

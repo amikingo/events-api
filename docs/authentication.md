@@ -131,21 +131,23 @@ One shared secret (`APP_AUTH_TOKEN`) is a deliberate choice for now, matching bo
   `src/config/auth.ts` at it, and add a startup check that it differs from `APP_AUTH_TOKEN`. No other code
   changes. Staff do not need to log in again: their next refresh issues new tokens signed with the new secret.
 
-## Planned Central Auth integrations (not built yet)
+## Central Auth integrations for staff management (the "Planned" list; built where marked)
 
 None of these exist yet. When one is built, follow the rules below: they match bookings_api and each one
 prevents a known failure. All of them go through `src/clients/central-auth.client.ts` and use the **service
 token** issued by Central Auth (never a token this API signs itself, see blueprint §17).
 
-### Creating staff accounts
+### Creating staff accounts (built, Phase 2e)
 
-- `POST /v1/users/create-verified?service_id=<CENTRAL_AUTH_SERVICE_ID>` with the service token. Body: the names,
-  `mobile`, `password`.
-- `409` means the account already exists. Treat it as "existing account", not as a failure.
-- Afterwards, confirm the account is registered to our service: check `service_ids` in the response first, then
-  `GET /v1/users/{id}`. If our service is missing, raise a partial-provisioning error.
-  *Why:* Central Auth refuses password sign-in for a service the account isn't registered to, so the staff
-  member would exist but could never log in.
+- `POST /v1/users/create-verified?service_id=<CENTRAL_AUTH_SERVICE_ID>` with the service token, from
+  `POST …/staff-assignments` when the mobile has no account and the Owner sent `new_account` (names and a password of
+  8 to 128 characters). `centralAuthClient.createVerifiedUser`.
+- `409` means the account already exists: it is looked up again and used as it is (the password is ignored).
+- The reply is read leniently (the account at the top level or under `user`, as `id` or `user_id`); when it doesn't
+  name the account, the mobile is looked up again; still missing is `502 central_auth_malformed_response`.
+- The password is sent once and never stored, logged or returned. The reply carries `account_created`.
+- Staff sign in without `service_id` (decided 25 November 2026), so the earlier "confirm the account is registered to
+  our service" check isn't needed: auth-cheche doesn't refuse sign-in for an unregistered service without it.
 
 ### Reading users
 
@@ -156,15 +158,18 @@ token** issued by Central Auth (never a token this API signs itself, see bluepri
   - `"1"` / `"true"` become booleans;
   - one field with an odd shape must not make the whole user disappear: fall back to `null` for that field.
 
-### Editing a staff member's details
+### Editing a staff member's details (built, Phase 2e: names only)
 
-- `PUT /v1/users/{id}` with the service token.
-- Allowed fields: names, email, sex, date of birth. Send only the fields that changed.
-- **Never** mobile, status, PIN or password.
+- `PUT /v1/users/{id}` with the service token, from `PATCH …/staff-assignments/{id}/profile`.
+  `centralAuthClient.updateUserNames`.
+- **Names only** (`firstname`, `middlename`, `lastname`), and only the ones that changed. Email, sex and date of birth
+  are left out for now. **Never** mobile, status, PIN or password.
   *Why:* a Central Auth account is the same person in every Cheche app. Changing the mobile here would let
   someone take over the account everywhere through an OTP password reset.
-- A `401`/`403` from Central becomes a "Central Auth refused" conflict (`409`), not "your session expired":
-  the staff member's own session is fine, Central refused the service call.
+- A `401`/`403` from Central becomes `409 central_auth_refused`, not "your session expired": the staff member's own
+  session is fine, Central refused the service call.
+- **To check by hand:** auth-cheche's swagger says `PUT /users/{id}` needs "owner verification"; whether it accepts
+  the service token for another person's account is confirmed on the first real use.
 
 ### Forgot password
 

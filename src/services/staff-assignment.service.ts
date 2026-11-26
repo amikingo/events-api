@@ -4,6 +4,8 @@ import {
   AssignmentScopeConflictError,
   BranchInactiveError,
   CentralAccountNotFoundError,
+  ConflictError,
+  MalformedCentralAuthResponseError,
   InvalidBranchStateError,
   LastOwnerAssignmentError,
   OrganizationInactiveError,
@@ -27,6 +29,7 @@ import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, TENANT_GRANTABLE, type GrantableAct
 import type {
   StaffAssignmentCreateInput,
   StaffAssignmentListQuery,
+  StaffProfileUpdateInput,
   StaffAssignmentUpdateInput,
   StaffOverrideInput,
   StaffOverridesReplaceInput,
@@ -47,6 +50,30 @@ async function findAccount(mobile: string): Promise<CentralUser> {
   const user = await centralAuthClient.findUserByMobile(mobile);
   if (!user) throw new CentralAccountNotFoundError(undefined, { mobile });
   return user;
+}
+
+/**
+ * The Cheche account behind this mobile (Phase 2e): the existing one, or, when there is none and the Owner filled in
+ * `new_account`, a new verified account with the Owner's password. A 409 (it was created meanwhile) uses the existing
+ * account as it is. Always outside the transaction: no lock waits on the network.
+ */
+async function accountFor(input: StaffAssignmentCreateInput): Promise<{ user: CentralUser; created: boolean }> {
+  const existing = await centralAuthClient.findUserByMobile(input.mobile);
+  if (existing) return { user: existing, created: false };
+  if (!input.new_account) throw new CentralAccountNotFoundError(undefined, { mobile: input.mobile });
+
+  let created: CentralUser | null;
+  try {
+    created = await centralAuthClient.createVerifiedUser({ mobile: input.mobile, ...input.new_account });
+  } catch (error) {
+    if (!(error instanceof ConflictError)) throw error;
+    return { user: await findAccount(input.mobile), created: false };
+  }
+  if (created) return { user: created, created: true };
+  // The reply didn't name the account: look it up again.
+  const lookedUp = await centralAuthClient.findUserByMobile(input.mobile);
+  if (!lookedUp) throw new MalformedCentralAuthResponseError("Central Auth created the account but it can't be found by its mobile");
+  return { user: lookedUp, created: true };
 }
 
 /** Names for a page of assignments, one auth-cheche call. Best effort: if it fails, profiles are null. */
@@ -136,8 +163,8 @@ async function assign(
   organizationId: string,
   input: StaffAssignmentCreateInput,
   actorId: string | null,
-): Promise<{ assignment: StaffAssignmentDto; outcome: AssignOutcome }> {
-  const user = await findAccount(input.mobile);
+): Promise<{ assignment: StaffAssignmentDto; outcome: AssignOutcome; accountCreated: boolean }> {
+  const { user, created: accountCreated } = await accountFor(input);
 
   return runTransaction(async (transaction) => {
     await userRoleRepository.lockAssignmentsOfUser(user.userId, { transaction });
@@ -171,8 +198,18 @@ async function assign(
       assignmentId = created.id;
       outcome = "CREATED";
     }
-    return { assignment: await staffDto(organization.id, assignmentId, user, transaction), outcome };
+    return { assignment: await staffDto(organization.id, assignmentId, user, transaction), outcome, accountCreated };
   });
+}
+
+/**
+ * Changes a staff member's names in auth-cheche (Phase 2e), then returns the assignment with the fresh names. Names
+ * only. The assignment must belong to this organization, so a tenant can never rename someone else's staff.
+ */
+async function updateProfile(organizationId: string, assignmentId: string, input: StaffProfileUpdateInput): Promise<StaffAssignmentDto> {
+  const assignment = ensureFound(await userRoleRepository.findByOrganizationAndId(organizationId, assignmentId), "Staff assignment not found");
+  await centralAuthClient.updateUserNames(assignment.user_id, input);
+  return get(organizationId, assignmentId);
 }
 
 /**
@@ -387,4 +424,4 @@ async function replaceOverrides(
   });
 }
 
-export const staffAssignmentService = { lookUp, list, get, assign, update, changeStatus, remove, listOverrides, replaceOverrides };
+export const staffAssignmentService = { lookUp, list, get, assign, updateProfile, update, changeStatus, remove, listOverrides, replaceOverrides };

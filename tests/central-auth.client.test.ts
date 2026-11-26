@@ -6,6 +6,7 @@ import { authConfig } from "../src/config/auth.js";
 import {
   AppError,
   CentralAuthRateLimitedError,
+  CentralAuthRefusedError,
   CentralAuthUnavailableError,
   ConflictError,
   InvalidCredentialsError,
@@ -290,4 +291,38 @@ test("guest refusals keep auth-cheche's text and status: 409 exists, 404 no acco
 
   fakeFetch(429, JSON.stringify({ message: "Too many requests" }));
   await assert.rejects(centralAuthClient.sendCode("+251911223344"), CentralAuthRateLimitedError);
+});
+
+// --- Staff accounts (Phase 2e): creating an account and editing names ----------------------------------------
+
+test("creating a staff account posts to create-verified with our service_id and the service token; 409 means it exists", async () => {
+  const calls = fakeFetch(201, JSON.stringify({ data: { user: { id: "7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b", mobile: "+251911223344", firstname: "Hana" } } }));
+  const user = await centralAuthClient.createVerifiedUser({ mobile: "+251911223344", firstname: "Hana", lastname: "Bekele", password: "secret-123" });
+  assert.equal(user?.userId, "7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b");
+  const [{ url, init } = { url: "", init: undefined }] = calls;
+  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/create-verified?service_id=${encodeURIComponent(authConfig.centralAuthServiceId)}`);
+  assert.deepEqual(JSON.parse(init?.body as string), { mobile: "+251911223344", firstname: "Hana", lastname: "Bekele", password: "secret-123" });
+  const authorization = (init?.headers as Record<string, string>).Authorization ?? "";
+  assert.match(authorization, /^Bearer /, "the service token");
+  mock.restoreAll();
+
+  fakeFetch(201, JSON.stringify({ message: "created" }));
+  assert.equal(await centralAuthClient.createVerifiedUser({ mobile: "+251911223344", firstname: "H", lastname: "B", password: "secret-123" }), null, "no account in the reply");
+  mock.restoreAll();
+
+  fakeFetch(409, JSON.stringify({ error: "User already exists" }));
+  await assert.rejects(centralAuthClient.createVerifiedUser({ mobile: "+251911223344", firstname: "H", lastname: "B", password: "secret-123" }), ConflictError);
+});
+
+test("editing names is a PUT with names only; a refused service token is 409 central_auth_refused", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ message: "updated" }));
+  await centralAuthClient.updateUserNames("7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b", { firstname: "Hanna", lastname: undefined });
+  const [{ url, init } = { url: "", init: undefined }] = calls;
+  assert.equal(url, `${authConfig.centralAuthUrl}/v1/users/7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b`);
+  assert.equal(init?.method, "PUT");
+  assert.deepEqual(JSON.parse(init?.body as string), { firstname: "Hanna" }, "only the names that changed");
+  mock.restoreAll();
+
+  fakeFetch(403, JSON.stringify({ error: "owner verification required" }));
+  await assert.rejects(centralAuthClient.updateUserNames("7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b", { firstname: "X" }), CentralAuthRefusedError);
 });

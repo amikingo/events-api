@@ -347,6 +347,16 @@ export class OwnAssignmentError extends AppError {
   }
 }
 
+/**
+ * Phase 2e: auth-cheche refused a change this API asked for with its service token (editing a staff member's name).
+ * The staff member's own session is fine; auth-cheche said no to the service call.
+ */
+export class CentralAuthRefusedError extends AppError {
+  constructor(message = "Cheche accounts refused this change", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "central_auth_refused", details, cause: options?.cause });
+  }
+}
+
 /** Phase 2e: a role can't be made from a switched-off template. */
 export class RoleTemplateInactiveError extends AppError {
   constructor(message = "This template is switched off", details?: unknown, options?: ErrorOptions) {

@@ -1994,3 +1994,70 @@ test("row 81: a role made from a template copies its grants and remembers it; a 
   const role = await as("SELAM_OWNER", "GET", `${staffBase()}/roles/${made.body.data.id}`);
   assert.deepEqual(shape(role.body.data.grants), shape(made.body.data.grants), "a copy, never a link");
 });
+
+// --- Phase 2e step 4: creating Cheche accounts when adding staff; editing names (auth-cheche stubbed) ------------
+
+const NEW_ACCOUNT_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccc01";
+const RACED_ACCOUNT_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccc02";
+
+test("row 82: adding staff creates a Cheche account when the mobile has none; an existing account is used as it is; names are edited in auth-cheche, names only", { skip }, async () => {
+  const accounts = new Map<string, { userId: string; firstname: string }>();
+  let raceOnce = true;
+  mock.method(centralAuthClient, "findUserByMobile", async (mobile: string) => {
+    const found = accounts.get(mobile);
+    return found ? { userId: found.userId, mobile, firstname: found.firstname, middlename: null, lastname: "Staff" } : null;
+  });
+  const create = mock.method(centralAuthClient, "createVerifiedUser", async (input: { mobile: string; firstname: string }) => {
+    if (input.mobile === "+251933000021" && raceOnce) {
+      // Someone made this account meanwhile: auth-cheche answers 409, and the lookup now finds it.
+      raceOnce = false;
+      accounts.set(input.mobile, { userId: RACED_ACCOUNT_ID, firstname: "Raced" });
+      throw new ConflictError("User already exists");
+    }
+    accounts.set(input.mobile, { userId: NEW_ACCOUNT_ID, firstname: input.firstname });
+    return { userId: NEW_ACCOUNT_ID, mobile: input.mobile, firstname: input.firstname, middlename: null, lastname: "Staff" };
+  });
+  const rename = mock.method(centralAuthClient, "updateUserNames", async (_id: string, _names: unknown) => undefined);
+  mock.method(centralAuthClient, "getUsersByIds", async (ids: readonly string[]) =>
+    ids.map((userId) => ({ userId, mobile: null, firstname: "Name", middlename: null, lastname: "Of Staff" })),
+  );
+  try {
+    const roles = (await as("SELAM_OWNER", "GET", `${staffBase()}/roles`)).body.data as Array<{ id: string; code: string }>;
+    const viewerRole = roles.find((role) => role.code === "VIEWER");
+    assert.ok(viewerRole);
+
+    const unknown = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "0933000020", role_id: viewerRole.id });
+    assert.deepEqual([unknown.status, unknown.body.error.code], [404, "central_account_not_found"], "no new_account: as before");
+
+    const created = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, {
+      mobile: "0933000020",
+      role_id: viewerRole.id,
+      new_account: { firstname: "Liya", lastname: "Staff", password: "first-pass-1" },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.deepEqual([created.body.data.account_created, created.body.data.user_id], [true, NEW_ACCOUNT_ID]);
+    assert.ok(!JSON.stringify(created.body).includes("first-pass-1"), "the password is never returned");
+    assert.equal((create.mock.calls[0]?.arguments[0] as { password: string }).password, "first-pass-1");
+
+    const raced = await as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, {
+      mobile: "0933000021",
+      role_id: viewerRole.id,
+      new_account: { firstname: "Abel", lastname: "Staff", password: "second-pass" },
+    });
+    assert.equal(raced.status, 201, JSON.stringify(raced.body));
+    assert.deepEqual([raced.body.data.account_created, raced.body.data.user_id], [false, RACED_ACCOUNT_ID], "409: the existing account is used");
+
+    const path = `${staffBase()}/staff-assignments/${created.body.data.id}/profile`;
+    const renamed = await as("SELAM_OWNER", "PATCH", path, { firstname: "Liyu", lastname: "Bekele" });
+    assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+    assert.deepEqual(rename.mock.calls[0]?.arguments, [NEW_ACCOUNT_ID, { firstname: "Liyu", lastname: "Bekele" }]);
+    assert.equal((await as("SELAM_OWNER", "PATCH", path, { mobile: "0933000099" })).status, 400, "never the mobile");
+    assert.equal((await as("SELAM_VIEWER", "PATCH", path, { firstname: "X" })).status, 403);
+    const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
+    assert.ok(abay);
+    const fromAbay = await asToken(await tokenFor(ABAY_OWNER_ID), "PATCH", path.replace(fixture.selamId, abay.id), { firstname: "X" });
+    assert.equal(fromAbay.status, 404, "another organization's assignment isn't found there");
+  } finally {
+    mock.restoreAll();
+  }
+});

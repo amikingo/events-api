@@ -2704,8 +2704,8 @@
         }
       },
       "post": {
-        "summary": "Give the person behind a mobile number a role of this organization: 201 when given (new or reactivated), 200 when they already had it",
-        "description": "The mobile is looked up in Central Auth on the server; the person must already have a Cheche account. Errors: 404 central_account_not_found, 409 conflict (already staff of another organization or the platform), 409 role_inactive, 409 branch_inactive, 409 invalid_branch_state (no branches), 409 assignment_scope_conflict (the same role organization-wide and on a branch), 503 central_auth_unavailable.",
+        "summary": "Give the person behind a mobile number a role of this organization: 201 when given (new or reactivated), 200 when they already had it. With new_account, a Cheche account is created when the mobile has none (account_created in the reply)",
+        "description": "The mobile is looked up in Central Auth on the server. Without an account and without new_account: 404 central_account_not_found. new_account { firstname, middlename?, lastname, password (8 to 128) } creates a verified Cheche account; the password is never stored, logged or returned, and is ignored when the account exists. Errors: 404 central_account_not_found, 409 conflict (already staff of another organization or the platform), 409 role_inactive, 409 branch_inactive, 409 invalid_branch_state (no branches), 409 assignment_scope_conflict (the same role organization-wide and on a branch), 503 central_auth_unavailable.",
         "tags": [
           "Access control"
         ],
@@ -2949,6 +2949,67 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/StatusChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/staff-assignments/{assignmentId}/profile": {
+      "patch": {
+        "summary": "Change a staff member's names in their Cheche account (names only: never mobile, email, password or status)",
+        "description": "Errors: 409 central_auth_refused (Cheche accounts refused the change); 404 unknown assignment; 503 central_auth_unavailable.",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "assignmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffProfileUpdateRequest"
               }
             }
           }
@@ -5512,6 +5573,37 @@
             "type": "string",
             "format": "uuid",
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "new_account": {
+            "type": "object",
+            "properties": {
+              "firstname": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "middlename": {
+                "nullable": true,
+                "type": "string",
+                "maxLength": 100
+              },
+              "lastname": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "password": {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "firstname",
+              "lastname",
+              "password"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -5533,6 +5625,27 @@
             "type": "string",
             "format": "uuid",
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StaffProfileUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "firstname": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "middlename": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 100
+          },
+          "lastname": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           }
         },
         "additionalProperties": false
