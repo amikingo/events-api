@@ -246,6 +246,24 @@ async function changeStatus(organizationId: string, assignmentId: string, isActi
   return { ...assignment, profile: toStaffProfileDto((await profilesOf([assignment.user_id])).get(assignment.user_id)) };
 }
 
+/**
+ * Deletes an assignment for good (Phase 2e, decided 26 November 2026): any assignment except the last active Owner,
+ * and never your own. Its permission overrides go with it. Switching off stays the normal way.
+ */
+async function remove(organizationId: string, assignmentId: string, actorId: string | null): Promise<void> {
+  await runTransaction(async (transaction) => {
+    await userRoleRepository.lockOwnersOfOrganization(organizationId, { transaction });
+    const current = ensureFound(
+      await userRoleRepository.findByOrganizationAndId(organizationId, assignmentId, { transaction, lock: true }),
+      "Staff assignment not found",
+    );
+    if (actorId !== null && current.user_id === actorId) throw new OwnAssignmentError("You can't delete your own assignment. Ask another Owner");
+    const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, current.role_id, { transaction }), "Role not found");
+    if (current.is_active && role.code === OWNER_ROLE_CODE) await keepAnOwner(organizationId, transaction);
+    await userRoleRepository.deleteByOrganizationAndId(organizationId, current.id, { transaction });
+  });
+}
+
 // --- Permission overrides (Phase 2d) -----------------------------------------------------------------------
 //
 // One staff member gets more or less than their role, module by module: each box is true (allow), false (deny) or
@@ -356,10 +374,10 @@ async function replaceOverrides(
         can_view: override.view ?? null,
         can_create: override.create ?? null,
         can_update: override.update ?? null,
+        can_delete: override.delete ?? null,
+        can_import: override.import ?? null,
         can_export: override.export ?? null,
-        can_delete: null,
-        can_import: null,
-        can_notify: null,
+        can_notify: override.notify ?? null,
         is_active: true,
         created_by: editor.userId,
         updated_by: editor.userId,
@@ -369,4 +387,4 @@ async function replaceOverrides(
   });
 }
 
-export const staffAssignmentService = { lookUp, list, get, assign, update, changeStatus, listOverrides, replaceOverrides };
+export const staffAssignmentService = { lookUp, list, get, assign, update, changeStatus, remove, listOverrides, replaceOverrides };

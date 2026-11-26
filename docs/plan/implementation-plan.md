@@ -542,4 +542,6 @@ Connect the staff and public screens to the API and run the full flow against Po
 
 **Step 1 (U1, U2, R3, R4, U3): API done (26 November 2026).** No migration. `npm run check` passed, with the OpenAPI snapshot up to date. `TEST_DATABASE=1 npm test` passed 366 of 366 on the real database, none skipped, including matrix rows 76–77 (one assignment read, role and branch filters, counts; the overlap rule on assign, change and switch-on).
 
+**Step 2 (R5, M1, U6): built, not yet verified.** Migrations `20261202000000-grant-all-actions-to-owner-roles` and `20261202000001-grant-all-actions-to-owner-template`. Older tests and matrix rows that pinned the 4-action rules were updated to the new decision (rows 15, 51 and 65; the default-roles, seed, provisioning, role, template and override tests). Waiting for `npm run check`, `npm run db:migrate` and `TEST_DATABASE=1 npm test` (rows 78–80).
+
 **Screens:** at the project owner's request, the UI briefs for every step (`docs/ui-brief-phase-2e-<n>.md`) go to Antigravity together, once all six backend steps are done.

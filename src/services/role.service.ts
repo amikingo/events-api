@@ -2,12 +2,13 @@ import type { Transaction } from "sequelize";
 import { ConflictError, RoleInUseError, RoleLockedError } from "../errors/app-errors.js";
 import { toRoleDto, type RoleDto } from "../mappers/staff.mapper.js";
 import type { RoleRow } from "../models/role.js";
+import { moduleRepository } from "../repositories/module.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { roleModuleAccessRepository } from "../repositories/role-module-access.repository.js";
 import { roleRepository } from "../repositories/role.repository.js";
 import { userRoleRepository } from "../repositories/user-role.repository.js";
 import { OWNER_ROLE_CODE } from "../utils/default-roles.js";
-import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, type GrantableAction } from "../utils/rbac.js";
+import { ACTION_TO_FIELD, GRANTABLE_ACTIONS, TENANT_GRANTABLE, type GrantableAction } from "../utils/rbac.js";
 import type { RoleCreateInput, RoleGrantInput, RoleUpdateInput } from "../validators/role.js";
 import { grantRules, type GrantEntry } from "./grant-rules.js";
 import { ensureFound, runTransaction } from "./helpers.js";
@@ -38,9 +39,17 @@ async function getRole(organizationId: string, roleId: string): Promise<RoleDto>
 
 const grantedActions = (grant: RoleGrantInput): GrantableAction[] => GRANTABLE_ACTIONS.filter((action) => grant[action] === true);
 
-/** On update, a grant that leaves `export` out keeps the role's current Export value for that module. */
-function keepExport(grants: RoleGrantInput[], current: Map<string, Set<GrantableAction>>): RoleGrantInput[] {
-  return grants.map((grant) => (grant.export === undefined ? { ...grant, export: current.get(grant.module_code)?.has("export") ?? false } : grant));
+/** The boxes a client may leave out (Phase 2e): on update, a left-out box keeps the role's current value for that module. */
+const OPTIONAL_ACTIONS = ["delete", "import", "export", "notify"] as const;
+
+function keepLeftOut(grants: RoleGrantInput[], current: Map<string, Set<GrantableAction>>): RoleGrantInput[] {
+  return grants.map((grant) => {
+    const kept = { ...grant };
+    for (const action of OPTIONAL_ACTIONS) {
+      if (kept[action] === undefined) kept[action] = current.get(grant.module_code)?.has(action) ?? false;
+    }
+    return kept;
+  });
 }
 
 /** A grant as the shared rules see it: the module and the actions it turns on. */
@@ -54,7 +63,7 @@ async function assertGrantable(grants: RoleGrantInput[], transaction: Transactio
   return grantRules.assertGrantable(grants.map(toEntry), "body.grants", transaction);
 }
 
-/** The rows for a role's grants; only view, create, update and export are ever stored as true. */
+/** The rows for a role's grants: all 7 actions (Phase 2e); a left-out box is stored as false. */
 function grantRows(roleId: string, grants: RoleGrantInput[], moduleIds: Map<string, string>, actorId: string | null) {
   return grants
     .filter((grant) => grantedActions(grant).length > 0)
@@ -64,10 +73,10 @@ function grantRows(roleId: string, grants: RoleGrantInput[], moduleIds: Map<stri
       can_view: grant.view,
       can_create: grant.create,
       can_update: grant.update,
-      can_delete: false,
-      can_import: false,
+      can_delete: grant.delete === true,
+      can_import: grant.import === true,
       can_export: grant.export === true,
-      can_notify: false,
+      can_notify: grant.notify === true,
       created_by: actorId,
       updated_by: actorId,
     }));
@@ -140,7 +149,7 @@ async function updateRole(organizationId: string, roleId: string, input: RoleUpd
     if (input.name !== undefined) await assertNameFree(organizationId, input.name, transaction, role.id);
     if (input.grants !== undefined) {
       const current = await currentGrants(role.id, transaction);
-      const grants = keepExport(input.grants, current);
+      const grants = keepLeftOut(input.grants, current);
       const moduleIds = await assertGrantable(grants, transaction);
       await assertNoEscalation(organizationId, editor, grants, current);
       await roleModuleAccessRepository.replaceForRole(role.id, grantRows(role.id, grants, moduleIds, editor.userId), { transaction });
@@ -175,4 +184,18 @@ async function changeRoleStatus(organizationId: string, roleId: string, isActive
   });
 }
 
-export const roleService = { listRoles, getRole, createRole, updateRole, changeRoleStatus };
+/** A module an organization's roles, templates and overrides may grant, with the actions it offers (Phase 2e). */
+export type GrantableModuleDto = { module_code: string; module_name: string; sno: number; actions: GrantableAction[] };
+
+/**
+ * The modules the role, template and override grids show, built from the active modules and TENANT_GRANTABLE, so the
+ * screens follow the API: a new tenant module needs no website change.
+ */
+async function listGrantableModules(organizationId: string): Promise<GrantableModuleDto[]> {
+  ensureFound(await organizationRepository.findById(organizationId), "Organization not found");
+  return (await moduleRepository.listActiveOrdered())
+    .filter((module) => module.is_permission && TENANT_GRANTABLE[module.code])
+    .map((module) => ({ module_code: module.code, module_name: module.module_name, sno: module.sno, actions: [...(TENANT_GRANTABLE[module.code] ?? [])] }));
+}
+
+export const roleService = { listRoles, getRole, createRole, updateRole, changeRoleStatus, listGrantableModules };

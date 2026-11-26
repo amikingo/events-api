@@ -47,26 +47,29 @@ export const FULL_PERMISSION: Readonly<PermissionMatrix> = Object.freeze({
 export const SUPER_ADMIN_ROLE_CODE = "SUPER_ADMIN";
 
 /**
- * The actions a role can be given in the app: view, create and update (Phase 2c), plus export (Phase 4d: the guest
- * list as CSV). The API uses no delete, import or notify actions.
+ * The actions a role can be given in the app: all seven (Phase 2e, decided 26 November 2026). Earlier phases used
+ * only view, create, update and export; delete, import and notify are grantable now and take effect where an
+ * endpoint checks them (Staff Assignments › delete deletes an assignment).
  */
-export const GRANTABLE_ACTIONS = ["view", "create", "update", "export"] as const;
-export type GrantableAction = (typeof GRANTABLE_ACTIONS)[number];
+export const GRANTABLE_ACTIONS = PERMISSION_ACTIONS;
+export type GrantableAction = PermissionAction;
+
+/** Every action, for tenant modules that offer all of them. */
+const ALL_ACTIONS: readonly GrantableAction[] = PERMISSION_ACTIONS;
 
 /**
- * What a tenant (organization) role may be granted, module by module (decided 25 November 2026). Anything else is
- * refused, so a tenant can never store platform powers in its own roles:
- * - ORGANIZATIONS: view and update only; creating tenants is platform work;
- * - MODULES, ROLE_TEMPLATES, USER_MODULE_ACCESSES: platform modules, never grantable to a tenant role;
- * - export only on REGISTRATIONS (the guest list CSV, its own right since it holds every guest's mobile).
+ * What a tenant (organization) role may be granted, module by module (Phase 2c, widened to all 7 actions in Phase 2e).
+ * Anything else is refused, so a tenant can never store platform powers in its own roles:
+ * - ORGANIZATIONS: never create or delete; making and removing organizations is platform work;
+ * - MODULES, ROLE_TEMPLATES, USER_MODULE_ACCESSES: platform modules, never grantable to a tenant role.
  * Keyed by module code (utils/module-codes.ts).
  */
 export const TENANT_GRANTABLE: Readonly<Record<string, readonly GrantableAction[]>> = Object.freeze({
-  ORGANIZATIONS: ["view", "update"],
-  BRANCHES: ["view", "create", "update"],
-  ROLES: ["view", "create", "update"],
-  USER_ROLES: ["view", "create", "update"],
-  EVENTS: ["view", "create", "update"],
-  CUSTOMERS: ["view", "create", "update"],
-  REGISTRATIONS: ["view", "create", "update", "export"],
+  ORGANIZATIONS: ["view", "update", "import", "export", "notify"],
+  BRANCHES: ALL_ACTIONS,
+  ROLES: ALL_ACTIONS,
+  USER_ROLES: ALL_ACTIONS,
+  EVENTS: ALL_ACTIONS,
+  CUSTOMERS: ALL_ACTIONS,
+  REGISTRATIONS: ALL_ACTIONS,
 });

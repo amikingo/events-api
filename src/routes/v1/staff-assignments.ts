@@ -7,6 +7,7 @@ import { MODULE_CODES } from "../../utils/module-codes.js";
 import {
   changeStaffAssignmentStatusRequest,
   createStaffAssignmentRequest,
+  deleteStaffAssignmentRequest,
   getStaffAssignmentRequest,
   listStaffAssignmentsRequest,
   listStaffOverridesRequest,
@@ -68,6 +69,15 @@ staffAssignmentsRouter.patch(
   validate(changeStaffAssignmentStatusRequest),
   requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "update", scope: organizationScopeFromParams }),
   staffAssignmentController.changeStatus,
+);
+
+// Phase 2e: delete for good (any assignment but the last active Owner, never your own); overrides go with it.
+staffAssignmentsRouter.delete(
+  "/staff-assignments/:assignmentId",
+  requireStaffAuthentication,
+  validate(deleteStaffAssignmentRequest),
+  requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "delete", scope: organizationScopeFromParams }),
+  staffAssignmentController.remove,
 );
 
 // Permission overrides (Phase 2d): one staff member's access, module by module, on top of their role.

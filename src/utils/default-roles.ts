@@ -9,6 +9,8 @@ export type DefaultRoleTemplate = {
 };
 
 export const OWNER_ROLE_CODE = "OWNER";
+
+const ALL_ACTIONS = ["view", "create", "update", "delete", "import", "export", "notify"] as const;
 export const VIEWER_ROLE_CODE = "VIEWER";
 
 /**
@@ -16,7 +18,7 @@ export const VIEWER_ROLE_CODE = "VIEWER";
  * later phases add their modules here and extend existing organizations through migrations (EVENTS and CUSTOMERS:
  * 20261125000003-grant-events-and-customers-to-default-roles; REGISTRATIONS: 20261126000004;
  * USER_ROLES create/update for OWNER: 20261127000000; ROLES create/update for OWNER: 20261128000000; REGISTRATIONS export
- * for OWNER: 20261129000000). No delete action: records are deactivated instead.
+ * for OWNER: 20261129000000; all 7 actions for OWNER: 20261202000000 and, for the OWNER template, 20261202000001).
  * Never grant a platform-only module (MODULES, ROLE_TEMPLATES) to a tenant role.
  */
 export const DEFAULT_TENANT_ROLES = [
@@ -25,13 +27,14 @@ export const DEFAULT_TENANT_ROLES = [
     name: "Owner",
     description: "Runs the organization",
     grants: [
-      { moduleCode: MODULE_CODES.ORGANIZATIONS, actions: ["view", "update"] },
-      { moduleCode: MODULE_CODES.BRANCHES, actions: ["view", "create", "update"] },
-      { moduleCode: MODULE_CODES.ROLES, actions: ["view", "create", "update"] },
-      { moduleCode: MODULE_CODES.USER_ROLES, actions: ["view", "create", "update"] },
-      { moduleCode: MODULE_CODES.EVENTS, actions: ["view", "create", "update"] },
-      { moduleCode: MODULE_CODES.CUSTOMERS, actions: ["view", "create", "update"] },
-      { moduleCode: MODULE_CODES.REGISTRATIONS, actions: ["view", "create", "update", "export"] },
+      // Phase 2e: Owners hold every action a tenant may hold (TENANT_GRANTABLE), so they can grant all of them.
+      { moduleCode: MODULE_CODES.ORGANIZATIONS, actions: ["view", "update", "import", "export", "notify"] },
+      { moduleCode: MODULE_CODES.BRANCHES, actions: ALL_ACTIONS },
+      { moduleCode: MODULE_CODES.ROLES, actions: ALL_ACTIONS },
+      { moduleCode: MODULE_CODES.USER_ROLES, actions: ALL_ACTIONS },
+      { moduleCode: MODULE_CODES.EVENTS, actions: ALL_ACTIONS },
+      { moduleCode: MODULE_CODES.CUSTOMERS, actions: ALL_ACTIONS },
+      { moduleCode: MODULE_CODES.REGISTRATIONS, actions: ALL_ACTIONS },
     ],
   },
   {

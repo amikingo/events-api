@@ -5,16 +5,20 @@ import { codeSchema, nullableText, organizationIdParamsSchema, statusChangeSchem
 export const roleParamsSchema = organizationIdParamsSchema.extend({ roleId: uuidSchema });
 
 /**
- * One module's access in a role: view, create and update, plus export (Guests only). Which modules and actions a
- * tenant role may get is checked by the service (utils/rbac.ts TENANT_GRANTABLE). `export` may be left out: on create
- * it means no; on update the role keeps the value it has, so a client that doesn't know the box can't wipe it.
+ * One module's access in a role. view, create and update are always sent; export, delete, import and notify may be
+ * left out (Phase 2e: all 7 actions). Left out on create means no; on update the role keeps the value it has, so a
+ * client that doesn't know a box can't wipe it. Which modules and actions a tenant role may get is checked by the
+ * service (utils/rbac.ts TENANT_GRANTABLE).
  */
 export const roleGrantSchema = z.strictObject({
   module_code: codeSchema,
   view: z.boolean(),
   create: z.boolean(),
   update: z.boolean(),
+  delete: z.boolean().optional(),
+  import: z.boolean().optional(),
   export: z.boolean().optional(),
+  notify: z.boolean().optional(),
 });
 
 export const grantsSchema = z
@@ -59,3 +63,5 @@ export const createRoleRequest = { params: organizationIdParamsSchema, body: rol
 export const updateRoleRequest = { params: roleParamsSchema, body: roleUpdateSchema } satisfies RequestContract;
 
 export const changeRoleStatusRequest = { params: roleParamsSchema, body: statusChangeSchema } satisfies RequestContract;
+
+export const listGrantableModulesRequest = { params: organizationIdParamsSchema } satisfies RequestContract;

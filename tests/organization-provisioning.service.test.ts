@@ -95,12 +95,12 @@ test("provisionOrganizer writes the organization, MAIN branch, default roles wit
     ["module-organizations", "module-branches", "module-roles", "module-user-roles", "module-events", "module-customers", "module-registrations"],
     "only permission modules, never the container",
   );
-  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-events")), [true, true, true, false, false, false, false]);
-  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-customers")), [true, true, true, false, false, false, false]);
-  // Phase 4d: Owners also export the guest list (flags: view, create, update, delete, import, export, notify).
-  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-registrations")), [true, true, true, false, false, true, false]);
-  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-branches")), [true, true, true, false, false, false, false]);
-  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-organizations")), [true, false, true, false, false, false, false]);
+  // Phase 2e: Owners hold every action a tenant may hold (flags: view, create, update, delete, import, export, notify).
+  const all = [true, true, true, true, true, true, true];
+  for (const module of ["module-events", "module-customers", "module-registrations", "module-branches"]) {
+    assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === module)), all, module);
+  }
+  assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-organizations")), [true, false, true, false, true, true, true], "never create or delete");
   const [viewerGrants = []] = calls.bulkCreate.mock.calls[1]?.arguments ?? [];
   assert.deepEqual(
     viewerGrants.map((grant) => [grant.module_id, ...flags(grant)]),

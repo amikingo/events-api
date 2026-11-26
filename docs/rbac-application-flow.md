@@ -260,3 +260,16 @@ platform scope; adding staff never returns a token; every route checks a permiss
 - **Overlap rule:** one person can't hold the same role for the whole organization and for a branch at the same time
   (409 `assignment_scope_conflict`); several branches are fine. Checked on assign, on changing role or branch, and on
   switching back on, under the person's assignment lock.
+
+**Step 2: all 7 actions, the grantable modules list, deleting assignments.**
+- **All 7 actions** (view, create, update, delete, import, export, notify) are grantable on every tenant module in roles,
+  templates and overrides. **Organizations: never create or delete** (making and removing organizations is platform
+  work). Platform modules stay not grantable. A box left out means no on create; on a role update it keeps the role's
+  value. Delete, import and notify take effect where an endpoint checks them (Staff Assignments › delete, below).
+- **Owners hold every action a tenant may hold**, so they can grant all of them: migrations `20261202000000` (existing
+  OWNER roles) and `20261202000001` (the OWNER template), and `default-roles.ts` for new organizations.
+- `GET /v1/organizations/{organizationId}/grantable-modules` (Roles › view or Staff Assignments › view): the modules and
+  actions the grids may offer, from the active modules and `TENANT_GRANTABLE`. The screens build their grids from it.
+- `DELETE /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` (Staff Assignments › delete): deletes the
+  assignment for good, with its overrides (foreign key CASCADE); 204. Refused for the last active Owner
+  (409 `last_owner_assignment`) and for your own (409 `own_assignment`). Switching off stays the normal way.

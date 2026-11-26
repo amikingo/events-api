@@ -64,7 +64,7 @@ test("creating a role: 201 with the editor's user and assignment; codes are uppe
     const token = staffToken();
     for (const body of [
       { code: "GATE", name: "Gate" },
-      { code: "GATE", name: "Gate", grants: [{ ...GRANT, delete: true }] },
+      { code: "GATE", name: "Gate", grants: [{ ...GRANT, approve: true }] }, // not an action (all 7 real ones are accepted since Phase 2e)
       { code: "GATE", name: "Gate", grants: [GRANT, GRANT] },
       { code: "gate keeper", name: "Gate", grants: [] },
       { code: "GATE", name: "", grants: [] },

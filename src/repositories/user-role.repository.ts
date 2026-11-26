@@ -204,6 +204,11 @@ async function countActiveByRole(organizationId: string, roleId: string, options
   return UserRole.count({ where: { organization_id: organizationId, role_id: roleId, is_active: true }, ...txOptions(options) });
 }
 
+/** Hard-deletes one organization's assignment (Phase 2e); its overrides go with it through the foreign key's CASCADE. */
+async function deleteByOrganizationAndId(organizationId: string, assignmentId: string, options: { transaction: Transaction }): Promise<void> {
+  await UserRole.destroy({ where: { organization_id: organizationId, id: assignmentId }, transaction: options.transaction });
+}
+
 /** Active assignments per role in one organization (the role list's member counts, Phase 2e). One query. */
 async function countActiveByRoles(organizationId: string, roleIds: readonly string[], options: RepoOptions = {}): Promise<Map<string, number>> {
   if (roleIds.length === 0) return new Map();
@@ -230,6 +235,7 @@ export const userRoleRepository = {
   countActiveOwners,
   countActiveByRole,
   countActiveByRoles,
+  deleteByOrganizationAndId,
   lockOwnersOfOrganization,
   listActiveAssignmentsByUser,
   findActiveAssignmentByIdAndUser,

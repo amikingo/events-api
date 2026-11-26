@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
 import { createApp } from "../src/app.js";
 import { moduleService } from "../src/services/module.service.js";
+import { roleService } from "../src/services/role.service.js";
 import { permissionResolutionService, type PermissionScope } from "../src/services/permission-resolution.service.js";
 import { roleTemplateService } from "../src/services/role-template.service.js";
 import { staffAssignmentService } from "../src/services/staff-assignment.service.js";
@@ -73,7 +74,7 @@ test("bodies are strict: an override box is true, false or null; a module's code
 
   await withServer(app, async (baseUrl) => {
     const token = staffToken();
-    for (const body of [{}, { overrides: [{ module_code: "EVENTS", view: "yes" }] }, { overrides: [{ module_code: "EVENTS", delete: true }] }, { overrides: [{ module_code: "EVENTS" }, { module_code: "EVENTS" }] }]) {
+    for (const body of [{}, { overrides: [{ module_code: "EVENTS", view: "yes" }] }, { overrides: [{ module_code: "EVENTS", approve: true }] }, { overrides: [{ module_code: "EVENTS" }, { module_code: "EVENTS" }] }]) {
       assert.equal((await call(baseUrl, "PUT", staffPath, { token, body })).status, 400, JSON.stringify(body));
     }
     for (const body of [{}, { code: "NEW" }, { route_name: "/x" }, { is_active: false }, { icon: "not an icon!" }, { sno: -1 }]) {
@@ -124,4 +125,31 @@ test("one assignment is read with Staff Assignments › view; the list's role an
   assert.deepEqual([(query as { role_id: string }).role_id, (query as { branch_id: string }).branch_id], [TEMPLATE, MODULE]);
   const first = permission.mock.calls[0]?.arguments[0] as { moduleCode: string; action: string };
   assert.deepEqual([first.moduleCode, first.action], ["USER_ROLES", "view"]);
+});
+
+test("the grantable modules list takes Roles › view or Staff Assignments › view; deleting an assignment needs Staff Assignments › delete and answers 204", async () => {
+  const permission = mock.method(permissionResolutionService, "resolvePermission", async (input: { moduleCode: string; action: string; scope: PermissionScope }) => ({
+    allowed: input.moduleCode === "USER_ROLES",
+    source: "role_permission" as const,
+    scope: input.scope,
+    roleIds: [],
+  }));
+  mock.method(roleService, "listGrantableModules", async () => []);
+  const remove = mock.method(staffAssignmentService, "remove", async (_o: string, _id: string, _actor: string | null) => undefined);
+
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    const listed = await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/grantable-modules`, { token });
+    assert.equal(listed.status, 200, "Staff Assignments › view is enough");
+    const deleted = await call(baseUrl, "DELETE", `/v1/organizations/${IDS.orgA}/staff-assignments/${ASSIGNMENT}`, { token });
+    assert.equal(deleted.status, 204);
+  });
+
+  const asked = permission.mock.calls.map((entry) => [entry.arguments[0].moduleCode, entry.arguments[0].action]);
+  assert.deepEqual(asked, [
+    ["ROLES", "view"],
+    ["USER_ROLES", "view"],
+    ["USER_ROLES", "delete"],
+  ]);
+  assert.deepEqual(remove.mock.calls[0]?.arguments, [IDS.orgA, ASSIGNMENT, IDS.user]);
 });

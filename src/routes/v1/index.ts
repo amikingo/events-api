@@ -6,6 +6,7 @@ import { customerAccountsRouter } from "./customer-accounts.js";
 import { customerRouter } from "./customer.js";
 import { docsRouter } from "./docs.js";
 import { eventsRouter } from "./events.js";
+import { grantableModulesRouter } from "./grantable-modules.js";
 import { modulesRouter } from "./modules.js";
 import { organizationsRouter } from "./organizations.js";
 import { personsRouter } from "./persons.js";
@@ -31,6 +32,7 @@ router.use("/organizations/:organizationId/events/:eventId/registrations", regis
 router.use("/organizations/:organizationId/persons", personsRouter);
 router.use("/organizations/:organizationId/roles", rolesRouter);
 router.use("/organizations/:organizationId/role-templates", organizationRoleTemplatesRouter);
+router.use("/organizations/:organizationId/grantable-modules", grantableModulesRouter);
 router.use("/role-templates", roleTemplatesRouter); // platform scope: the Super Admin's template library
 router.use("/modules", modulesRouter); // platform scope: the menu and permission list
 router.use("/organizations/:organizationId", staffAssignmentsRouter); // /staff-assignments, /staff-lookup

@@ -13,7 +13,17 @@ export type RoleTemplateDto = {
   locked: boolean;
   /** Modules a role made from it gives at least one action on (Phase 2e). */
   grant_count: number;
-  grants: Array<{ module_code: string; module_name: string; view: boolean; create: boolean; update: boolean; export: boolean }>;
+  grants: Array<{
+    module_code: string;
+    module_name: string;
+    view: boolean;
+    create: boolean;
+    update: boolean;
+    delete: boolean;
+    import: boolean;
+    export: boolean;
+    notify: boolean;
+  }>;
 };
 
 export function toRoleTemplateDto(template: RoleTemplateRow, grants: RoleTemplateGrantRow[], lockedCode: string): RoleTemplateDto {
@@ -35,7 +45,10 @@ export function toRoleTemplateDto(template: RoleTemplateRow, grants: RoleTemplat
         view: grant.can_view,
         create: grant.can_create,
         update: grant.can_update,
+        delete: grant.can_delete,
+        import: grant.can_import,
         export: grant.can_export,
+        notify: grant.can_notify,
       })),
   };
 }

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
 import { ConflictError, RoleLockedError, ValidationAppError } from "../src/errors/app-errors.js";
 import { SEED_ROLE_TEMPLATES } from "../src/migrations/20261201000002-seed-role-templates.js";
+import { OWNER_ALL_ACTIONS_GRANT } from "../src/migrations/20261202000000-grant-all-actions-to-owner-roles.js";
 import type { RoleTemplateRow } from "../src/models/role-template.js";
 import { moduleRepository } from "../src/repositories/module.repository.js";
 import { roleTemplateRepository, type RoleTemplateGrantRow } from "../src/repositories/role-template.repository.js";
@@ -42,12 +43,16 @@ const grantRow = (templateId: string, moduleCode: string, flags: Partial<Record<
     module: { code: moduleCode, module_name: moduleCode, sno: 1 },
   }) as unknown as RoleTemplateGrantRow;
 
-const grant = (module_code: string, actions: Partial<Record<"view" | "create" | "update" | "export", boolean>>) => ({
+type Box = "view" | "create" | "update" | "delete" | "import" | "export" | "notify";
+const grant = (module_code: string, actions: Partial<Record<Box, boolean>>) => ({
   module_code,
   view: actions.view ?? false,
   create: actions.create ?? false,
   update: actions.update ?? false,
+  ...(actions.delete === undefined ? {} : { delete: actions.delete }),
+  ...(actions.import === undefined ? {} : { import: actions.import }),
   ...(actions.export === undefined ? {} : { export: actions.export }),
+  ...(actions.notify === undefined ? {} : { notify: actions.notify }),
 });
 
 function arrange(templates: RoleTemplateRow[] = [OWNER_T, DOOR_T], grants: RoleTemplateGrantRow[] = []) {
@@ -75,12 +80,14 @@ beforeEach(() => {
 });
 afterEach(() => mock.restoreAll());
 
-test("the seed migration's OWNER and VIEWER templates equal the code's DEFAULT_TENANT_ROLES", () => {
+test("the seed migration's OWNER and VIEWER templates, plus the Phase 2e grant on OWNER, equal the code's DEFAULT_TENANT_ROLES", () => {
+  const withLater = (code: string, moduleCode: string, actions: readonly string[]) =>
+    code === "OWNER" ? [...new Set([...actions, ...(OWNER_ALL_ACTIONS_GRANT[moduleCode] ?? [])])] : [...actions];
   const fromSeed = SEED_ROLE_TEMPLATES.map((seed) => ({
     code: seed.code,
     name: seed.name,
     description: seed.description,
-    grants: seed.grants.map(([moduleCode, actions]) => `${moduleCode}:${[...actions].sort().join(",")}`).sort(),
+    grants: seed.grants.map(([moduleCode, actions]) => `${moduleCode}:${withLater(seed.code, moduleCode, actions).sort().join(",")}`).sort(),
   }));
   const fromCode = DEFAULT_TENANT_ROLES.map((role) => ({
     code: role.code,
@@ -112,11 +119,11 @@ test("creating a template stores it with its grants in one transaction; it isn't
 test("template grants follow the tenant rules (400 before anything is written); codes and names are unique", async () => {
   const fakes = arrange();
   await assert.rejects(
-    roleTemplateService.createTemplate({ code: "ROGUE", name: "Rogue", description: undefined, grants: [grant("MODULES", { view: true }), grant("EVENTS", { export: true })] }, IDS.user),
+    roleTemplateService.createTemplate({ code: "ROGUE", name: "Rogue", description: undefined, grants: [grant("MODULES", { view: true }), grant("ORGANIZATIONS", { delete: true })] }, IDS.user),
     (error: unknown) => {
       assert.ok(error instanceof ValidationAppError);
       const issues = (error.details as { issues: Array<{ path: string }> }).issues;
-      assert.deepEqual(issues.map((issue) => issue.path), ["body.grants.0.module_code", "body.grants.1.export"]);
+      assert.deepEqual(issues.map((issue) => issue.path), ["body.grants.0.module_code", "body.grants.1.delete"]);
       return true;
     },
   );

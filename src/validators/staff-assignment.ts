@@ -41,7 +41,10 @@ export const staffOverrideSchema = z.strictObject({
   view: overrideValue,
   create: overrideValue,
   update: overrideValue,
+  delete: overrideValue,
+  import: overrideValue,
   export: overrideValue,
+  notify: overrideValue,
 });
 
 export const staffOverridesReplaceSchema = z.strictObject({
@@ -76,6 +79,8 @@ export const updateStaffAssignmentRequest = { params: staffAssignmentParamsSchem
 export const changeStaffAssignmentStatusRequest = { params: staffAssignmentParamsSchema, body: statusChangeSchema } satisfies RequestContract;
 
 export const getStaffAssignmentRequest = { params: staffAssignmentParamsSchema } satisfies RequestContract;
+
+export const deleteStaffAssignmentRequest = { params: staffAssignmentParamsSchema } satisfies RequestContract;
 
 export const listStaffOverridesRequest = { params: staffAssignmentParamsSchema } satisfies RequestContract;
 

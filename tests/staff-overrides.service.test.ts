@@ -62,12 +62,12 @@ test("the list shows, per grantable module, what the role gives, the override an
   assert.equal(result.overridable, true);
   assert.deepEqual(result.modules.map((module) => module.module_code), ["ORGANIZATIONS", "EVENTS", "REGISTRATIONS"]);
   const events = result.modules.find((module) => module.module_code === "EVENTS");
-  assert.deepEqual(events?.role, { view: true, create: false, update: false, export: false });
-  assert.deepEqual(events?.override, { view: null, create: true, update: null, export: null });
-  assert.deepEqual(events?.effective, { view: true, create: true, update: false, export: false });
+  assert.deepEqual(events?.role, { view: true, create: false, update: false, delete: false, import: false, export: false, notify: false });
+  assert.deepEqual(events?.override, { view: null, create: true, update: null, delete: null, import: null, export: null, notify: null });
+  assert.deepEqual(events?.effective, { view: true, create: true, update: false, delete: false, import: false, export: false, notify: false });
   const guests = result.modules.find((module) => module.module_code === "REGISTRATIONS");
-  assert.deepEqual(guests?.effective, { view: false, create: false, update: true, export: false }, "a deny wins over the role");
-  assert.deepEqual(guests?.actions, ["view", "create", "update", "export"]);
+  assert.deepEqual(guests?.effective, { view: false, create: false, update: true, delete: false, import: false, export: false, notify: false }, "a deny wins over the role");
+  assert.deepEqual(guests?.actions, ["view", "create", "update", "delete", "import", "export", "notify"], "all 7 (Phase 2e)");
 });
 
 test("an Owner's assignment is listed as not overridable", async () => {
@@ -123,7 +123,7 @@ test("platform modules and actions a tenant may not hold are 400, naming each, b
       {
         overrides: [
           { module_code: "MODULES", view: true, create: undefined, update: undefined, export: undefined },
-          { module_code: "EVENTS", export: false, view: undefined, create: undefined, update: undefined },
+          { module_code: "ORGANIZATIONS", delete: false, view: undefined, create: undefined, update: undefined },
         ],
       },
       EDITOR,
@@ -133,7 +133,7 @@ test("platform modules and actions a tenant may not hold are 400, naming each, b
       const issues = (error.details as { issues: Array<{ path: string; code: string }> }).issues;
       assert.deepEqual(issues.map((issue) => [issue.path, issue.code]), [
         ["body.overrides.0.module_code", "module_not_grantable"],
-        ["body.overrides.1.export", "action_not_grantable"],
+        ["body.overrides.1.delete", "action_not_grantable"],
       ]);
       return true;
     },

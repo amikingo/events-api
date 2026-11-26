@@ -16,7 +16,9 @@ import { CentralAuthUnavailableError, ConflictError, InvalidBranchStateError, St
 import { authRefreshLimiter, customerAuthLimiter, customerCodePerMobileLimiter, publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
 import { up as backfillDefaultRoles } from "../../src/migrations/20261127000100-backfill-default-roles.js";
 import { up as grantGuestExportToOwners } from "../../src/migrations/20261129000000-grant-guest-export-to-owners.js";
+import { up as grantAllActionsToOwnerRoles } from "../../src/migrations/20261202000000-grant-all-actions-to-owner-roles.js";
 import { migrator } from "../../src/migrator.js";
+import { TENANT_GRANTABLE } from "../../src/utils/rbac.js";
 import {
   AppEvent,
   Branch,
@@ -27,6 +29,8 @@ import {
   Registration,
   Role,
   RoleModuleAccess,
+  RoleTemplate,
+  RoleTemplateModuleAccess,
   StoredFile,
   SubmissionKey,
   UserModuleAccess,
@@ -206,7 +210,8 @@ test("row 15: an owner's session shows branch view/create/update and Access Cont
   const me = await as("SELAM_OWNER", "GET", "/v1/auth/staff/me");
   assert.equal(me.status, 200);
   const branches = me.body.data.permissions.BRANCHES;
-  assert.deepEqual([branches.view, branches.create, branches.update, branches.delete], [true, true, true, false]);
+  // Phase 2e: Owners hold all 7 actions on tenant modules, delete included.
+  assert.deepEqual([branches.view, branches.create, branches.update, branches.delete], [true, true, true, true]);
   const navigation: Array<{ code: string; children: Array<{ code: string }> }> = me.body.data.navigation;
   assert.deepEqual(navigation.find((node) => node.code === "ACCESS_CONTROL")?.children.map((child) => child.code), ["ROLES", "USER_ROLES"]);
 });
@@ -1029,7 +1034,8 @@ test("row 51: an owner lists roles, looks a person up by mobile and gives them a
     assert.ok(owner && viewer);
     assert.deepEqual(
       owner.grants.find((grant: { module_code: string }) => grant.module_code === "USER_ROLES"),
-      { module_code: "USER_ROLES", module_name: "Staff Assignments", view: true, create: true, update: true, delete: false, import: false, export: false, notify: false },
+      // Phase 2e: Owners hold all 7 actions on tenant modules.
+      { module_code: "USER_ROLES", module_name: "Staff Assignments", view: true, create: true, update: true, delete: true, import: true, export: true, notify: true },
     );
 
     const lookup = await as("SELAM_OWNER", "GET", `${staffBase()}/staff-lookup?mobile=0933000001`);
@@ -1441,7 +1447,7 @@ test("row 64: the owner downloads the guest list as CSV (BOM, filters, Amharic i
   assert.equal((await download(tokenOf("HORN_OWNER"), exportPath)).status, 403, "another tenant");
 });
 
-test("row 65: the migration gives existing Owners Export; a role holder gets it only when given it; Export on Events is 400; nobody grants Export without holding it", { skip }, async () => {
+test("row 65: the migration gives existing Owners Export; a role holder gets it only when given it; Organizations delete is 400; nobody grants Export without holding it", { skip }, async () => {
   const registrations = await moduleRepository.findActivePermissionByCode("REGISTRATIONS");
   assert.ok(registrations);
   const hornOwner = await Role.findOne({ where: { organization_id: fixture.hornId, code: "OWNER" }, raw: true });
@@ -1479,8 +1485,9 @@ test("row 65: the migration gives existing Owners Export; a role holder gets it 
     const kept = oldScreen.body.data.grants.find((row: { module_code: string }) => row.module_code === "REGISTRATIONS");
     assert.equal(kept.export, true, "a save that doesn't send export keeps it");
 
-    const onEvents = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "EXPORTER", name: "Exporter", grants: [{ ...grantOf("EVENTS", true, false, false), export: true }] });
-    assert.deepEqual([onEvents.status, onEvents.body.error.details.issues[0].path], [400, "body.grants.0.export"]);
+    // Phase 2e: export is grantable on every tenant module; Organizations create and delete never are.
+    const onOrganizations = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "EXPORTER", name: "Exporter", grants: [{ ...grantOf("ORGANIZATIONS", true, false, false), delete: true }] });
+    assert.deepEqual([onOrganizations.status, onOrganizations.body.error.details.issues[0].path], [400, "body.grants.0.delete"]);
   } finally {
     mock.restoreAll();
   }
@@ -1871,4 +1878,82 @@ test("row 77: the same role can't be held organization-wide and on a branch at o
   } finally {
     mock.restoreAll();
   }
+});
+
+// --- Phase 2e step 2: all 7 actions, the grantable modules list, deleting assignments ---------------------------
+
+test("row 78: an Owner gives a role Guests › delete and import; Organizations create and delete stay 400; nobody grants notify without holding it", { skip }, async () => {
+  const given = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.helpersRoleId}`, {
+    grants: [{ ...grantOf("REGISTRATIONS", true, false, false), delete: true, import: true }],
+  });
+  assert.equal(given.status, 200, JSON.stringify(given.body));
+  const guests = given.body.data.grants.find((grant: { module_code: string }) => grant.module_code === "REGISTRATIONS");
+  assert.deepEqual([guests.delete, guests.import, guests.notify], [true, true, false]);
+
+  for (const box of ["create", "delete"] as const) {
+    const refused = await as("SELAM_OWNER", "PATCH", `${staffBase()}/roles/${roleFixture.helpersRoleId}`, {
+      grants: [{ ...grantOf("ORGANIZATIONS", true, false, false), [box]: true }],
+    });
+    assert.deepEqual([refused.status, refused.body.error.details.issues[0].path], [400, `body.grants.0.${box}`]);
+  }
+
+  const door = await tokenFor(DOOR_ID);
+  const escalate = await asToken(door, "PATCH", `${staffBase()}/roles/${roleFixture.helpersRoleId}`, {
+    grants: [{ ...grantOf("REGISTRATIONS", true, false, false), delete: true, import: true, notify: true }],
+  });
+  assert.deepEqual(
+    [escalate.status, escalate.body.error.code, escalate.body.error.details],
+    [403, "grant_exceeds_own_access", { module_code: "REGISTRATIONS", action: "notify" }],
+    "keeping delete and import needs nothing; adding notify does",
+  );
+});
+
+test("row 79: the migration gives existing Owners all 7 actions; the grantable modules list matches TENANT_GRANTABLE", { skip }, async () => {
+  const events = await moduleRepository.findActivePermissionByCode("EVENTS");
+  const organizations = await moduleRepository.findActivePermissionByCode("ORGANIZATIONS");
+  assert.ok(events && organizations);
+  const hornOwner = await Role.findOne({ where: { organization_id: fixture.hornId, code: "OWNER" }, raw: true });
+  assert.ok(hornOwner);
+  await RoleModuleAccess.update({ can_delete: false, can_notify: false }, { where: { role_id: hornOwner.id, module_id: events.id } });
+  await grantAllActionsToOwnerRoles({ context: sequelize.getQueryInterface(), name: "all-actions", path: "" });
+  const after = await RoleModuleAccess.findOne({ where: { role_id: hornOwner.id, module_id: events.id }, raw: true });
+  assert.deepEqual([after?.can_delete, after?.can_import, after?.can_export, after?.can_notify], [true, true, true, true]);
+  const onOrganizations = await RoleModuleAccess.findOne({ where: { role_id: hornOwner.id, module_id: organizations.id }, raw: true });
+  assert.deepEqual([onOrganizations?.can_create, onOrganizations?.can_delete, onOrganizations?.can_notify], [false, false, true], "never create or delete");
+
+  const ownerTemplate = await RoleTemplate.findOne({ where: { code: "OWNER" }, raw: true });
+  assert.ok(ownerTemplate);
+  const templateEvents = await RoleTemplateModuleAccess.findOne({ where: { role_template_id: ownerTemplate.id, module_id: events.id }, raw: true });
+  assert.equal(templateEvents?.can_delete, true, "the OWNER template too, so new organizations' Owners hold all 7");
+
+  const listed = await as("SELAM_OWNER", "GET", `${staffBase()}/grantable-modules`);
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.deepEqual(
+    Object.fromEntries((listed.body.data as Array<{ module_code: string; actions: string[] }>).map((module) => [module.module_code, module.actions])),
+    Object.fromEntries(Object.entries(TENANT_GRANTABLE).map(([code, actions]) => [code, [...actions]])),
+  );
+  assert.equal((await asToken(await tokenFor(DOOR_ID), "GET", `${staffBase()}/grantable-modules`)).status, 200, "Staff Assignments › view is enough");
+  assert.equal((await as("SELAM_VIEWER", "GET", `${staffBase()}/grantable-modules`)).status, 403);
+});
+
+test("row 80: deleting an assignment removes it and its overrides; the last Owner and your own are refused; a Viewer gets 403", { skip }, async () => {
+  const overlapOrgWide = (await userRoleRepository.listAllByUser(OVERLAP_ID)).find((row) => row.is_active && row.branch_id === null);
+  assert.ok(overlapOrgWide, "row 77 left an organization-wide assignment");
+  const override = await as("SELAM_OWNER", "PUT", overridesOf(overlapOrgWide.id), { overrides: [{ module_code: "EVENTS", view: false }] });
+  assert.equal(override.status, 200, JSON.stringify(override.body));
+  assert.equal(await UserModuleAccess.count({ where: { user_role_id: overlapOrgWide.id } }), 1);
+
+  assert.equal((await as("SELAM_VIEWER", "DELETE", `${staffBase()}/staff-assignments/${overlapOrgWide.id}`)).status, 403);
+  const deleted = await as("SELAM_OWNER", "DELETE", `${staffBase()}/staff-assignments/${overlapOrgWide.id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(await UserRole.count({ where: { id: overlapOrgWide.id } }), 0);
+  assert.equal(await UserModuleAccess.count({ where: { user_role_id: overlapOrgWide.id } }), 0, "its overrides went with it");
+
+  const own = await as("SELAM_OWNER", "DELETE", `${staffBase()}/staff-assignments/${await assignmentIdOf(PEOPLE.SELAM_OWNER)}`);
+  assert.deepEqual([own.status, own.body.error.code], [409, "own_assignment"]);
+
+  const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
+  assert.ok(abay);
+  const lastOwner = await as("SUPER", "DELETE", `/v1/organizations/${abay.id}/staff-assignments/${await assignmentIdOf(ABAY_OWNER_ID)}`);
+  assert.deepEqual([lastOwner.status, lastOwner.body.error.code], [409, "last_owner_assignment"]);
 });

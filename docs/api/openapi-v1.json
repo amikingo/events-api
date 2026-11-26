@@ -2329,7 +2329,7 @@
         }
       },
       "post": {
-        "summary": "Create a role with its grants (view, create, update per module, plus export on REGISTRATIONS; a left-out export means no). The code is fixed afterwards",
+        "summary": "Create a role with its grants: all 7 actions per module (view, create, update required; delete, import, export, notify optional, left out means no). The code is fixed afterwards",
         "description": "Errors: 400 validation_error (a module or action a tenant role may not hold, named in issues[].path); 403 grant_exceeds_own_access (details.module_code and action: you can't grant what you don't hold); 409 conflict (field code or name).",
         "tags": [
           "Access control"
@@ -2428,7 +2428,7 @@
         }
       },
       "patch": {
-        "summary": "Edit a role's name, description or grants (grants replaces the whole set; a grant that leaves export out keeps the role's current export). Applies on the next request",
+        "summary": "Edit a role's name, description or grants (grants replaces the whole set; a box left out keeps the role's current value). Applies on the next request",
         "description": "Errors: as for creating, plus 409 role_locked for the built-in OWNER.",
         "tags": [
           "Access control"
@@ -2849,6 +2849,55 @@
             }
           }
         }
+      },
+      "delete": {
+        "summary": "Delete an assignment for good (needs Staff Assignments › delete); its permission overrides go with it. 204",
+        "description": "Errors: 409 last_owner_assignment (the last active Owner); 409 own_assignment (your own).",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "assignmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/organizations/{organizationId}/staff-assignments/{assignmentId}/status": {
@@ -2894,6 +2943,46 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/grantable-modules": {
+      "get": {
+        "summary": "The modules and actions an organization's roles, templates and overrides may grant (Roles › view or Staff Assignments › view)",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
@@ -5264,7 +5353,16 @@
                 "update": {
                   "type": "boolean"
                 },
+                "delete": {
+                  "type": "boolean"
+                },
+                "import": {
+                  "type": "boolean"
+                },
                 "export": {
+                  "type": "boolean"
+                },
+                "notify": {
                   "type": "boolean"
                 }
               },
@@ -5318,7 +5416,16 @@
                 "update": {
                   "type": "boolean"
                 },
+                "delete": {
+                  "type": "boolean"
+                },
+                "import": {
+                  "type": "boolean"
+                },
                 "export": {
+                  "type": "boolean"
+                },
+                "notify": {
                   "type": "boolean"
                 }
               },
@@ -5402,7 +5509,19 @@
                   "nullable": true,
                   "type": "boolean"
                 },
+                "delete": {
+                  "nullable": true,
+                  "type": "boolean"
+                },
+                "import": {
+                  "nullable": true,
+                  "type": "boolean"
+                },
                 "export": {
+                  "nullable": true,
+                  "type": "boolean"
+                },
+                "notify": {
                   "nullable": true,
                   "type": "boolean"
                 }
@@ -5460,7 +5579,16 @@
                 "update": {
                   "type": "boolean"
                 },
+                "delete": {
+                  "type": "boolean"
+                },
+                "import": {
+                  "type": "boolean"
+                },
                 "export": {
+                  "type": "boolean"
+                },
+                "notify": {
                   "type": "boolean"
                 }
               },
@@ -5517,7 +5645,16 @@
                 "update": {
                   "type": "boolean"
                 },
+                "delete": {
+                  "type": "boolean"
+                },
+                "import": {
+                  "type": "boolean"
+                },
                 "export": {
+                  "type": "boolean"
+                },
+                "notify": {
                   "type": "boolean"
                 }
               },

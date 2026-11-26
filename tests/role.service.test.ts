@@ -26,12 +26,16 @@ const MODULES = ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "
   (code) => moduleRow({ id: `module-${code}`, code, module_name: code }),
 );
 
-const grant = (module_code: string, actions: Partial<Record<"view" | "create" | "update" | "export", boolean>>): RoleGrantInput => ({
+type Box = "view" | "create" | "update" | "delete" | "import" | "export" | "notify";
+const grant = (module_code: string, actions: Partial<Record<Box, boolean>>): RoleGrantInput => ({
   module_code,
   view: actions.view ?? false,
   create: actions.create ?? false,
   update: actions.update ?? false,
+  ...(actions.delete === undefined ? {} : { delete: actions.delete }),
+  ...(actions.import === undefined ? {} : { import: actions.import }),
   ...(actions.export === undefined ? {} : { export: actions.export }),
+  ...(actions.notify === undefined ? {} : { notify: actions.notify }),
 });
 
 function storedGrant(roleId: string, moduleCode: string, flags: { view?: boolean; create?: boolean; update?: boolean; export?: boolean }): RoleGrantRow {
@@ -100,7 +104,7 @@ beforeEach(() => {
 });
 afterEach(() => mock.restoreAll());
 
-test("creating a role stores it with its grants in one transaction; delete, import and notify are never granted, export only when asked", async () => {
+test("creating a role stores it with its grants in one transaction; a box left out is stored as false", async () => {
   const fakes = arrange();
   await roleService.createRole(
     IDS.orgA,
@@ -278,7 +282,8 @@ test("TENANT_GRANTABLE never offers platform modules or ORGANIZATIONS create, an
   assert.equal(TENANT_GRANTABLE.MODULES, undefined);
   assert.equal(TENANT_GRANTABLE.ROLE_TEMPLATES, undefined);
   assert.equal(TENANT_GRANTABLE.USER_MODULE_ACCESSES, undefined);
-  assert.deepEqual(TENANT_GRANTABLE.ORGANIZATIONS, ["view", "update"]);
+  assert.deepEqual(TENANT_GRANTABLE.ORGANIZATIONS, ["view", "update", "import", "export", "notify"], "never create or delete");
+  assert.deepEqual(TENANT_GRANTABLE.EVENTS, ["view", "create", "update", "delete", "import", "export", "notify"], "all 7 elsewhere (Phase 2e)");
   for (const role of DEFAULT_TENANT_ROLES) {
     for (const defaultGrant of role.grants) {
       const allowed: readonly string[] = TENANT_GRANTABLE[defaultGrant.moduleCode] ?? [];
@@ -287,33 +292,42 @@ test("TENANT_GRANTABLE never offers platform modules or ORGANIZATIONS create, an
     }
   }
   const owner = DEFAULT_TENANT_ROLES.find((role) => role.code === "OWNER");
-  assert.deepEqual(owner?.grants.find((entry) => entry.moduleCode === "ROLES")?.actions, ["view", "create", "update"], "Owners manage roles");
+  assert.deepEqual(owner?.grants.find((entry) => entry.moduleCode === "ROLES")?.actions, ["view", "create", "update", "delete", "import", "export", "notify"], "Owners manage roles");
 });
 
 // --- The Export right (Phase 4d) ---------------------------------------------------------------
 
-test("export is grantable on Guests only: on any other module it is a 400 naming the box", async () => {
+test("all 7 actions are grantable on tenant modules (Phase 2e); Organizations create and delete are a 400 naming the box", async () => {
   const fakes = arrange();
   await roleService.createRole(
     IDS.orgA,
-    { code: "LISTS", name: "Lists", description: undefined, grants: [grant("REGISTRATIONS", { view: true, export: true })] },
+    { code: "CLERK", name: "Clerk", description: undefined, grants: [grant("REGISTRATIONS", { view: true, delete: true, import: true, notify: true }), grant("EVENTS", { view: true, export: true })] },
     EDITOR,
   );
   const [, rows] = fakes.replace.mock.calls[0]?.arguments ?? [];
-  assert.deepEqual((rows as Array<{ can_view: boolean; can_export: boolean }>).map((row) => [row.can_view, row.can_export]), [[true, true]]);
+  assert.deepEqual(
+    (rows as Array<Record<string, boolean | string>>).map((row) => [row.module_id, row.can_delete, row.can_import, row.can_export, row.can_notify]),
+    [
+      ["module-REGISTRATIONS", true, true, false, true],
+      ["module-EVENTS", false, false, true, false],
+    ],
+  );
 
   await assert.rejects(
-    roleService.createRole(IDS.orgA, { code: "BAD", name: "Bad", description: undefined, grants: [grant("EVENTS", { view: true, export: true })] }, EDITOR),
+    roleService.createRole(IDS.orgA, { code: "BAD", name: "Bad", description: undefined, grants: [grant("ORGANIZATIONS", { view: true, create: true, delete: true })] }, EDITOR),
     (error: unknown) => {
       assert.ok(error instanceof ValidationAppError);
       const issues = (error.details as { issues: Array<{ path: string; code: string }> }).issues;
-      assert.deepEqual(issues.map((issue) => [issue.path, issue.code]), [["body.grants.0.export", "action_not_grantable"]]);
+      assert.deepEqual(issues.map((issue) => [issue.path, issue.code]), [
+        ["body.grants.0.create", "action_not_grantable"],
+        ["body.grants.0.delete", "action_not_grantable"],
+      ]);
       return true;
     },
   );
 });
 
-test("a grant that leaves export out: no on create; on update the role keeps the Export it has, with no escalation check for it", async () => {
+test("a box left out: no on create; on update the role keeps the value it has (export shown here), with no escalation check for it", async () => {
   const created = arrange();
   await roleService.createRole(IDS.orgA, { code: "GATE", name: "Gate", description: undefined, grants: [grant("REGISTRATIONS", { view: true })] }, EDITOR);
   assert.equal((created.replace.mock.calls[0]?.arguments[1] as Array<{ can_export: boolean }>)[0]?.can_export, false);
@@ -337,9 +351,9 @@ test("nobody grants Export without holding it (403 grant_exceeds_own_access)", a
   );
 });
 
-test("Owners export the guest list by default; Viewers don't", () => {
+test("Owners hold all 7 actions on Guests by default; Viewers only view", () => {
   const actionsOf = (code: string) => DEFAULT_TENANT_ROLES.find((role) => role.code === code)?.grants.find((entry) => entry.moduleCode === "REGISTRATIONS")?.actions;
-  assert.deepEqual(actionsOf("OWNER"), ["view", "create", "update", "export"]);
+  assert.deepEqual(actionsOf("OWNER"), ["view", "create", "update", "delete", "import", "export", "notify"]);
   assert.deepEqual(actionsOf("VIEWER"), ["view"]);
 });
 
@@ -352,4 +366,14 @@ test("roles carry how many modules they give access to and how many active staff
   const door = roles.find((role) => role.code === "DOOR_STAFF");
   assert.deepEqual([door?.grant_count, door?.member_count], [1, 3], "a grant with no action doesn't count");
   assert.equal(roles.find((role) => role.code === "VIEWER")?.member_count, 0);
+});
+
+// --- Phase 2e step 2: the grantable modules list ----------------------------------------------------------
+
+test("the grantable modules list is the active permission modules that TENANT_GRANTABLE allows, with their actions", async () => {
+  arrange();
+  const modules = await roleService.listGrantableModules(IDS.orgA);
+  assert.deepEqual(modules.map((module) => module.module_code), ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "CUSTOMERS", "REGISTRATIONS"], "never platform modules");
+  assert.deepEqual(modules.find((module) => module.module_code === "ORGANIZATIONS")?.actions, TENANT_GRANTABLE.ORGANIZATIONS);
+  assert.deepEqual(modules.find((module) => module.module_code === "REGISTRATIONS")?.actions, TENANT_GRANTABLE.REGISTRATIONS);
 });

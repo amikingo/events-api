@@ -1,10 +1,11 @@
 import type { Request, Response } from "express";
 import { getValidated } from "../middleware/validate.js";
 import { staffAssignmentService } from "../services/staff-assignment.service.js";
-import { sendList, sendSuccess } from "../utils/http.js";
+import { sendList, sendNoContent, sendSuccess } from "../utils/http.js";
 import {
   changeStaffAssignmentStatusRequest,
   createStaffAssignmentRequest,
+  deleteStaffAssignmentRequest,
   getStaffAssignmentRequest,
   listStaffAssignmentsRequest,
   listStaffOverridesRequest,
@@ -53,6 +54,13 @@ async function update(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, assignment, message);
 }
 
+/** 204: the assignment and its overrides are gone. */
+async function remove(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, deleteStaffAssignmentRequest);
+  await staffAssignmentService.remove(params.organizationId, params.assignmentId, getActorId(req));
+  sendNoContent(res);
+}
+
 async function listOverrides(req: Request, res: Response): Promise<void> {
   const { params } = getValidated(req, listStaffOverridesRequest);
   sendSuccess(res, 200, await staffAssignmentService.listOverrides(params.organizationId, params.assignmentId), "Permission overrides retrieved");
@@ -75,4 +83,4 @@ async function changeStatus(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, assignment, "Staff assignment status updated");
 }
 
-export const staffAssignmentController = { lookUp, list, get, assign, update, changeStatus, listOverrides, replaceOverrides };
+export const staffAssignmentController = { lookUp, list, get, assign, update, changeStatus, remove, listOverrides, replaceOverrides };

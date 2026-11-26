@@ -69,7 +69,7 @@ async function checkGrants(grants: RoleGrantInput[], transaction: Transaction): 
   );
 }
 
-/** The grant rows; a left-out export means no. Only view, create, update and export are ever stored as true. */
+/** The grant rows: all 7 actions (Phase 2e); a left-out box means no. */
 function grantRows(templateId: string, grants: RoleGrantInput[], moduleIds: Map<string, string>, actorId: string | null) {
   return grants
     .filter((grant) => grantedActions(grant).length > 0)
@@ -79,10 +79,10 @@ function grantRows(templateId: string, grants: RoleGrantInput[], moduleIds: Map<
       can_view: grant.view,
       can_create: grant.create,
       can_update: grant.update,
-      can_delete: false,
-      can_import: false,
+      can_delete: grant.delete === true,
+      can_import: grant.import === true,
       can_export: grant.export === true,
-      can_notify: false,
+      can_notify: grant.notify === true,
       created_by: actorId,
       updated_by: actorId,
     }));

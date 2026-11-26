@@ -10,6 +10,7 @@ import {
   InvalidBranchStateError,
   LastOwnerAssignmentError,
   NotFoundError,
+  OwnAssignmentError,
   RoleInactiveError,
 } from "../src/errors/app-errors.js";
 import type { RoleRow } from "../src/models/role.js";
@@ -268,4 +269,23 @@ test("moving an assignment, or switching it back on, into an overlap is refused"
   const reactivate = arrange({ current: switchedOff, elsewhere: [onBranch, switchedOff] });
   await assert.rejects(staffAssignmentService.changeStatus(IDS.orgA, "assignment-1", true, IDS.user), AssignmentScopeConflictError);
   assert.equal(reactivate.setActive.mock.callCount(), 0);
+});
+
+// --- Phase 2e step 2: deleting an assignment -------------------------------------------------------------
+
+test("an assignment is deleted for good under the Owner lock; the last active Owner and your own can't be", async () => {
+  const fakes = arrange({ current: assignment({ id: "assignment-1", user_id: PERSON_ID, role_id: VIEWER.id }) });
+  const destroy = mock.method(userRoleRepository, "deleteByOrganizationAndId", async (_o: string, _id: string, _options: { transaction: Transaction }) => undefined);
+
+  await staffAssignmentService.remove(IDS.orgA, "assignment-1", IDS.user);
+  assert.deepEqual(destroy.mock.calls[0]?.arguments, [IDS.orgA, "assignment-1", { transaction: FAKE_TX }]);
+  assert.equal(fakes.lockOwners.mock.callCount(), 1);
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  arrange({ current: assignment({ id: "assignment-1", user_id: PERSON_ID, role_id: OWNER.id }), owners: 1 });
+  const refused = mock.method(userRoleRepository, "deleteByOrganizationAndId", async () => undefined);
+  await assert.rejects(staffAssignmentService.remove(IDS.orgA, "assignment-1", IDS.user), LastOwnerAssignmentError);
+  await assert.rejects(staffAssignmentService.remove(IDS.orgA, "assignment-1", PERSON_ID), OwnAssignmentError);
+  assert.equal(refused.mock.callCount(), 0);
 });
