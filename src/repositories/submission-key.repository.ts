@@ -4,7 +4,7 @@ import type { SubmissionKeyRow, SubmissionScope } from "../models/submission-key
 import { toPlain } from "../utils/sequelize.js";
 import { txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
 
-const attributes = ["id", "organization_id", "scope", "key", "request_hash", "registration_id", "created_at", "updated_at"] as const satisfies readonly (keyof SubmissionKeyRow)[];
+const attributes = ["id", "organization_id", "scope", "key", "request_hash", "registration_id", "order_id", "created_at", "updated_at"] as const satisfies readonly (keyof SubmissionKeyRow)[];
 
 /** Keyed by organization + scope + key (uq_submission_key_organization_scope_key). */
 async function findByScopeAndKey(

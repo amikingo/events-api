@@ -6,7 +6,7 @@ import { toRegistrationDto } from "../src/mappers/registration.mapper.js";
 import { permissionResolutionService, type PermissionScope } from "../src/services/permission-resolution.service.js";
 import { personService } from "../src/services/person.service.js";
 import { registrationService } from "../src/services/registration.service.js";
-import { IDS, personRow, registrationRow, staffToken, ticketTypeRow } from "./helpers/fixtures.js";
+import { IDS, personRow, registrationRow, staffToken, orderSummary, ticketTypeRow } from "./helpers/fixtures.js";
 import { call, withServer } from "./helpers/http.js";
 
 /**
@@ -16,7 +16,7 @@ import { call, withServer } from "./helpers/http.js";
 const app = createApp();
 const personsPath = `/v1/organizations/${IDS.orgA}/persons`;
 const registrationsPath = `/v1/organizations/${IDS.orgA}/events/${IDS.event}/registrations`;
-const dto = toRegistrationDto({ ...registrationRow(), person: personRow(), ticketType: ticketTypeRow() });
+const dto = toRegistrationDto({ ...registrationRow(), person: personRow(), ticketType: ticketTypeRow(), order: orderSummary() });
 
 function allowPermissions(allowed: boolean) {
   return mock.method(permissionResolutionService, "resolvePermission", async (input: { scope: PermissionScope }) => ({

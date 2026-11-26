@@ -1,13 +1,14 @@
-import { col, fn, type CreationAttributes } from "sequelize";
+import { col, fn, Op, type CreationAttributes, type WhereOptions } from "sequelize";
 import type { EventRow } from "../models/event.js";
-import { AppEvent, Organization, Person, Registration, TicketType } from "../models/index.js";
+import { AppEvent, Organization, Person, Registration, TicketOrder, TicketType } from "../models/index.js";
 import type { OrganizationRow } from "../models/organization.js";
 import type { PersonRow } from "../models/person.js";
 import type { RegistrationRow, RegistrationStatus } from "../models/registration.js";
+import type { TicketOrderRow } from "../models/ticket-order.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
 import { lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
-import { personSearchWhere } from "./person-search.js";
+import { likePattern } from "./person-search.js";
 
 /** Explicit projection: never `SELECT *`. */
 const attributes = [
@@ -27,6 +28,9 @@ const attributes = [
   "consent_purpose",
   "consent_version",
   "consented_at",
+  "order_id",
+  "price_amount",
+  "currency",
   "created_at",
   "updated_at",
   "created_by",
@@ -35,16 +39,21 @@ const attributes = [
 
 const PERSON_SUMMARY = ["id", "first_name", "last_name", "phone", "email", "affiliation_name", "is_active"] as const satisfies readonly (keyof PersonRow)[];
 const TICKET_TYPE_SUMMARY = ["id", "code", "name"] as const satisfies readonly (keyof TicketTypeRow)[];
+const ORDER_SUMMARY = ["id", "reference", "buyer_mobile"] as const satisfies readonly (keyof TicketOrderRow)[];
 const EVENT_SUMMARY = ["id", "name", "slug", "starts_at", "ends_at", "timezone", "status"] as const satisfies readonly (keyof EventRow)[];
 
 export type RegistrationUpdateValues = Partial<
   Pick<RegistrationRow, "ticket_type_id" | "status" | "source" | "registered_by" | "registered_at" | "cancelled_at" | "updated_by">
 >;
 
-/** A guest-list row: the registration with the guest's contact summary and the ticket type. */
+/**
+ * A guest-list row: the ticket with the holder's contact summary (null for an unnamed QUICK ticket, Phase 7), the
+ * ticket type and the order it came with (reference and buyer mobile).
+ */
 export type RegistrationWithDetails = RegistrationRow & {
-  person: Pick<PersonRow, (typeof PERSON_SUMMARY)[number]>;
+  person: Pick<PersonRow, (typeof PERSON_SUMMARY)[number]> | null;
   ticketType: Pick<TicketTypeRow, (typeof TICKET_TYPE_SUMMARY)[number]>;
+  order: Pick<TicketOrderRow, (typeof ORDER_SUMMARY)[number]>;
 };
 
 /** A person's registration in their organization, with the event it is for (for confirming a returning guest). */
@@ -54,8 +63,9 @@ export type PersonRegistrationRow = RegistrationRow & {
 };
 
 const detailIncludes = [
-  { model: Person, as: "person", required: true, attributes: [...PERSON_SUMMARY] },
+  { model: Person, as: "person", required: false, attributes: [...PERSON_SUMMARY] },
   { model: TicketType, as: "ticketType", required: true, attributes: [...TICKET_TYPE_SUMMARY] },
+  { model: TicketOrder, as: "order", required: true, attributes: [...ORDER_SUMMARY] },
 ];
 
 async function create(values: CreationAttributes<Registration>, options: WriteOptions = {}): Promise<RegistrationRow> {
@@ -130,6 +140,18 @@ async function countConfirmedByTicketType(
   });
 }
 
+/**
+ * Phase 7: confirmed tickets held at the event by one buyer mobile (E.164), across every order: what the purchase
+ * limit counts. Cancelled tickets don't count, so cancelling gives the allowance back.
+ */
+async function countConfirmedByBuyerMobile(organizationId: string, eventId: string, buyerMobile: string, options: RepoOptions = {}): Promise<number> {
+  return Registration.count({
+    where: { organization_id: organizationId, event_id: eventId, status: "CONFIRMED" },
+    include: [{ model: TicketOrder, as: "order", required: true, attributes: [], where: { buyer_mobile: buyerMobile } }],
+    ...txOptions(options),
+  });
+}
+
 /** Confirmed places per ticket type of the event (ticket types without any are absent). */
 async function countConfirmedPerTicketType(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<Map<string, number>> {
   const rows = (await Registration.findAll({
@@ -149,6 +171,25 @@ export type RegistrationListFilters = {
   phoneVariant?: string | null;
 };
 
+/**
+ * The guest-list search: the holder's names, email and phone (case-insensitive, substring; an Ethiopian mobile also
+ * matches its +251 form), and since Phase 7 the ticket code and the order's buyer mobile, so an unnamed QUICK ticket
+ * can be found too.
+ */
+function guestSearchWhere(q: string, phoneVariant: string | null): WhereOptions {
+  const pattern = likePattern(q);
+  return {
+    [Op.or]: [
+      { "$person.first_name$": { [Op.iLike]: pattern } },
+      { "$person.last_name$": { [Op.iLike]: pattern } },
+      { "$person.email$": { [Op.iLike]: pattern } },
+      { "$person.phone$": { [Op.iLike]: pattern } },
+      { code: q.trim().toUpperCase() },
+      ...(phoneVariant ? [{ "$person.phone$": phoneVariant }, { "$order.buyer_mobile$": phoneVariant }] : []),
+    ],
+  };
+}
+
 /** The guest list's filters and order, shared by the paged list and the export so both always match. */
 function guestListQuery(organizationId: string, eventId: string, filters: RegistrationListFilters) {
   return {
@@ -157,18 +198,10 @@ function guestListQuery(organizationId: string, eventId: string, filters: Regist
       event_id: eventId,
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.ticketTypeId ? { ticket_type_id: filters.ticketTypeId } : {}),
+      ...(filters.q ? guestSearchWhere(filters.q, filters.phoneVariant ?? null) : {}),
     },
     attributes: [...attributes],
-    include: [
-      {
-        model: Person,
-        as: "person",
-        required: true,
-        attributes: [...PERSON_SUMMARY],
-        ...(filters.q ? { where: personSearchWhere(filters.q, filters.phoneVariant ?? null) } : {}),
-      },
-      { model: TicketType, as: "ticketType", required: true, attributes: [...TICKET_TYPE_SUMMARY] },
-    ],
+    include: detailIncludes,
     order: [
       ["registered_at", "DESC"],
       ["id", "ASC"],
@@ -228,14 +261,17 @@ export type AccountRegistrationRow = RegistrationRow & {
 };
 
 /**
- * Every registration of every profile linked to this Cheche account, in any organization (My Tickets). Only
- * profiles with this user_id count: unlinked profiles with the same mobile never do (claiming is deferred).
+ * Every ticket of this Cheche account, in any organization (My Tickets): tickets of profiles linked to the account,
+ * and since Phase 7 tickets of orders the account bought while signed in (a verified identity). Unlinked profiles
+ * or orders with the same mobile never count (claiming is deferred).
  */
 async function listByAccount(userId: string, options: RepoOptions = {}): Promise<AccountRegistrationRow[]> {
   const rows = await Registration.findAll({
+    where: { [Op.or]: [{ "$person.user_id$": userId }, { "$order.buyer_user_id$": userId }] },
     attributes: [...attributes],
     include: [
-      { model: Person, as: "person", required: true, attributes: [], where: { user_id: userId } },
+      { model: Person, as: "person", required: false, attributes: [] },
+      { model: TicketOrder, as: "order", required: true, attributes: [] },
       {
         model: AppEvent,
         as: "event",
@@ -252,6 +288,21 @@ async function listByAccount(userId: string, options: RepoOptions = {}): Promise
     ...txOptions(options),
   });
   return toPlainList<AccountRegistrationRow>(rows);
+}
+
+/** Phase 7: the tickets of one order, with their details, in the order they were issued. */
+async function listByOrder(organizationId: string, eventId: string, orderId: string, options: RepoOptions = {}): Promise<RegistrationWithDetails[]> {
+  const rows = await Registration.findAll({
+    where: { organization_id: organizationId, event_id: eventId, order_id: orderId },
+    attributes: [...attributes],
+    include: detailIncludes,
+    order: [
+      ["created_at", "ASC"],
+      ["code", "ASC"],
+    ],
+    ...txOptions(options),
+  });
+  return toPlainList<RegistrationWithDetails>(rows);
 }
 
 /** Event-scoped update + read-back inside the same transaction. */
@@ -275,9 +326,11 @@ export const registrationRepository = {
   countConfirmedByEvent,
   countConfirmedByTicketType,
   countConfirmedPerTicketType,
+  countConfirmedByBuyerMobile,
   listByEvent,
   listAllByEvent,
   listByPerson,
   listByAccount,
+  listByOrder,
   updateByEventAndId,
 };

@@ -9,6 +9,7 @@ import type { ModuleRow } from "../../src/models/module.js";
 import type { OrganizationRow } from "../../src/models/organization.js";
 import type { PersonRow } from "../../src/models/person.js";
 import type { RegistrationRow } from "../../src/models/registration.js";
+import type { TicketOrderRow } from "../../src/models/ticket-order.js";
 import type { RoleRow } from "../../src/models/role.js";
 import type { StoredFileRow } from "../../src/models/stored-file.js";
 import type { AssignmentRow } from "../../src/repositories/user-role.repository.js";
@@ -180,11 +181,37 @@ export function registrationRow(overrides: Partial<RegistrationRow> = {}): Regis
     registered_at: new Date("2026-11-01T08:00:00Z"),
     cancelled_at: null,
     code: "K7M2Q9XP",
+    order_id: IDS.registration,
+    price_amount: "0.00",
+    currency: "ETB",
     privacy_notice_version: null,
     privacy_notice_shown_at: null,
     consent_purpose: null,
     consent_version: null,
     consented_at: null,
+    ...audit,
+    ...overrides,
+  };
+}
+
+/** Phase 7: the order a ticket came with, as the guest list shows it (a single registration's order shares its id). */
+export function orderSummary(overrides: Partial<{ id: string; reference: string; buyer_mobile: string | null }> = {}) {
+  return { id: IDS.registration, reference: "K7M2Q9XP", buyer_mobile: "+251911234567", ...overrides };
+}
+
+/** Phase 7: a whole order row. */
+export function orderRow(overrides: Partial<TicketOrderRow> = {}): TicketOrderRow {
+  return {
+    id: IDS.registration,
+    organization_id: IDS.orgA,
+    event_id: IDS.event,
+    reference: "ORDER23456",
+    source: "PUBLIC",
+    status: "CONFIRMED",
+    buyer_mobile: "+251911234567",
+    buyer_user_id: null,
+    total_amount: "0.00",
+    currency: "ETB",
     ...audit,
     ...overrides,
   };

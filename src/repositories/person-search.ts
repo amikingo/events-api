@@ -2,7 +2,7 @@ import { Op, type WhereOptions } from "sequelize";
 import type { PersonRow } from "../models/person.js";
 
 /** Escapes LIKE wildcards so a search for "50%" matches the text, not everything. */
-function likePattern(text: string): string {
+export function likePattern(text: string): string {
   return `%${text.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
 }
 

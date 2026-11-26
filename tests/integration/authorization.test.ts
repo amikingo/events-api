@@ -33,6 +33,7 @@ import {
   RoleTemplateModuleAccess,
   StoredFile,
   SubmissionKey,
+  TicketOrder,
   UserModuleAccess,
   UserRole,
 } from "../../src/models/index.js";
@@ -712,7 +713,7 @@ test("row 41: staff register a new guest: CONFIRMED, STAFF, the owner as registe
 
   const queued = await MessageOutbox.findAll({ where: { registration_id: hana.id }, raw: true });
   assert.deepEqual(
-    queued.map((message) => [message.kind, message.channel, message.recipient, message.status, message.payload.code]),
+    queued.map((message) => [message.kind, message.channel, message.recipient, message.status, "code" in message.payload ? message.payload.code : null]),
     [["REGISTRATION_CONFIRMATION", "SMS", "+251911234567", "PENDING", hana.code]],
   );
 });
@@ -812,9 +813,14 @@ test("row 44: drafts, closed sign-ups, inactive or foreign ticket types and anot
     created_by: null,
     updated_by: null,
   });
+  // Phase 7: a ticket needs a real order of the event, so only the person or ticket type can be the wrong one here.
+  const hanaTicket = await Registration.findByPk(guestFixture.hanaRegistrationId, { raw: true });
+  assert.ok(hanaTicket);
   const direct = {
     organization_id: fixture.selamId,
     event_id: guestFixture.nightId,
+    order_id: hanaTicket.order_id,
+    currency: "ETB",
     status: "CONFIRMED" as const,
     source: "STAFF" as const,
     registered_by: PEOPLE.SELAM_OWNER,
@@ -1432,7 +1438,8 @@ test("row 64: the owner downloads the guest list as CSV (BOM, filters, Amharic i
   assert.equal(lines.length, 4, "header plus all three guests");
   const hana = lines.find((line) => line.startsWith(swapFixture.hanaCode)) ?? "";
   assert.match(hana, /,Confirmed,Hana,Swap,0922 000 001,,,VIP,Added by staff,/);
-  assert.match(hana, /"[A-Z][a-z]+ \d{1,2}, \d{4} at \d{1,2}:\d{2} (in the morning|in the afternoon|in the evening|at night)","[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2} (AM|PM)",,$/);
+  // Phase 7: after the (empty) cancelled dates come the order reference and the buyer's mobile.
+  assert.match(hana, /"[A-Z][a-z]+ \d{1,2}, \d{4} at \d{1,2}:\d{2} (in the morning|in the afternoon|in the evening|at night)","[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2} (AM|PM)",,,[A-HJKMNP-Z2-9]{10},0922 000 001$/);
   assert.ok(lines.some((line) => line.includes(",ሰላም,Swap,")), "Amharic kept");
   assert.ok(lines.some((line) => line.includes(",'=SUM(1),Swap,")), "the formula can't run");
 
@@ -2382,4 +2389,161 @@ test("row 88: a paid type can't be had through the old endpoints; a DETAILED eve
   assert.equal(workshop.body.data.registration_mode, "DETAILED");
   assert.deepEqual(workshop.body.data.holder_fields, { name: "REQUIRED", mobile: "REQUIRED", email: "OPTIONAL", affiliation: "OPTIONAL", country: "OPTIONAL" });
   assert.ok(workshop.body.data.ticket_types.every((type: { price: string; is_free: boolean }) => type.price === "0.00" && type.is_free));
+});
+
+// --- Phase 7 step 2: orders, group checkout and the purchase limit -----------------------------------------------
+
+const checkoutFixture = { quickId: "", quickPath: "", quickPublic: "", quickGaId: "", quickCrewId: "", hanaOrderTickets: [] as Array<{ code: string }> };
+const orderForm = (items: unknown[], buyer_mobile?: string) => ({ ...(buyer_mobile ? { buyer_mobile } : {}), privacy_notice_version: PRIVACY_NOTICE_VERSION, items });
+
+/** A published Selam event for checkout rows, with General Admission (and any extra ticket types). */
+async function publishedCheckoutEvent(body: Record<string, unknown>, extraTypes: Array<Record<string, unknown>> = []) {
+  const selamEvents = `/v1/organizations/${fixture.selamId}/events`;
+  const created = await as("SELAM_OWNER", "POST", selamEvents, { starts_at: "2027-07-01T07:00:00+03:00", ends_at: "2027-07-01T18:00:00+03:00", ...body });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const path = `${selamEvents}/${created.body.data.id}`;
+  const types: Record<string, string> = { GA: (await as("SELAM_OWNER", "GET", `${path}/ticket-types`)).body.data[0].id };
+  for (const type of extraTypes) {
+    const added = await as("SELAM_OWNER", "POST", `${path}/ticket-types`, type);
+    assert.equal(added.status, 201, JSON.stringify(added.body));
+    types[added.body.data.code] = added.body.data.id;
+  }
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${path}/status`, { status: "PUBLISHED" })).status, 200);
+  return { id: created.body.data.id as string, path, publicPath: `/v1/public/organizations/selam-events/events/${created.body.data.slug}`, types };
+}
+
+test("row 89: Hana gets 3 quick tickets with one mobile; a retry returns the same codes; 2 more break the limit of 4; 1 more in another format is fine", { skip }, async () => {
+  resetPublicLimit();
+  const event = await publishedCheckoutEvent({ name: "Harvest Festival", registration_mode: "QUICK", purchase_limit_per_mobile: 4 }, [{ code: "CREW", name: "Crew", audience: "STAFF_ONLY" }]);
+  Object.assign(checkoutFixture, { quickId: event.id, quickPath: event.path, quickPublic: event.publicPath, quickGaId: event.types.GA, quickCrewId: event.types.CREW });
+  const orders = `${event.publicPath}/orders`;
+
+  const key = randomUUID();
+  const first = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 3 }], "0913100001"), key);
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const codes = first.body.data.tickets.map((ticket: { code: string }) => ticket.code);
+  assert.equal(new Set(codes).size, 3, "three distinct codes");
+  assert.ok(first.body.data.tickets.every((ticket: { holder: unknown }) => ticket.holder === null), "quick tickets are unnamed");
+  assert.equal(first.body.data.total_amount, "0.00");
+  checkoutFixture.hanaOrderTickets = first.body.data.tickets;
+
+  const again = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 3 }], "0913100001"), key);
+  assert.deepEqual([again.status, again.body.data.tickets.map((ticket: { code: string }) => ticket.code)], [200, codes]);
+
+  const tooMany = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 2 }], "0913100001"), randomUUID());
+  assert.deepEqual([tooMany.status, tooMany.body.error.code, tooMany.body.error.details], [409, "purchase_limit_reached", { limit: 4, held: 3, requested: 2 }]);
+  const oneMore = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "+251913100001"), randomUUID());
+  assert.equal(oneMore.status, 201, JSON.stringify(oneMore.body));
+  const fifth = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913 100 001"), randomUUID());
+  assert.equal(fifth.body.error?.code, "purchase_limit_reached", "the same mobile written a third way");
+
+  // One SMS per order, to the buyer, listing every code.
+  const order = await TicketOrder.findOne({ where: { reference: first.body.data.reference }, raw: true });
+  assert.ok(order);
+  const messages = await MessageOutbox.findAll({ where: { order_id: order.id }, raw: true });
+  assert.deepEqual(
+    messages.map((message) => [message.kind, message.recipient, "codes" in message.payload ? message.payload.codes : null]),
+    [["ORDER_CONFIRMATION", "+251913100001", codes]],
+  );
+  assert.equal(await Registration.count({ where: { order_id: order.id } }), 3);
+});
+
+test("row 90: a detailed training needs each attendee's name and affiliation; a missing answer names the holder and takes no place; a complete order lists 3 named guests", { skip }, async () => {
+  resetPublicLimit();
+  const event = await publishedCheckoutEvent({
+    name: "Credit Training",
+    registration_mode: "DETAILED",
+    holder_fields: { name: "REQUIRED", mobile: "OPTIONAL", email: "OPTIONAL", affiliation: "REQUIRED", country: "HIDDEN" },
+  });
+  const orders = `${event.publicPath}/orders`;
+  const holders = [
+    { first_name: "Hana", last_name: "Bekele", affiliation_name: "Selam Bank" },
+    { first_name: "Abel", last_name: "Tadesse" },
+    { first_name: "Liya", last_name: "Tesfaye", affiliation_name: "Horn NGO" },
+  ];
+  const missing = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 3, holders }], "0913100002"), randomUUID());
+  assert.equal(missing.status, 400);
+  assert.deepEqual(missing.body.error.details.issues.map((issue: { path: string; code: string }) => [issue.path, issue.code]), [["body.items.0.holders.1.affiliation_name", "required"]]);
+  assert.equal(await Registration.count({ where: { event_id: event.id } }), 0, "no place taken");
+
+  const complete = await postWithKey(
+    orders,
+    orderForm([{ ticket_type_code: "GA", quantity: 3, holders: holders.map((holder) => ({ affiliation_name: "Selam Bank", ...holder })) }], "0913100002"),
+    randomUUID(),
+  );
+  assert.equal(complete.status, 201, JSON.stringify(complete.body));
+  const list = await as("SELAM_OWNER", "GET", `${event.path}/registrations`);
+  assert.deepEqual(
+    list.body.data.map((row: { person: { first_name: string; affiliation_name: string }; order: { reference: string } }) => [row.person.first_name, row.person.affiliation_name, row.order.reference]).sort(),
+    [
+      ["Abel", "Selam Bank", complete.body.data.reference],
+      ["Hana", "Selam Bank", complete.body.data.reference],
+      ["Liya", "Horn NGO", complete.body.data.reference],
+    ],
+  );
+});
+
+test("row 91: the last place goes to one of two racing orders; one mobile racing itself keeps the combined limit; only staff issue a staff-only type; another tenant can't reach orders", { skip }, async () => {
+  resetPublicLimit();
+  const last = await publishedCheckoutEvent({ name: "Rooftop Dinner", registration_mode: "QUICK", capacity: 1 });
+  const race = await Promise.all([
+    postWithKey(`${last.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913100003"), randomUUID()),
+    postWithKey(`${last.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913100004"), randomUUID()),
+  ]);
+  assert.deepEqual(race.map((response) => response.status).sort(), [201, 409]);
+  assert.equal(race.find((response) => response.status === 409)?.body.error.code, "capacity_reached");
+  assert.equal(await Registration.count({ where: { event_id: last.id, status: "CONFIRMED" } }), 1);
+
+  const limited = await publishedCheckoutEvent({ name: "Book Fair", registration_mode: "QUICK", purchase_limit_per_mobile: 2 });
+  const sameMobile = await Promise.all([
+    postWithKey(`${limited.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }], "0913100005"), randomUUID()),
+    postWithKey(`${limited.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }], "+251913100005"), randomUUID()),
+  ]);
+  assert.deepEqual(sameMobile.map((response) => response.status).sort(), [201, 409]);
+  assert.equal(await Registration.count({ where: { event_id: limited.id, status: "CONFIRMED" } }), 2);
+
+  const crewByPublic = await postWithKey(`${checkoutFixture.quickPublic}/orders`, orderForm([{ ticket_type_code: "CREW", quantity: 1 }], "0913100006"), randomUUID());
+  assert.equal(crewByPublic.status, 404);
+  const crewByStaff = await as("SELAM_OWNER", "POST", `${checkoutFixture.quickPath}/orders`, { items: [{ ticket_type_id: checkoutFixture.quickCrewId, quantity: 2 }] });
+  assert.deepEqual([crewByStaff.status, crewByStaff.body.data.ticket_count, crewByStaff.body.data.buyer_mobile], [201, 2, null]);
+  assert.equal(crewByStaff.body.data.confirmation, null, "no buyer mobile, no SMS");
+
+  const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
+  assert.ok(abay);
+  assert.equal((await as("SELAM_OWNER", "GET", `/v1/organizations/${abay.id}/events/${randomUUID()}/orders`)).status, 403);
+  assert.equal((await as("SELAM_VIEWER", "POST", `${checkoutFixture.quickPath}/orders`, { items: [{ ticket_type_id: checkoutFixture.quickGaId, quantity: 1 }] })).status, 403);
+  const listed = await as("SELAM_VIEWER", "GET", `${checkoutFixture.quickPath}/orders?buyer_mobile=0913100001`);
+  assert.deepEqual([listed.status, listed.body.data.length], [200, 2], "a viewer reads orders; Hana has two");
+});
+
+test("row 92: cancelling a ticket frees its place and allowance; the guest list and CSV show unnamed tickets; My Tickets shows tickets an account bought", { skip }, async () => {
+  resetPublicLimit();
+  resetGuestLimits();
+  // Hana holds 4 at the Harvest Festival (row 89): cancelling one lets her get one more.
+  const [first] = checkoutFixture.hanaOrderTickets;
+  assert.ok(first);
+  const ticket = await Registration.findOne({ where: { code: first.code }, raw: true });
+  assert.ok(ticket);
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${checkoutFixture.quickPath}/registrations/${ticket.id}/status`, { status: "CANCELLED" })).status, 200);
+  const again = await postWithKey(`${checkoutFixture.quickPublic}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913100001"), randomUUID());
+  assert.equal(again.status, 201, JSON.stringify(again.body));
+  // Bringing the cancelled one back would go past the limit.
+  const back = await as("SELAM_OWNER", "PATCH", `${checkoutFixture.quickPath}/registrations/${ticket.id}/status`, { status: "CONFIRMED" });
+  assert.deepEqual([back.status, back.body.error.code], [409, "purchase_limit_reached"]);
+
+  const list = await as("SELAM_OWNER", "GET", `${checkoutFixture.quickPath}/registrations?q=0913100001`);
+  assert.ok(list.body.data.length >= 4, "the buyer's mobile finds unnamed tickets");
+  assert.ok(list.body.data.every((row: { person: unknown; order: { buyer_mobile: string } }) => row.person === null && row.order.buyer_mobile === "+251913100001"));
+  const csv = await download(tokenOf("SELAM_OWNER"), `${checkoutFixture.quickPath}/registrations/export`);
+  assert.equal(csv.status, 200);
+  assert.match(csv.bytes.toString("utf8"), /Unnamed ticket/);
+
+  // A signed-in guest's order appears in My Tickets, with every code.
+  const bought = await guestPost(`${checkoutFixture.quickPublic}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }]), { key: randomUUID(), token: guestAccessToken("SARA") });
+  assert.equal(bought.status, 201, JSON.stringify(bought.body));
+  const mine = await guestGet("/v1/customer/registrations", guestAccessToken("SARA"));
+  const boughtCodes = bought.body.data.tickets.map((row: { code: string }) => row.code);
+  assert.ok(boughtCodes.every((code: string) => mine.body.data.some((row: { code: string }) => row.code === code)), JSON.stringify(mine.body.data));
+  const order = await TicketOrder.findOne({ where: { reference: bought.body.data.reference }, raw: true });
+  assert.deepEqual([order?.buyer_mobile, order?.buyer_user_id], [GUESTS.SARA.mobile, GUESTS.SARA.id], "the account's verified mobile, not the form's");
 });

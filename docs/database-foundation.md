@@ -185,3 +185,25 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
 - Indexes: `idx_submission_key_registration`
 - Stored only by a successful registration, in the same transaction. Kept for now; a clean-up job comes later.
   Supporting infrastructure, not one of the eight business tables.
+
+### `ticket_order` (Phase 7 step 2)
+- One buyer's checkout at one event. Columns: `event_id`, `reference` (public, unique; 10 characters, or the
+  registration's 8-character code for orders backfilled from existing registrations), `source` (`STAFF`/`PUBLIC`),
+  `status` (`CONFIRMED`), `buyer_mobile` (E.164, nullable), `buyer_user_id` (Cheche account of a signed-in buyer,
+  logical reference), `total_amount` (NUMERIC(12,2)), `currency`, audit columns
+- Constraints: composite `fk_ticket_order_organization_event`, `uq_ticket_order_organization_id_id` (for
+  registrations, retry keys and messages), `uq_ticket_order_reference`, `ck_ticket_order_reference_format`,
+  `ck_ticket_order_source`, `ck_ticket_order_status`, `ck_ticket_order_buyer_mobile_format`,
+  `ck_ticket_order_total_non_negative`, `ck_ticket_order_currency_format`
+- Indexes: `idx_ticket_order_event_buyer_mobile` (the purchase limit), `idx_ticket_order_event_created`,
+  `idx_ticket_order_buyer_user_id` (My Tickets)
+- Backfill (`20261205000001`): one free order per registration that existed, sharing its id
+
+### Phase 7 step 2 changes to existing tables
+- `registration`: `order_id` (NOT NULL, composite `fk_registration_organization_order`, `idx_registration_order`),
+  `price_amount` (NUMERIC(12,2), `ck_registration_price_non_negative`), `currency` (`ck_registration_currency_format`);
+  `person_id` is now nullable (a QUICK ticket has no holder profile). `uq_registration_organization_event_person` stays.
+- `submission_key`: `order_id` (composite FK), `registration_id` nullable, `ck_submission_key_one_target` (exactly
+  one), scopes `PUBLIC_CHECKOUT` and `STAFF_CHECKOUT`.
+- `message_outbox`: `order_id` (composite FK), `registration_id` nullable, `ck_message_outbox_one_subject`, kind
+  `ORDER_CONFIRMATION`.

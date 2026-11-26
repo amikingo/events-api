@@ -9,6 +9,7 @@ import {
   NotFoundError,
   PaymentRequiredError,
   PersonInactiveError,
+  PurchaseLimitReachedError,
   RegistrationCancelledError,
   RegistrationClosedError,
   TicketTypeInactiveError,
@@ -18,6 +19,7 @@ import type { EventRow } from "../src/models/event.js";
 import type { MessageOutboxRow } from "../src/models/message-outbox.js";
 import type { PersonRow } from "../src/models/person.js";
 import type { RegistrationRow } from "../src/models/registration.js";
+import type { TicketOrderRow } from "../src/models/ticket-order.js";
 import type { TicketTypeRow } from "../src/models/ticket-type.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
 import { messageOutboxRepository } from "../src/repositories/message-outbox.repository.js";
@@ -25,12 +27,13 @@ import { organizationRepository } from "../src/repositories/organization.reposit
 import { personRepository } from "../src/repositories/person.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
 import { submissionKeyRepository } from "../src/repositories/submission-key.repository.js";
+import { ticketOrderRepository } from "../src/repositories/ticket-order.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { registrationService } from "../src/services/registration.service.js";
 import { generateRegistrationCode, REGISTRATION_CODE_PATTERN } from "../src/utils/registration-code.js";
 import { requestHash } from "../src/utils/request-hash.js";
-import { eventRow, IDS, organizationRow, personRow, registrationRow, ticketTypeRow } from "./helpers/fixtures.js";
+import { eventRow, IDS, organizationRow, personRow, registrationRow, orderRow, orderSummary, ticketTypeRow } from "./helpers/fixtures.js";
 
 /** The registration service against mocked repositories and a fake transaction: no database needed. */
 const FAKE_TX = { id: "fake-transaction" } as unknown as Transaction;
@@ -51,6 +54,7 @@ type Arrange = {
   existing?: RegistrationRow | null;
   eventTaken?: number;
   ticketTypeTaken?: number;
+  buyerHeld?: number;
 };
 
 /** Records every repository call in order, so the lock order can be checked. */
@@ -102,10 +106,17 @@ function arrange(options: Arrange = {}) {
       ...registrationRow(),
       person: personRow(),
       ticketType: ticketTypeRow(),
+      order: orderSummary(),
     })),
     findOrganization: mock.method(organizationRepository, "findById", async () => organizationRow({ name: "Selam Events" })),
     queue: mock.method(messageOutboxRepository, "create", async (_values: Partial<MessageOutboxRow>, _options?: unknown) => ({}) as never),
     latest: mock.method(messageOutboxRepository, "latestByRegistrations", async () => new Map([[IDS.registration, { status: "PENDING" as const, sent_at: null }]])),
+    latestByOrders: mock.method(messageOutboxRepository, "latestByOrders", async () => new Map()),
+    // Phase 7: every new ticket gets an order; reactivation reads the ticket's order; the purchase limit counts by mobile.
+    createOrder: mock.method(ticketOrderRepository, "create", async (values: Partial<TicketOrderRow>, _options?: unknown) => orderRow({ ...values, id: "order-1" })),
+    referenceExists: mock.method(ticketOrderRepository, "referenceExists", async () => false),
+    findOrder: mock.method(ticketOrderRepository, "findByEventAndId", async () => orderRow({ buyer_mobile: "+251911234567" })),
+    countByBuyer: mock.method(registrationRepository, "countConfirmedByBuyerMobile", async () => options.buyerHeld ?? 0),
   };
 }
 
@@ -559,6 +570,7 @@ test("the export uses the list's filters without paging, names the file after th
     ...registrationRow({ id: `reg-${index}`, code: `CODE${index}` }),
     person: personRow(),
     ticketType: ticketTypeRow(),
+    order: orderSummary(),
   }));
   const listAll = mock.method(registrationRepository, "listAllByEvent", async () => rows);
   const latest = mock.method(messageOutboxRepository, "latestByRegistrations", async (_o: string, ids: string[]) => new Map(ids.map((id) => [id, { status: "SENT" as const, sent_at: null }])));
@@ -621,6 +633,7 @@ test("My Tickets: upcoming first (soonest first), then past (most recent first),
     ...registrationRow({ code }),
     event: { ...eventRow({ starts_at: new Date(starts), ends_at: new Date(ends) }), organization: { name: "Selam Events", slug: "selam-events" } },
     ticketType: ticketTypeRow(),
+    order: orderSummary(),
   });
   const list = mock.method(registrationRepository, "listByAccount", async (_userId: string) => [
     row("PASTOLD1", "2026-03-01T06:00:00Z", "2026-03-01T10:00:00Z"),
@@ -687,4 +700,50 @@ test("a guest can't be moved onto a paid type", async () => {
 
   await assert.rejects(registrationService.changeRegistrationTicketType(IDS.orgA, IDS.event, IDS.registration, "vip-id", IDS.user), PaymentRequiredError);
   assert.equal(update.mock.callCount(), 0);
+});
+
+// --- Phase 7 step 2: single registrations are one-ticket orders; the purchase limit applies --------------------
+
+test("a single registration makes a free one-ticket order for the guest's mobile, and the ticket keeps its price", async () => {
+  const calls = arrange();
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+
+  const [order] = calls.createOrder.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(
+    [order?.source, order?.status, order?.buyer_mobile, order?.buyer_user_id, order?.total_amount, order?.currency],
+    ["STAFF", "CONFIRMED", "+251911234567", null, "0.00", "ETB"],
+  );
+  assert.match(String(order?.reference), /^[A-HJKMNP-Z2-9]{10}$/);
+  const [ticket] = calls.create.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([ticket?.order_id, ticket?.price_amount, ticket?.currency], ["order-1", "0.00", "ETB"]);
+});
+
+test("the purchase limit counts the guest's mobile on the single endpoints too; no limit means no count", async () => {
+  const full = arrange({ event: eventRow({ ...PUBLISHED, purchase_limit_per_mobile: 2 }), buyerHeld: 2 });
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user),
+    (error: unknown) => error instanceof PurchaseLimitReachedError && JSON.stringify(error.details) === JSON.stringify({ limit: 2, held: 2, requested: 1 }),
+  );
+  assert.deepEqual(full.countByBuyer.mock.calls[0]?.arguments.slice(0, 3), [IDS.orgA, IDS.event, "+251911234567"]);
+  assert.equal(full.create.mock.callCount(), 0);
+  resetTransaction();
+
+  const unlimited = arrange();
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.equal(unlimited.countByBuyer.mock.callCount(), 0);
+});
+
+test("an unnamed ticket comes back through the status endpoint with every check, against its order's buyer, and no SMS", async () => {
+  const calls = arrange({ event: eventRow({ ...PUBLISHED, purchase_limit_per_mobile: 4 }), buyerHeld: 4 });
+  const cancelled = registrationRow({ person_id: null, status: "CANCELLED", cancelled_at: new Date(), order_id: "order-9" });
+  mock.method(registrationRepository, "findByEventAndId", async () => cancelled);
+
+  await assert.rejects(registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user), PurchaseLimitReachedError);
+  assert.equal(calls.findOrder.mock.calls[0]?.arguments[2], "order-9");
+  assert.equal(calls.update.mock.callCount(), 0);
+
+  calls.countByBuyer.mock.mockImplementation(async () => 3);
+  await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user);
+  assert.equal(calls.update.mock.calls[0]?.arguments[3]?.status, "CONFIRMED");
+  assert.equal(calls.queue.mock.callCount(), 0, "the buyer already has the code");
 });

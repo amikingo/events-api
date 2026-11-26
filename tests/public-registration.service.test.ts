@@ -11,7 +11,7 @@ import { transactionManager } from "../src/services/helpers.js";
 import { publicRegistrationService } from "../src/services/public-registration.service.js";
 import { registrationService, type RegisterInput, type SubmissionRequest } from "../src/services/registration.service.js";
 import { requestHash } from "../src/utils/request-hash.js";
-import { eventRow, IDS, personRow, registrationRow, ticketTypeRow } from "./helpers/fixtures.js";
+import { eventRow, IDS, personRow, registrationRow, orderSummary, ticketTypeRow } from "./helpers/fixtures.js";
 
 /** The public registration service against mocked repositories, the registration core and a fake transaction. */
 const FAKE_TX = { id: "fake-transaction" } as unknown as Transaction;
@@ -49,6 +49,7 @@ function arrange(outcome: "CREATED" | "REPLAYED" | "UNCHANGED" = "CREATED") {
     ...registrationRow({ source: "PUBLIC", registered_by: null }),
     person: personRow({ first_name: "Liya" }),
     ticketType: ticketTypeRow(),
+    order: orderSummary(),
   }));
   return mock.method(
     registrationService,

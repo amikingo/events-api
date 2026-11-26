@@ -4430,6 +4430,218 @@
         }
       }
     },
+    "/v1/organizations/{organizationId}/events/{eventId}/orders": {
+      "post": {
+        "summary": "Phase 7 checkout by staff: several tickets of one or more ticket types in one order (STAFF_ONLY types allowed). 201 with the order and every code; the same Idempotency-Key and body again returns it with 200",
+        "description": "items: [{ ticket_type_id, quantity, holders? }] (at most 20 tickets; each type once). DETAILED events need one holder per ticket following holder_fields; QUICK events take none (unnamed tickets). buyer_mobile is optional for staff (no SMS without it); the purchase limit counts by it. All or nothing. Errors: 400 validation_error (issues[].path names the item and holder, e.g. body.items.0.holders.2.affiliation_name; codes required, not_collected, required_with_details, holders_count, too_many_tickets, mixed_currency), 404 unknown ticket type, 409 registration_closed, 409 ticket_type_inactive, 409 capacity_reached (details.scope, remaining), 409 purchase_limit_reached (details.limit, held, requested), 409 payment_required (a positive total: paid checkout comes in step 3), 409 idempotency_key_reused.",
+        "tags": [
+          "Orders"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffOrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "The event's orders, newest first (buyer_mobile narrows to one buyer)",
+        "tags": [
+          "Orders"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 9007199254740991
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "buyer_mobile",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 9,
+              "maxLength": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/events/{eventId}/orders/{orderId}": {
+      "get": {
+        "summary": "One order with its tickets, holders, prices and the buyer's confirmation SMS",
+        "tags": [
+          "Orders"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/organizations/{organizationId}/events/{eventId}/registrations": {
       "post": {
         "summary": "Register a guest (person_id or a new person); 201 when a place was taken, 200 when already registered",
@@ -4500,7 +4712,7 @@
         }
       },
       "get": {
-        "summary": "The event's guest list, newest first (q searches the guest's names, email and phone)",
+        "summary": "The event's guest list, newest first (q searches the guest's names, email and phone, and since Phase 7 the ticket code and the order's buyer mobile). Phase 7: person is null for an unnamed QUICK ticket; each entry has order { id, reference, buyer_mobile } and price { amount, currency }; confirmation is the ticket's own SMS or its order's",
         "tags": [
           "Registrations"
         ],
@@ -5116,6 +5328,79 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PublicRegistrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/orders": {
+      "post": {
+        "summary": "Phase 7 checkout: get several tickets in one order, without an account or signed in (Idempotency-Key required). 201 with the reference, total and every code; the same key and body again returns them with 200",
+        "description": "items: [{ ticket_type_code, quantity, holders? }] (public ticket types only; at most 20 tickets). Without an account buyer_mobile is required (the codes are sent there by SMS); signed in, the account's verified mobile is used and the tickets appear in My Tickets. A QUICK event's tickets are unnamed; a DETAILED event needs one holder per ticket following holder_fields. All or nothing. Errors: 400 validation_error (issues[].path names the item and holder), 404 unknown event or ticket type, 409 privacy_notice_outdated, 409 registration_closed, 409 capacity_reached, 409 purchase_limit_reached (details.limit, held, requested), 409 payment_required (paid checkout comes in step 3), 409 idempotency_key_reused, 429 rate_limited (shared with the registration form).",
+        "tags": [
+          "Public"
+        ],
+        "security": [
+          {},
+          {
+            "customerBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationSlug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            }
+          },
+          {
+            "name": "eventSlug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicOrderRequest"
               }
             }
           }
@@ -6993,6 +7278,110 @@
         },
         "additionalProperties": false
       },
+      "StaffOrderRequest": {
+        "type": "object",
+        "properties": {
+          "buyer_mobile": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 20
+          },
+          "items": {
+            "minItems": 1,
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ticket_type_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "quantity": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 20
+                },
+                "holders": {
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "first_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "last_name": {
+                        "nullable": true,
+                        "type": "string",
+                        "maxLength": 100
+                      },
+                      "phone": {
+                        "nullable": true,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              ""
+                            ]
+                          },
+                          {
+                            "type": "string",
+                            "minLength": 7,
+                            "maxLength": 32,
+                            "pattern": "^\\+?[0-9][0-9 ()-]*$"
+                          }
+                        ]
+                      },
+                      "email": {
+                        "nullable": true,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              ""
+                            ]
+                          },
+                          {
+                            "type": "string",
+                            "maxLength": 254,
+                            "format": "email",
+                            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                          }
+                        ]
+                      },
+                      "affiliation_name": {
+                        "nullable": true,
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "country": {
+                        "nullable": true,
+                        "type": "string",
+                        "pattern": "^[A-Z]{2}$"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "ticket_type_id",
+                "quantity"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
       "RegistrationCreateRequest": {
         "type": "object",
         "properties": {
@@ -7162,6 +7551,116 @@
           "first_name",
           "last_name",
           "privacy_notice_version"
+        ],
+        "additionalProperties": false
+      },
+      "PublicOrderRequest": {
+        "type": "object",
+        "properties": {
+          "buyer_mobile": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 20
+          },
+          "privacy_notice_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "items": {
+            "minItems": 1,
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ticket_type_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "quantity": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 20
+                },
+                "holders": {
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "first_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "last_name": {
+                        "nullable": true,
+                        "type": "string",
+                        "maxLength": 100
+                      },
+                      "phone": {
+                        "nullable": true,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              ""
+                            ]
+                          },
+                          {
+                            "type": "string",
+                            "minLength": 7,
+                            "maxLength": 32,
+                            "pattern": "^\\+?[0-9][0-9 ()-]*$"
+                          }
+                        ]
+                      },
+                      "email": {
+                        "nullable": true,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              ""
+                            ]
+                          },
+                          {
+                            "type": "string",
+                            "maxLength": 254,
+                            "format": "email",
+                            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                          }
+                        ]
+                      },
+                      "affiliation_name": {
+                        "nullable": true,
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "country": {
+                        "nullable": true,
+                        "type": "string",
+                        "pattern": "^[A-Z]{2}$"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "ticket_type_code",
+                "quantity"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "privacy_notice_version",
+          "items"
         ],
         "additionalProperties": false
       }

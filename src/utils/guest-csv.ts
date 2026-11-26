@@ -8,7 +8,9 @@ import { normalizeEthiopianMobile } from "./mobile.js";
  * - dates in the event's time zone, Ethiopian first ("Hidar 16, 2019 at 4:30 in the morning"), then Gregorian with a
  *   12-hour time ("Nov 25, 2026, 10:30 AM"); never 24-hour;
  * - a cell that starts like a formula gets a leading apostrophe, so a spreadsheet can't run it;
- * - an Ethiopian mobile is written as "0911 234 567": text in Excel, readable, with its leading zero.
+ * - an Ethiopian mobile is written as "0911 234 567": text in Excel, readable, with its leading zero;
+ * - Phase 7: an unnamed QUICK ticket reads "Unnamed ticket"; the last two columns are the order reference and the
+ *   buyer's mobile.
  */
 const BOM = "\uFEFF";
 
@@ -27,7 +29,11 @@ export const GUEST_CSV_HEADERS = [
   "Registered (Gregorian)",
   "Cancelled (Ethiopian)",
   "Cancelled (Gregorian)",
+  "Order",
+  "Buyer mobile",
 ] as const;
+
+const UNNAMED_TICKET = "Unnamed ticket";
 
 /** A cell starting with one of these could run as a formula in a spreadsheet. */
 const FORMULA_START = /^[=+\-@\t\r]/;
@@ -72,16 +78,18 @@ function rowCells(row: RegistrationDto, timeZone: string): string[] {
   return [
     safeCell(row.code),
     STATUS_TEXT[row.status],
-    safeCell(row.person.first_name),
-    safeCell(row.person.last_name),
-    mobileCell(row.person.phone),
-    safeCell(row.person.email),
-    safeCell(row.person.affiliation_name),
+    safeCell(row.person ? row.person.first_name : UNNAMED_TICKET),
+    safeCell(row.person?.last_name),
+    mobileCell(row.person?.phone ?? null),
+    safeCell(row.person?.email),
+    safeCell(row.person?.affiliation_name),
     safeCell(row.ticket_type.name),
     SOURCE_TEXT[row.source],
     row.confirmation === null ? "No mobile" : SMS_TEXT[row.confirmation.status],
     ...dateCells(row.registered_at, timeZone),
     ...dateCells(row.cancelled_at, timeZone),
+    safeCell(row.order.reference),
+    mobileCell(row.order.buyer_mobile),
   ];
 }
 

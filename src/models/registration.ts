@@ -17,15 +17,18 @@ export const REGISTRATION_SOURCES = ["STAFF", "PUBLIC"] as const;
 export type RegistrationSource = (typeof REGISTRATION_SOURCES)[number];
 
 /**
- * One known guest's place at one event (spec §8). One row per (organization, event, person): cancelling frees the
- * place and registering the same person again reactivates the row (same code). Only CONFIRMED rows consume
- * capacity. `registered_by` is the staff member for STAFF entries and empty for PUBLIC ones.
+ * One ticket: a place at one event (spec §8). One row per (organization, event, person) when the holder is known:
+ * cancelling frees the place and registering the same person again reactivates the row (same code). Only CONFIRMED
+ * rows consume capacity. `registered_by` is the staff member for STAFF entries and empty for PUBLIC ones.
+ * Since Phase 7 every ticket belongs to an order (`order_id`) and keeps its price at checkout; a QUICK ticket has no
+ * holder profile (`person_id` null).
  */
 export class Registration extends Model<InferAttributes<Registration>, InferCreationAttributes<Registration>> {
   declare id: CreationOptional<string>;
   declare organization_id: string;
   declare event_id: string;
-  declare person_id: string;
+  declare person_id: string | null;
+  declare order_id: string;
   declare ticket_type_id: string;
   declare status: RegistrationStatus;
   declare source: RegistrationSource;
@@ -38,6 +41,9 @@ export class Registration extends Model<InferAttributes<Registration>, InferCrea
   declare consent_purpose: string | null;
   declare consent_version: string | null;
   declare consented_at: Date | null;
+  /** NUMERIC(12,2) as a string: the ticket's price at checkout. */
+  declare price_amount: CreationOptional<string>;
+  declare currency: string;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
   declare created_by: string | null;
@@ -54,7 +60,8 @@ Registration.init(
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true, allowNull: false },
     organization_id: { type: DataTypes.UUID, allowNull: false },
     event_id: { type: DataTypes.UUID, allowNull: false },
-    person_id: { type: DataTypes.UUID, allowNull: false },
+    person_id: { type: DataTypes.UUID, allowNull: true },
+    order_id: { type: DataTypes.UUID, allowNull: false },
     ticket_type_id: { type: DataTypes.UUID, allowNull: false },
     status: { type: DataTypes.STRING(20), allowNull: false },
     source: { type: DataTypes.STRING(20), allowNull: false },
@@ -67,6 +74,8 @@ Registration.init(
     consent_purpose: { type: DataTypes.STRING(80), allowNull: true },
     consent_version: { type: DataTypes.STRING(40), allowNull: true },
     consented_at: { type: DataTypes.DATE, allowNull: true },
+    price_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: "0.00" },
+    currency: { type: DataTypes.STRING(3), allowNull: false },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,
     created_by: { type: DataTypes.UUID, allowNull: true },

@@ -12,6 +12,7 @@ import type { RoleTemplate } from "./role-template.js";
 import type { RoleTemplateModuleAccess } from "./role-template-module-access.js";
 import type { StoredFile } from "./stored-file.js";
 import type { SubmissionKey } from "./submission-key.js";
+import type { TicketOrder } from "./ticket-order.js";
 import type { TicketType } from "./ticket-type.js";
 import type { UserModuleAccess } from "./user-module-access.js";
 import type { UserRole } from "./user-role.js";
@@ -36,6 +37,7 @@ type Models = {
   Registration: typeof Registration;
   MessageOutbox: typeof MessageOutbox;
   SubmissionKey: typeof SubmissionKey;
+  TicketOrder: typeof TicketOrder;
 };
 
 /** Every association is declared here, once, with an explicit `as` alias and foreign key. */
@@ -59,6 +61,7 @@ export function initAssociations(models: Models): void {
     Registration,
     MessageOutbox,
     SubmissionKey,
+    TicketOrder,
   } = models;
 
   Organization.hasMany(Branch, { foreignKey: "organization_id", as: "branches" });
@@ -102,4 +105,11 @@ export function initAssociations(models: Models): void {
   Registration.hasMany(MessageOutbox, { foreignKey: "registration_id", as: "messages" });
   MessageOutbox.belongsTo(Registration, { foreignKey: "registration_id", as: "registration" });
   SubmissionKey.belongsTo(Registration, { foreignKey: "registration_id", as: "registration" });
+
+  // Phase 7: orders and their tickets.
+  TicketOrder.belongsTo(AppEvent, { foreignKey: "event_id", as: "event" });
+  TicketOrder.hasMany(Registration, { foreignKey: "order_id", as: "tickets" });
+  Registration.belongsTo(TicketOrder, { foreignKey: "order_id", as: "order" });
+  MessageOutbox.belongsTo(TicketOrder, { foreignKey: "order_id", as: "order" });
+  SubmissionKey.belongsTo(TicketOrder, { foreignKey: "order_id", as: "order" });
 }

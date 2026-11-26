@@ -15,6 +15,7 @@ function message(overrides: Partial<MessageOutboxRow> = {}): MessageOutboxRow {
     id: "message-1",
     organization_id: IDS.orgA,
     registration_id: IDS.registration,
+    order_id: null,
     kind: "REGISTRATION_CONFIRMATION",
     channel: "SMS",
     recipient: "+251911234567",

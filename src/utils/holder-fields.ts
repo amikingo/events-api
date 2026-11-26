@@ -9,7 +9,8 @@ export const DEFAULT_HOLDER_FIELDS: HolderFields = { name: "REQUIRED", mobile: "
  * representation; first_name is the required part), mobile → phone, email, affiliation → affiliation_name, country.
  * - REQUIRED: the field must be given (for name: first_name).
  * - HIDDEN: the event doesn't collect it, so sending it is refused rather than silently stored.
- * - OPTIONAL: either way.
+ * - OPTIONAL: either way. But a holder's details live on a guest profile, which needs a first name: other details
+ *   without one are refused (`required_with_details`); a holder with nothing at all is an unnamed ticket.
  */
 export type HolderDetails = {
   first_name?: string | null | undefined;
@@ -20,7 +21,7 @@ export type HolderDetails = {
   country?: string | null | undefined;
 };
 
-export type HolderFieldIssue = { path: string; message: string; code: "required" | "not_collected" };
+export type HolderFieldIssue = { path: string; message: string; code: "required" | "not_collected" | "required_with_details" };
 
 const COVERS: Record<HolderFieldKey, ReadonlyArray<keyof HolderDetails>> = {
   name: ["first_name", "last_name"],
@@ -66,5 +67,14 @@ export function holderFieldIssues(
       }
     }
   }
+  const otherDetails = (["last_name", "phone", "email", "affiliation_name", "country"] as const).some((column) => given(details[column]));
+  if (fields.name !== "REQUIRED" && !given(details.first_name) && otherDetails) {
+    issues.push({ path: `${pathPrefix}.first_name`, message: "Give the guest's first name to record their other details", code: "required_with_details" });
+  }
   return issues;
+}
+
+/** Whether a holder gave nothing at all (an unnamed ticket). */
+export function isEmptyHolder(details: HolderDetails): boolean {
+  return (["first_name", "last_name", "phone", "email", "affiliation_name", "country"] as const).every((column) => !given(details[column]));
 }

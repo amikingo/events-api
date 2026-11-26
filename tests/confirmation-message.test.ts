@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { confirmationText } from "../src/utils/confirmation-message.js";
+import { confirmationText, messageText, orderConfirmationText } from "../src/utils/confirmation-message.js";
 import { ethiopianClockText, ethiopianDateText, gregorianToJDN, jdnToEthiopian, jdnToGregorian } from "../src/utils/ethiopian-calendar.js";
 
 /** The Ethiopian calendar and clock, and the confirmation SMS text (Ethiopian first, then Gregorian 12-hour). */
@@ -58,4 +58,27 @@ test("a long event name is shortened with plain dots; without a start time the d
   assert.match(long, new RegExp(`for ${"A".repeat(57)}\\.\\.\\., Megabit`));
   assert.ok(!long.includes("…"), "no ellipsis character: it would switch the SMS to a costlier encoding");
   assert.equal(confirmationText({ ...PAYLOAD, starts_at: null }), "Selam Events: You're registered for Banking Forum. Your code: K7M2Q9XP");
+});
+
+// --- Phase 7 step 2 ------------------------------------------------------------------------------------
+
+test("the order confirmation lists the codes in the same style; a long order says which part it is", () => {
+  const order = {
+    organization_name: "Selam Events",
+    event_name: "Banking Forum",
+    starts_at: "2027-03-12T06:00:00.000Z",
+    timezone: "Africa/Addis_Ababa",
+    ticket_count: 3,
+    codes: ["K7M2Q9XP", "M2Q9XPK7", "Q9XPK7M2"],
+    part: 1,
+    parts: 1,
+  };
+  assert.equal(
+    orderConfirmationText(order),
+    "Selam Events: Your 3 tickets for Banking Forum, Megabit 3, 2019 at 3:00 in the morning (Mar 12, 2027, 9:00 AM). Codes: K7M2Q9XP, M2Q9XPK7, Q9XPK7M2",
+  );
+  assert.equal(orderConfirmationText({ ...order, ticket_count: 1, codes: ["K7M2Q9XP"], starts_at: null }), "Selam Events: Your ticket for Banking Forum. Code: K7M2Q9XP");
+  assert.match(orderConfirmationText({ ...order, ticket_count: 12, part: 2, parts: 2 }), /^Selam Events \(2\/2\): Your 12 tickets/);
+  assert.equal(messageText("ORDER_CONFIRMATION", order), orderConfirmationText(order));
+  assert.equal(messageText("REGISTRATION_CONFIRMATION", PAYLOAD), confirmationText(PAYLOAD));
 });

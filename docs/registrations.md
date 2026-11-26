@@ -290,3 +290,49 @@ Migration `20261130000000-add-person-user-id-index` adds an index on `person(use
   guest be moved onto one. Free tickets work as before.
 - A `DETAILED` event's `holder_fields` apply to the public form (400, `required` or `not_collected`).
 - Group orders, the per-mobile limit and paid checkout come in Phase 7 steps 2–3. Details in `docs/events.md`.
+
+## Phase 7 step 2: orders and group checkout (26 November 2026)
+
+**The model.** A registration is now one ticket. Every ticket belongs to a `ticket_order`: one buyer, one event, one
+checkout. The order keeps the buyer's delivery mobile, the buyer's Cheche account when signed in, the total and the
+currency; each ticket keeps its own code and its price at checkout. Existing registrations each got a free order of
+their own (same id, their code as the reference). A QUICK ticket has no holder profile (`person_id` null); a DETAILED
+ticket's holder becomes a new, unlinked guest profile, as the public form makes today.
+
+**Checkout** (`src/services/checkout.service.ts`, `checkoutInTransaction`), all or nothing, under the event lock and
+then the chosen ticket types in id order:
+1. the event takes registrations;
+2. each ticket type exists, is active and open to the caller (`STAFF_ONLY` for staff only; 404 for the public, even
+   by code);
+3. at most 20 tickets per order;
+4. DETAILED: one holder per ticket, following `holder_fields` (400 naming `body.items.{i}.holders.{j}.{field}`);
+   QUICK: no holders. A holder's other details need their first name (`required_with_details`); an event that hides
+   the name can't collect anything else;
+5. prices from the server; a positive total is 409 `payment_required` until step 3;
+6. the event's capacity and each type's limit, for the whole order (409 `capacity_reached` with `remaining`);
+7. the purchase limit: tickets the buyer mobile already holds at the event (every order, staff ones included,
+   cancelled ones not) plus this order (409 `purchase_limit_reached` with `limit`, `held`, `requested`). Mobiles are
+   compared in E.164, so `0911…` and `+251911…` are one buyer.
+Then the order, one ticket per unit, and one SMS to the buyer (`ORDER_CONFIRMATION`) listing every code, split every
+10 codes. The reply carries every code, so the buyer has them even if the SMS is late.
+
+**Retries:** `checkoutOnce`, the `registerOnce` pattern with scopes `PUBLIC_CHECKOUT` and `STAFF_CHECKOUT`: the same
+key and body return the same order and codes (200); another body with the key is 409 `idempotency_key_reused`.
+
+**Endpoints:**
+- `POST /v1/public/organizations/{orgSlug}/events/{eventSlug}/orders` (Idempotency-Key required; a guest token is
+  optional). Without an account `buyer_mobile` is required; signed in, the account's verified mobile is the buyer
+  mobile and the order is linked to the account. Shares the registration form's rate limit.
+- `POST /v1/organizations/{organizationId}/events/{eventId}/orders` (*Guests › create*): any active type, staff-only
+  included; `buyer_mobile` optional (no SMS without it).
+- `GET …/orders` (`?buyer_mobile=`) and `GET …/orders/{orderId}` (*Guests › view*).
+
+**The single-ticket endpoints keep their contracts.** Each new registration is a one-ticket, free order for the
+guest's mobile; the purchase limit applies there too (and when a ticket is brought back). A cancelled unnamed ticket
+can be brought back through the status endpoint with every check and no SMS.
+
+**Guest list, CSV and My Tickets:** the guest list and CSV show unnamed tickets ("Unnamed ticket"), each entry's order
+(reference and buyer mobile) and price; `q` also finds a ticket code or a buyer mobile. The CSV gained two last
+columns, Order and Buyer mobile. My Tickets also lists tickets of orders the account bought while signed in.
+
+**Proof:** matrix rows 89–92.

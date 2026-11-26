@@ -271,6 +271,16 @@ export class PaymentRequiredError extends AppError {
   }
 }
 
+/**
+ * Phase 7: the buyer mobile already holds, or would hold, more tickets at this event than its purchase limit allows
+ * (`details.limit`, `details.held`, `details.requested`).
+ */
+export class PurchaseLimitReachedError extends AppError {
+  constructor(message = "This mobile number has reached the event's ticket limit", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "purchase_limit_reached", details, cause: options?.cause });
+  }
+}
+
 /** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
 export class CapacityReachedError extends AppError {
   constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {

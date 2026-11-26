@@ -74,7 +74,31 @@ async function latestByRegistrations(
   });
   const latest = new Map<string, Pick<MessageOutboxRow, "status" | "sent_at">>();
   for (const row of rows as unknown as MessageOutboxRow[]) {
-    if (!latest.has(row.registration_id)) latest.set(row.registration_id, { status: row.status, sent_at: row.sent_at });
+    if (row.registration_id !== null && !latest.has(row.registration_id)) latest.set(row.registration_id, { status: row.status, sent_at: row.sent_at });
+  }
+  return latest;
+}
+
+/** Phase 7: the latest message of each order (the buyer's order confirmation), for the tickets of a page. One query. */
+async function latestByOrders(
+  organizationId: string,
+  orderIds: string[],
+  options: RepoOptions = {},
+): Promise<Map<string, Pick<MessageOutboxRow, "status" | "sent_at">>> {
+  if (orderIds.length === 0) return new Map();
+  const rows = await MessageOutbox.findAll({
+    where: { organization_id: organizationId, order_id: orderIds },
+    attributes: ["order_id", "status", "sent_at", "created_at"],
+    order: [
+      ["created_at", "DESC"],
+      ["id", "DESC"],
+    ],
+    raw: true,
+    ...txOptions(options),
+  });
+  const latest = new Map<string, Pick<MessageOutboxRow, "status" | "sent_at">>();
+  for (const row of rows as unknown as MessageOutboxRow[]) {
+    if (row.order_id !== null && !latest.has(row.order_id)) latest.set(row.order_id, { status: row.status, sent_at: row.sent_at });
   }
   return latest;
 }
@@ -88,4 +112,5 @@ export const messageOutboxRepository = {
   countSentSince,
   countSentToRecipientSince,
   latestByRegistrations,
+  latestByOrders,
 };

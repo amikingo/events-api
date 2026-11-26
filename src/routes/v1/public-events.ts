@@ -1,10 +1,12 @@
 import { Router } from "express";
+import { orderController } from "../../controllers/order.controller.js";
 import { publicEventController } from "../../controllers/public-event.controller.js";
 import { publicRegistrationController } from "../../controllers/public-registration.controller.js";
 import { optionalCustomerAuthentication } from "../../middleware/authentication.js";
 import { publicReadLimiter, publicRegistrationLimiter } from "../../middleware/rate-limit.js";
 import { validate } from "../../middleware/validate.js";
 import { getPublicEventRequest, listPublicEventsRequest } from "../../validators/public-event.js";
+import { createPublicOrderRequest } from "../../validators/order.js";
 import { createPublicRegistrationRequest } from "../../validators/public-registration.js";
 
 /**
@@ -30,4 +32,13 @@ publicEventsRouter.post(
   optionalCustomerAuthentication,
   validate(createPublicRegistrationRequest),
   publicRegistrationController.registerForEvent,
+);
+
+// Phase 7: checkout, several tickets in one order (Idempotency-Key required). Shares the registration form's limit.
+publicEventsRouter.post(
+  "/organizations/:organizationSlug/events/:eventSlug/orders",
+  publicRegistrationLimiter,
+  optionalCustomerAuthentication,
+  validate(createPublicOrderRequest),
+  orderController.createPublicOrder,
 );

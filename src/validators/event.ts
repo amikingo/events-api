@@ -18,13 +18,22 @@ const capacitySchema = z.number().int().positive().max(1_000_000).nullable().opt
 
 /** Phase 7: how each holder detail is asked for in a DETAILED event. All five are sent together. */
 const holderFieldSetting = z.enum(["REQUIRED", "OPTIONAL", "HIDDEN"] as const satisfies readonly HolderFieldSetting[]);
-const holderFieldsSchema = z.strictObject({
-  name: holderFieldSetting,
-  mobile: holderFieldSetting,
-  email: holderFieldSetting,
-  affiliation: holderFieldSetting,
-  country: holderFieldSetting,
-});
+const holderFieldsSchema = z
+  .strictObject({
+    name: holderFieldSetting,
+    mobile: holderFieldSetting,
+    email: holderFieldSetting,
+    affiliation: holderFieldSetting,
+    country: holderFieldSetting,
+  })
+  // A holder's details are kept on their guest profile, which needs a name: with the name hidden, nothing else can
+  // be collected (that is an unnamed ticket, as in QUICK mode).
+  .superRefine((value, ctx) => {
+    if (value.name !== "HIDDEN") return;
+    for (const key of ["mobile", "email", "affiliation", "country"] as const) {
+      if (value[key] !== "HIDDEN") ctx.addIssue({ code: "custom", path: [key], message: "With the name hidden, this can't be collected either" });
+    }
+  });
 /** Phase 7: most tickets one buyer mobile may hold at the event, across every order; null means no limit. */
 const purchaseLimitSchema = z.number().int().positive().max(10_000).nullable().optional();
 

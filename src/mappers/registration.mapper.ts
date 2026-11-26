@@ -5,7 +5,10 @@ import type { TicketTypeRow } from "../models/ticket-type.js";
 import type { PublicEventRow } from "../repositories/event.repository.js";
 import type { AccountRegistrationRow, PersonRegistrationRow, RegistrationWithDetails } from "../repositories/registration.repository.js";
 
-/** A guest-list entry for staff: the registration, the guest's contact summary and the ticket type. */
+/**
+ * A guest-list entry for staff: the ticket, the holder's contact summary and the ticket type. Since Phase 7 `person`
+ * is null for an unnamed QUICK ticket, and every entry names its order (reference and buyer mobile) and its price.
+ */
 export type RegistrationDto = {
   id: string;
   event_id: string;
@@ -15,8 +18,10 @@ export type RegistrationDto = {
   registered_by: string | null;
   registered_at: Date;
   cancelled_at: Date | null;
-  person: { id: string; first_name: string; last_name: string | null; phone: string | null; email: string | null; affiliation_name: string | null };
+  person: { id: string; first_name: string; last_name: string | null; phone: string | null; email: string | null; affiliation_name: string | null } | null;
   ticket_type: { id: string; code: string; name: string };
+  order: { id: string; reference: string; buyer_mobile: string | null };
+  price: { amount: string; currency: string };
   /** The privacy notice the public form showed (null for staff entries). */
   privacy_notice: { version: string; shown_at: Date } | null;
   /** The latest confirmation SMS: PENDING, SENT, FAILED or SKIPPED; null when none was queued (no Ethiopian mobile). */
@@ -37,15 +42,19 @@ export function toRegistrationDto(row: RegistrationWithDetails, confirmation: Co
     registered_by: row.registered_by,
     registered_at: row.registered_at,
     cancelled_at: row.cancelled_at,
-    person: {
-      id: row.person.id,
-      first_name: row.person.first_name,
-      last_name: row.person.last_name,
-      phone: row.person.phone,
-      email: row.person.email,
-      affiliation_name: row.person.affiliation_name,
-    },
+    person: row.person
+      ? {
+          id: row.person.id,
+          first_name: row.person.first_name,
+          last_name: row.person.last_name,
+          phone: row.person.phone,
+          email: row.person.email,
+          affiliation_name: row.person.affiliation_name,
+        }
+      : null,
     ticket_type: { id: row.ticketType.id, code: row.ticketType.code, name: row.ticketType.name },
+    order: { id: row.order.id, reference: row.order.reference, buyer_mobile: row.order.buyer_mobile },
+    price: { amount: row.price_amount, currency: row.currency },
     privacy_notice:
       row.privacy_notice_version !== null && row.privacy_notice_shown_at !== null
         ? { version: row.privacy_notice_version, shown_at: row.privacy_notice_shown_at }
@@ -142,7 +151,8 @@ export function toPublicRegistrationDto(row: RegistrationWithDetails, event: Pub
     ticket_type: { code: row.ticketType.code, name: row.ticketType.name },
     event: { name: event.name, slug: event.slug, starts_at: event.starts_at, ends_at: event.ends_at, timezone: event.timezone },
     organization: { name: event.organization.name, slug: event.organization.slug },
-    guest: { first_name: row.person.first_name },
+    // The single-ticket form always names its guest.
+    guest: { first_name: row.person?.first_name ?? "" },
   };
 }
 

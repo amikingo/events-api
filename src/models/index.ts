@@ -13,6 +13,7 @@ import { RoleTemplate } from "./role-template.js";
 import { RoleTemplateModuleAccess } from "./role-template-module-access.js";
 import { StoredFile } from "./stored-file.js";
 import { SubmissionKey } from "./submission-key.js";
+import { TicketOrder } from "./ticket-order.js";
 import { TicketType } from "./ticket-type.js";
 import { UserModuleAccess } from "./user-module-access.js";
 import { UserRole } from "./user-role.js";
@@ -37,6 +38,7 @@ initAssociations({
   Registration,
   MessageOutbox,
   SubmissionKey,
+  TicketOrder,
 });
 
 export {
@@ -54,6 +56,7 @@ export {
   RoleTemplateModuleAccess,
   StoredFile,
   SubmissionKey,
+  TicketOrder,
   TicketType,
   UserModuleAccess,
   UserRole,

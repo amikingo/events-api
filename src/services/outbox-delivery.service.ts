@@ -3,7 +3,7 @@ import { maskPhone } from "../clients/sms/sms-sender.js";
 import { smsConfig } from "../config/sms.js";
 import type { MessageOutboxRow } from "../models/message-outbox.js";
 import { messageOutboxRepository } from "../repositories/message-outbox.repository.js";
-import { confirmationText } from "../utils/confirmation-message.js";
+import { messageText } from "../utils/confirmation-message.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -37,7 +37,7 @@ async function deliver(message: MessageOutboxRow, now: Date, summary: DeliverySu
   }
 
   try {
-    const { providerMessageId } = await smsClient.send({ to: message.recipient, text: confirmationText(message.payload) });
+    const { providerMessageId } = await smsClient.send({ to: message.recipient, text: messageText(message.kind, message.payload) });
     await messageOutboxRepository.markSent(message.id, new Date(), providerMessageId);
     summary.sent += 1;
   } catch (error) {

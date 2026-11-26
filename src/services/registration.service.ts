@@ -12,8 +12,8 @@ import {
   TicketTypeInactiveError,
   TicketTypeRequiredError,
 } from "../errors/app-errors.js";
-import { registrationClosedReason } from "../mappers/event.mapper.js";
 import {
+  type ConfirmationDto,
   toMyTicketDto,
   toRegistrationDto,
   toRegistrationSummaryDto,
@@ -32,12 +32,12 @@ import { organizationRepository } from "../repositories/organization.repository.
 import { personRepository } from "../repositories/person.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
 import { submissionKeyRepository } from "../repositories/submission-key.repository.js";
+import { ticketOrderRepository } from "../repositories/ticket-order.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { normalizeEthiopianMobile } from "../utils/mobile.js";
 import { isZeroAmount } from "../utils/money.js";
 import { buildPagination } from "../utils/pagination.js";
 import { guestListCsv } from "../utils/guest-csv.js";
-import { generateRegistrationCode } from "../utils/registration-code.js";
 import { requestHash } from "../utils/request-hash.js";
 import type { PersonInput } from "../validators/person.js";
 import type {
@@ -47,6 +47,7 @@ import type {
   RegistrationTargetStatus,
 } from "../validators/registration.js";
 import { ensureFound, runTransaction } from "./helpers.js";
+import { ticketing } from "./ticketing.js";
 
 /**
  * Registrations (spec §8 and the shared rules). One core, `registerInTransaction`, behind staff entry and (4b) the
@@ -88,30 +89,24 @@ export type SubmissionRequest = { scope: SubmissionScope; key: string; requestHa
 /** REPLAYED: the same request was already processed; the original registration is returned as it is now. */
 export type SubmissionOutcome = RegisterOutcome | "REPLAYED";
 
-const MAX_CODE_ATTEMPTS = 5;
-
-function assertTakingRegistrations(event: EventRow, now: Date): void {
-  const reason = registrationClosedReason(event, now);
-  if (reason) throw new RegistrationClosedError("This event is not taking registrations", { reason });
-}
-
-/** Phase 7: the public form only ever sees PUBLIC ticket types; staff may issue STAFF_ONLY ones too. */
-const visibleTo = (source: RegistrationSource) => (ticketType: TicketTypeRow) => source === "STAFF" || ticketType.audience === "PUBLIC";
 
 /**
  * The ticket type, locked after the event: by id, by code, or the only active one the caller may use. A STAFF_ONLY
  * type asked for by the public form is "not found", even by its code, so the public can't tell it exists. Since
  * Phase 7 a paid type is refused here (409 payment_required): the single-ticket endpoints only issue free tickets.
  */
-async function lockTicketType(input: RegisterInput, transaction: Transaction): Promise<TicketTypeRow> {
+async function lockTicketType(
+  input: Pick<RegisterInput, "organizationId" | "eventId" | "ticketTypeId" | "ticketTypeCode" | "source">,
+  transaction: Transaction,
+): Promise<TicketTypeRow> {
   const { organizationId, eventId, source } = input;
   let ticketTypeId = input.ticketTypeId;
   if (ticketTypeId === undefined && input.ticketTypeCode !== undefined) {
     const byCode = await ticketTypeRepository.findByEventAndCode(organizationId, eventId, input.ticketTypeCode, { transaction });
-    ticketTypeId = ensureFound(byCode && visibleTo(source)(byCode) ? byCode : null, "Ticket type not found").id;
+    ticketTypeId = ensureFound(byCode && ticketing.visibleTo(source)(byCode) ? byCode : null, "Ticket type not found").id;
   }
   if (ticketTypeId === undefined) {
-    const active = (await ticketTypeRepository.listActiveByEvent(organizationId, eventId, { transaction })).filter(visibleTo(source));
+    const active = (await ticketTypeRepository.listActiveByEvent(organizationId, eventId, { transaction })).filter(ticketing.visibleTo(source));
     if (active.length === 0) {
       throw new RegistrationClosedError("This event has no ticket types open to the public", { reason: "NO_PUBLIC_TICKETS" });
     }
@@ -128,7 +123,7 @@ async function lockTicketType(input: RegisterInput, transaction: Transaction): P
     await ticketTypeRepository.findByEventAndId(organizationId, eventId, ticketTypeId, { transaction, lock: true }),
     "Ticket type not found",
   );
-  if (!visibleTo(source)(ticketType)) throw new NotFoundError("Ticket type not found");
+  if (!ticketing.visibleTo(source)(ticketType)) throw new NotFoundError("Ticket type not found");
   if (!ticketType.is_active) throw new TicketTypeInactiveError(undefined, { ticket_type_code: ticketType.code });
   if (!isZeroAmount(ticketType.price)) {
     throw new PaymentRequiredError(undefined, { ticket_type_code: ticketType.code, price: ticketType.price, currency: ticketType.currency });
@@ -207,14 +202,6 @@ async function assertTicketTypeHasRoom(event: EventRow, ticketType: TicketTypeRo
   }
 }
 
-async function newCode(transaction: Transaction): Promise<string> {
-  for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt += 1) {
-    const code = generateRegistrationCode();
-    if (!(await registrationRepository.codeExists(code, { transaction }))) return code;
-  }
-  throw new Error("Could not generate a free registration code");
-}
-
 /** The confirmation SMS, queued in the same transaction (spec rule 5); only an Ethiopian mobile can receive it. */
 async function queueConfirmation(event: EventRow, person: PersonRow, registration: RegistrationRow, transaction: Transaction): Promise<void> {
   const recipient = person.phone === null ? null : normalizeEthiopianMobile(person.phone);
@@ -251,7 +238,7 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
   const now = new Date();
 
   const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
-  assertTakingRegistrations(event, now);
+  ticketing.assertTakingRegistrations(event, now);
   const ticketType = await lockTicketType(input, transaction);
   const person = await resolvePerson(input, transaction);
 
@@ -265,6 +252,13 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
   }
 
   await assertPlaceAvailable(event, ticketType, transaction);
+  // Phase 7: the purchase limit. A new ticket's buyer is the guest (the account's verified mobile when signed in);
+  // a reactivated one counts against the buyer of the order it came with.
+  const order = existing
+    ? ensureFound(await ticketOrderRepository.findByEventAndId(organizationId, eventId, existing.order_id, { transaction }), "Order not found")
+    : null;
+  const buyerMobile = order ? order.buyer_mobile : person.phone === null ? null : normalizeEthiopianMobile(person.phone);
+  await ticketing.assertBuyerAllowance(event, buyerMobile, 1, transaction);
 
   const registeredBy = source === "STAFF" ? actorId : null;
   let registration: RegistrationRow;
@@ -289,18 +283,38 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
       "Registration not found",
     );
   } else {
+    // Phase 7: every ticket belongs to an order; a single-ticket registration is a one-ticket, free order.
+    const newOrder = await ticketOrderRepository.create(
+      {
+        organization_id: organizationId,
+        event_id: eventId,
+        reference: await ticketing.newOrderReference(transaction),
+        source,
+        status: "CONFIRMED",
+        buyer_mobile: buyerMobile,
+        buyer_user_id: "account" in input.guest ? input.guest.account.userId : null,
+        total_amount: "0.00",
+        currency: ticketType.currency,
+        created_by: actorId,
+        updated_by: actorId,
+      },
+      { transaction },
+    );
     registration = await registrationRepository.create(
       {
         organization_id: organizationId,
         event_id: eventId,
         person_id: person.id,
+        order_id: newOrder.id,
+        price_amount: ticketType.price,
+        currency: ticketType.currency,
         ticket_type_id: ticketType.id,
         status: "CONFIRMED",
         source,
         registered_by: registeredBy,
         registered_at: now,
         cancelled_at: null,
-        code: await newCode(transaction),
+        code: await ticketing.newCode(transaction),
         privacy_notice_version: input.evidence?.privacyNoticeVersion ?? null,
         privacy_notice_shown_at: input.evidence?.shownAt ?? null,
         consent_purpose: null,
@@ -333,9 +347,10 @@ async function registerOnce(input: RegisterInput, submission: SubmissionRequest,
   const earlier = await submissionKeyRepository.findByScopeAndKey(organizationId, submission.scope, submission.key, { transaction });
   if (earlier) {
     if (earlier.request_hash !== submission.requestHash) throw new IdempotencyKeyReusedError();
-    // Same hash, so the same event: the original registration, in its current state.
+    // Same hash, so the same event: the original registration, in its current state. (A registration scope's key
+    // always names a registration; checkout keys use their own scopes.)
     const registration = ensureFound(
-      await registrationRepository.findByEventAndId(organizationId, eventId, earlier.registration_id, { transaction }),
+      earlier.registration_id === null ? null : await registrationRepository.findByEventAndId(organizationId, eventId, earlier.registration_id, { transaction }),
       "Registration not found",
     );
     return { registration, outcome: "REPLAYED" };
@@ -355,10 +370,30 @@ async function registerOnce(input: RegisterInput, submission: SubmissionRequest,
   return result;
 }
 
+/**
+ * The confirmation SMS of each ticket: its own (single-ticket endpoints), or since Phase 7 its order's (checkout
+ * sends one SMS per order). Two queries for a whole page.
+ */
+async function confirmationsOf(
+  organizationId: string,
+  rows: ReadonlyArray<{ id: string; order_id: string }>,
+  options: { transaction: Transaction | null } = { transaction: null },
+): Promise<Map<string, NonNullable<ConfirmationDto>>> {
+  const own = await messageOutboxRepository.latestByRegistrations(organizationId, rows.map((row) => row.id), options);
+  const withoutOwn = rows.filter((row) => !own.has(row.id));
+  const byOrder = await messageOutboxRepository.latestByOrders(organizationId, [...new Set(withoutOwn.map((row) => row.order_id))], options);
+  const result = new Map<string, NonNullable<ConfirmationDto>>(own);
+  for (const row of withoutOwn) {
+    const confirmation = byOrder.get(row.order_id);
+    if (confirmation) result.set(row.id, confirmation);
+  }
+  return result;
+}
+
 async function toDto(organizationId: string, eventId: string, registrationId: string, transaction?: Transaction): Promise<RegistrationDto> {
   const options = { transaction: transaction ?? null };
   const details = ensureFound(await registrationRepository.findDetailsByEventAndId(organizationId, eventId, registrationId, options), "Registration not found");
-  const confirmations = await messageOutboxRepository.latestByRegistrations(organizationId, [registrationId], options);
+  const confirmations = await confirmationsOf(organizationId, [details], options);
   return toRegistrationDto(details, confirmations.get(registrationId) ?? null);
 }
 
@@ -386,6 +421,30 @@ async function registerGuest(
 }
 
 /**
+ * Phase 7: bringing back a cancelled QUICK ticket (no holder profile, so the person-based core can't). The same
+ * checks as any new place: the event takes registrations, the ticket type is active, free and open to staff, both
+ * capacities have room, and the order's buyer stays within the purchase limit. The same row and code; no SMS (the
+ * buyer already has the code). Runs under the event, ticket type and registration locks the caller holds.
+ */
+async function reactivateUnnamedTicket(event: EventRow, registration: RegistrationRow, actorId: string | null, transaction: Transaction): Promise<void> {
+  ticketing.assertTakingRegistrations(event, new Date());
+  const ticketType = await lockTicketType(
+    { organizationId: event.organization_id, eventId: event.id, ticketTypeId: registration.ticket_type_id, source: "STAFF" },
+    transaction,
+  );
+  await assertPlaceAvailable(event, ticketType, transaction);
+  const order = ensureFound(await ticketOrderRepository.findByEventAndId(event.organization_id, event.id, registration.order_id, { transaction }), "Order not found");
+  await ticketing.assertBuyerAllowance(event, order.buyer_mobile, 1, transaction);
+  await registrationRepository.updateByEventAndId(
+    event.organization_id,
+    event.id,
+    registration.id,
+    { status: "CONFIRMED", registered_at: new Date(), cancelled_at: null, updated_by: actorId },
+    { transaction },
+  );
+}
+
+/**
  * Cancel (frees the place; for PUBLISHED or CLOSED events) or reactivate (every registration check again, through
  * the core). Asking for the current status again changes nothing.
  */
@@ -406,7 +465,11 @@ async function changeRegistrationStatus(
     );
     if (registration.status === target) return toDto(organizationId, eventId, registrationId, transaction);
 
-    if (target === "CONFIRMED") {
+    if (target === "CONFIRMED" && registration.person_id === null) {
+      await reactivateUnnamedTicket(event, registration, actorId, transaction);
+      return toDto(organizationId, eventId, registrationId, transaction);
+    }
+    if (target === "CONFIRMED" && registration.person_id !== null) {
       await registerInTransaction(
         {
           organizationId,
@@ -506,8 +569,8 @@ async function exportRegistrations(organizationId: string, eventId: string, quer
   });
   const confirmations = new Map<string, NonNullable<RegistrationDto["confirmation"]>>();
   for (let start = 0; start < rows.length; start += EXPORT_STATUS_BATCH) {
-    const batch = rows.slice(start, start + EXPORT_STATUS_BATCH).map((row) => row.id);
-    for (const [id, confirmation] of await messageOutboxRepository.latestByRegistrations(organizationId, batch)) confirmations.set(id, confirmation);
+    const batch = rows.slice(start, start + EXPORT_STATUS_BATCH);
+    for (const [id, confirmation] of await confirmationsOf(organizationId, batch)) confirmations.set(id, confirmation);
   }
   const dtos = rows.map((row) => toRegistrationDto(row, confirmations.get(row.id) ?? null));
   return { filename: `${event.slug}-guests.csv`, csv: guestListCsv(dtos, event.timezone) };
@@ -525,10 +588,7 @@ async function listRegistrations(organizationId: string, eventId: string, query:
     limit,
     offset,
   });
-  const confirmations = await messageOutboxRepository.latestByRegistrations(
-    organizationId,
-    rows.map((row) => row.id),
-  );
+  const confirmations = await confirmationsOf(organizationId, rows);
   return { rows: rows.map((row) => toRegistrationDto(row, confirmations.get(row.id) ?? null)), count };
 }
 
