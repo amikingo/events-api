@@ -29,6 +29,7 @@ const MODULES = [
   moduleRow({ id: "module-events", code: "EVENTS" }),
   moduleRow({ id: "module-customers", code: "CUSTOMERS" }),
   moduleRow({ id: "module-registrations", code: "REGISTRATIONS" }),
+  moduleRow({ id: "module-payments", code: "PAYMENTS" }),
 ];
 const flags = (grant: { can_view?: boolean; can_create?: boolean; can_update?: boolean; can_delete?: boolean; can_import?: boolean; can_export?: boolean; can_notify?: boolean } | undefined) => [
   grant?.can_view,
@@ -92,12 +93,12 @@ test("provisionOrganizer writes the organization, MAIN branch, default roles wit
   const [ownerGrants = []] = calls.bulkCreate.mock.calls[0]?.arguments ?? [];
   assert.deepEqual(
     ownerGrants.map((grant) => grant.module_id),
-    ["module-organizations", "module-branches", "module-roles", "module-user-roles", "module-events", "module-customers", "module-registrations"],
+    ["module-organizations", "module-branches", "module-roles", "module-user-roles", "module-events", "module-customers", "module-registrations", "module-payments"],
     "only permission modules, never the container",
   );
   // Phase 2e: Owners hold every action a tenant may hold (flags: view, create, update, delete, import, export, notify).
   const all = [true, true, true, true, true, true, true];
-  for (const module of ["module-events", "module-customers", "module-registrations", "module-branches"]) {
+  for (const module of ["module-events", "module-customers", "module-registrations", "module-branches", "module-payments"]) {
     assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === module)), all, module);
   }
   assert.deepEqual(flags(ownerGrants.find((grant) => grant.module_id === "module-organizations")), [true, false, true, false, true, true, true], "never create or delete");

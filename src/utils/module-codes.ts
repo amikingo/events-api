@@ -19,6 +19,8 @@ export const MODULE_CODES = {
   CUSTOMERS: "CUSTOMERS",
   /** Guest profiles (`person`) and registrations (menu label "Guests"). */
   REGISTRATIONS: "REGISTRATIONS",
+  /** Payment cases: refunds due, double charges and mismatched amounts (menu label "Payments", Phase 8). */
+  PAYMENTS: "PAYMENTS",
 } as const;
 
 export type ModuleCode = (typeof MODULE_CODES)[keyof typeof MODULE_CODES];

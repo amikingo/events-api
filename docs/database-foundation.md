@@ -243,3 +243,22 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
     `uq_ticket_admission_organization_key`, tenant composite `fk_ticket_admission_organization_event` and
     `fk_ticket_admission_organization_registration`, `idx_ticket_admission_organization_event`.
 - The registration row is never changed by check-in.
+
+### Phase 8 step 3 (payment cases)
+- `module` (`20261208000001`): `PAYMENTS`, "Payments" under Event Management (sno 4, `/payments`).
+- `role_module_access` (`20261208000002`): every action on `PAYMENTS` for existing tenant OWNER roles.
+- `role_template_module_access` (`20261208000003`): the same for the OWNER template.
+- `payment_case` (new, `20261208000004`):
+  - **columns:** `organization_id`, `event_id`, `order_id`, `order_payment_id`, `registration_id`, `kind`, `tx_ref`,
+    `amount`, `currency`, `status` (`OPEN` / `RESOLVED`), `resolution` (`REFUNDED` / `CLOSED_WITHOUT_REFUND`),
+    `refunded_amount`, `refunded_currency`, `merchant_reference`, `note`, `resolved_by`, `resolved_at`, `created_by`,
+    and the timestamps;
+  - **checks:** the kind, the subject (a return has `registration_id`, the others `tx_ref`), the amount, the currency,
+    the status and resolution, a resolved case's staff and time, a refund's amount, currency and reference, and a
+    closure's note;
+  - **one case per issue:** `uq_payment_case_attempt` (`organization_id`, `tx_ref`, kinds other than a return) and
+    `uq_payment_case_return` (`registration_id`);
+  - **foreign keys:** tenant composite FKs to `event`, `ticket_order` and `registration`, and a plain FK to
+    `order_payment` (it has no `(organization_id, id)` key; the order's composite FK keeps the tenant boundary).
+- Backfill (`20261208000005`): cases for orders already `REFUND_REQUIRED`, payments already `MISMATCH`, and
+  `PAID_TWICE` notes.

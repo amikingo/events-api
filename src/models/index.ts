@@ -16,6 +16,7 @@ import { StoredFile } from "./stored-file.js";
 import { SubmissionKey } from "./submission-key.js";
 import { TicketAdmission } from "./ticket-admission.js";
 import { OrderPayment } from "./order-payment.js";
+import { PaymentCase } from "./payment-case.js";
 import { TicketOrder } from "./ticket-order.js";
 import { TicketType } from "./ticket-type.js";
 import { UserModuleAccess } from "./user-module-access.js";
@@ -44,6 +45,7 @@ initAssociations({
   TicketOrder,
   OrderPayment,
   TicketAdmission,
+  PaymentCase,
 });
 
 export {
@@ -55,6 +57,7 @@ export {
   OrderPayment,
   Organization,
   OrganizationChechePayCredential,
+  PaymentCase,
   Person,
   Registration,
   Role,

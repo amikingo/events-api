@@ -72,4 +72,5 @@ export const TENANT_GRANTABLE: Readonly<Record<string, readonly GrantableAction[
   EVENTS: ALL_ACTIONS,
   CUSTOMERS: ALL_ACTIONS,
   REGISTRATIONS: ALL_ACTIONS,
+  PAYMENTS: ALL_ACTIONS,
 });

@@ -1855,7 +1855,7 @@ test("row 76: one assignment is read with its name; the staff list filters by ro
     assert.ok(atAddis.body.data.length > 0 && atAddis.body.data.every((row: { branch: { id: string } | null }) => row.branch?.id === fixture.selamAddisBranchId));
 
     const templates = (await as("SUPER", "GET", "/v1/role-templates")).body.data as Array<{ code: string; grant_count: number }>;
-    assert.equal(templates.find((template) => template.code === "OWNER")?.grant_count, 7);
+    assert.equal(templates.find((template) => template.code === "OWNER")?.grant_count, 8, "seven modules, plus Payments since Phase 8");
   } finally {
     mock.restoreAll();
   }
@@ -2889,4 +2889,108 @@ test("row 98: at the door a cancelled ticket is refused, a held ticket has no co
   assert.equal((await gateScan("HORN_OWNER", doorFixture.eventPath, doorFixture.codes[1] as string, randomUUID())).status, 403, "another organization");
   assert.equal((await gateScan("SELAM_VIEWER", doorFixture.eventPath, doorFixture.codes[1] as string, randomUUID())).status, 403, "view-only");
   assert.equal(await TicketAdmission.count({ where: { event_id: event.id } }), 0, "refusals write nothing");
+});
+
+// --- Phase 8 step 3: payment cases ---------------------------------------------------------------------------------
+
+/** Selam's webhook, signed with the secret row 95 saved. */
+async function signedWebhook(txRef: string): Promise<TestResponse> {
+  return chechePayWebhook(txRef, createHmac("sha256", "whsec_selamtest123").update(webhookPayload(txRef)).digest("hex"));
+}
+
+/** The buyer's "Pay now" (a new attempt when the last checkout link has expired). */
+async function payNow(reference: string, token: string): Promise<TestResponse> {
+  return withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/v1/public/orders/${reference}/payment`, { method: "POST", headers: { "X-Order-Token": token } });
+    const text = await response.text();
+    return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
+  });
+}
+
+test("row 99: a double charge, a late payment whose places were sold and a mismatched amount each open one case with its payment reference; staff record the outcome once; tickets stay as they should; other tenants and view-only staff can't see or resolve", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pilot Recital", registration_mode: "QUICK" });
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "400" })).status, 200);
+    const buy = (mobile: string, quantity = 1, path = event.publicPath) => postWithKey(`${path}/orders`, orderForm([{ ticket_type_code: "GA", quantity }], mobile), randomUUID());
+
+    // A double charge: the first checkout link expired, the buyer paid on both attempts.
+    const twice = await buy("0913500001", 2);
+    assert.equal(twice.status, 201, JSON.stringify(twice.body));
+    const firstRef = await txRefOf(twice.body.data.reference);
+    await OrderPayment.update({ checkout_expires_at: new Date(Date.now() - 60_000) }, { where: { tx_ref: firstRef } });
+    assert.equal((await payNow(twice.body.data.reference, twice.body.data.order_token)).status, 200);
+    const secondRef = await txRefOf(twice.body.data.reference);
+    assert.notEqual(secondRef, firstRef, "a new attempt");
+    ledger.set(firstRef, { status: "SUCCEEDED", amount: "800.00" });
+    assert.equal((await signedWebhook(firstRef)).body.data.order_status, "CONFIRMED");
+    ledger.set(secondRef, { status: "SUCCEEDED", amount: "800.00" });
+    assert.equal((await signedWebhook(secondRef)).body.data.review_reason, "PAID_TWICE");
+    await signedWebhook(secondRef);
+
+    // A late payment: the only place went to someone else while the hold had lapsed.
+    const seat = await publishedCheckoutEvent({ name: "Pilot Duet", registration_mode: "QUICK", capacity: 1 });
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${seat.path}/ticket-types/${seat.types.GA}`, { price: "400" })).status, 200);
+    const late = await buy("0913500002", 1, seat.publicPath);
+    const lateRef = await txRefOf(late.body.data.reference);
+    await TicketOrder.update({ hold_expires_at: new Date(Date.now() - 60_000) }, { where: { reference: late.body.data.reference } });
+    await paymentService.processDue(new Date());
+    const winner = await buy("0913500003", 1, seat.publicPath);
+    const winnerRef = await txRefOf(winner.body.data.reference);
+    ledger.set(winnerRef, { status: "SUCCEEDED", amount: "400.00" });
+    await signedWebhook(winnerRef);
+    ledger.set(lateRef, { status: "SUCCEEDED", amount: "400.00" });
+    assert.equal((await signedWebhook(lateRef)).body.data.order_status, "REFUND_REQUIRED");
+    await signedWebhook(lateRef);
+
+    // A mismatched amount.
+    const odd = await buy("0913500004");
+    const oddRef = await txRefOf(odd.body.data.reference);
+    ledger.set(oddRef, { status: "SUCCEEDED", amount: "4.00" });
+    await signedWebhook(oddRef);
+    await signedWebhook(oddRef);
+
+    const casesPath = `/v1/organizations/${fixture.selamId}/payment-cases`;
+    const open = await as("SELAM_OWNER", "GET", `${casesPath}?status=OPEN`);
+    assert.equal(open.status, 200, JSON.stringify(open.body));
+    const mine = (open.body.data as Array<{ id: string; kind: string; tx_ref: string; amount: string; event_id: string }>).filter((row) => [secondRef, lateRef, oddRef, firstRef, winnerRef].includes(row.tx_ref));
+    assert.deepEqual(
+      mine.map((row) => [row.kind, row.tx_ref, row.amount]).sort(),
+      [
+        ["AMOUNT_MISMATCH", oddRef, "4.00"],
+        ["PAID_TWICE", secondRef, "800.00"],
+        ["REFUND_REQUIRED", lateRef, "400.00"],
+      ].sort(),
+      "one case each, however many webhooks; the valid charges have none",
+    );
+    const caseOf = (kind: string) => mine.find((row) => row.kind === kind)?.id as string;
+
+    const twiceCase = await as("SELAM_OWNER", "GET", `${casesPath}/${caseOf("PAID_TWICE")}`);
+    assert.deepEqual([twiceCase.body.data.payment.paid_tx_ref, twiceCase.body.data.order.status, twiceCase.body.data.order.tickets.length], [firstRef, "CONFIRMED", 2]);
+    const refund = { resolution: "REFUNDED", refunded_amount: "800", refunded_currency: "ETB", merchant_reference: "CP-REFUND-99" };
+    const resolved = await as("SELAM_OWNER", "POST", `${casesPath}/${caseOf("PAID_TWICE")}/resolve`, refund);
+    assert.deepEqual([resolved.status, resolved.body.data.status, resolved.body.data.resolution.refunded_amount, resolved.body.data.resolution.resolved_by], [200, "RESOLVED", "800.00", PEOPLE.SELAM_OWNER]);
+    const again = await as("SELAM_OWNER", "POST", `${casesPath}/${caseOf("PAID_TWICE")}/resolve`, refund);
+    assert.equal(again.body.data.resolution.resolved_at, resolved.body.data.resolution.resolved_at, "the same action again: one effect");
+    assert.equal((await as("SELAM_OWNER", "POST", `${casesPath}/${caseOf("PAID_TWICE")}/resolve`, { resolution: "CLOSED_WITHOUT_REFUND", note: "no" })).status, 409);
+    const twiceOrder = await TicketOrder.findOne({ where: { reference: twice.body.data.reference }, raw: true });
+    assert.equal(await Registration.count({ where: { order_id: twiceOrder?.id, status: "CONFIRMED" } }), 2, "closing a double charge keeps the tickets of the valid one");
+
+    const lateResolved = await as("SELAM_OWNER", "POST", `${casesPath}/${caseOf("REFUND_REQUIRED")}/resolve`, { ...refund, refunded_amount: "400", merchant_reference: "CP-REFUND-100" });
+    assert.equal(lateResolved.body.data.tx_ref, lateRef);
+    assert.equal(lateResolved.body.data.order.status, "REFUND_REQUIRED");
+    assert.equal(await Registration.count({ where: { event_id: seat.id, status: "CONFIRMED" } }), 1, "still never oversold");
+
+    const oddClosed = await as("SELAM_OWNER", "POST", `${casesPath}/${caseOf("AMOUNT_MISMATCH")}/resolve`, { resolution: "CLOSED_WITHOUT_REFUND", note: "Organizer's test transfer" });
+    assert.deepEqual([oddClosed.body.data.resolution.outcome, oddClosed.body.data.tx_ref, oddClosed.body.data.payment.status], ["CLOSED_WITHOUT_REFUND", oddRef, "MISMATCH"]);
+    const oddOrder = await TicketOrder.findOne({ where: { reference: odd.body.data.reference }, raw: true });
+    assert.equal(await Registration.count({ where: { order_id: oddOrder?.id, status: "CONFIRMED" } }), 0, "a mismatch never issues");
+
+    assert.equal((await as("HORN_OWNER", "GET", casesPath)).status, 403, "another organization");
+    assert.equal((await as("SELAM_VIEWER", "GET", casesPath)).status, 403, "Viewers have no Payments");
+    assert.equal((await as("SELAM_VIEWER", "POST", `${casesPath}/${caseOf("AMOUNT_MISMATCH")}/resolve`, refund)).status, 403);
+  } finally {
+    mock.restoreAll();
+  }
 });

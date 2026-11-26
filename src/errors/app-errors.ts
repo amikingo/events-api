@@ -334,6 +334,13 @@ export class TicketNotAdmissibleError extends AppError {
   }
 }
 
+/** Phase 8: the payment case was already resolved with a different outcome (`details.resolution`); nothing changed. */
+export class PaymentCaseAlreadyResolvedError extends AppError {
+  constructor(message = "This case was already resolved with a different outcome", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "payment_case_already_resolved", details, cause: options?.cause });
+  }
+}
+
 /** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
 export class CapacityReachedError extends AppError {
   constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {

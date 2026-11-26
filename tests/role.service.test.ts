@@ -23,7 +23,7 @@ const EDITOR: RoleEditor = { userId: IDS.user, assignmentId: IDS.assignment };
 const OWNER = roleRow({ id: "role-owner", code: "OWNER", name: "Owner" });
 const VIEWER = roleRow({ id: "role-viewer", code: "VIEWER", name: "Viewer" });
 const DOOR = roleRow({ id: "role-door", code: "DOOR_STAFF", name: "Door staff" });
-const MODULES = ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "CUSTOMERS", "REGISTRATIONS", "MODULES", "ROLE_TEMPLATES"].map(
+const MODULES = ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "CUSTOMERS", "REGISTRATIONS", "PAYMENTS", "MODULES", "ROLE_TEMPLATES"].map(
   (code) => moduleRow({ id: `module-${code}`, code, module_name: code }),
 );
 
@@ -376,7 +376,7 @@ test("roles carry how many modules they give access to and how many active staff
 test("the grantable modules list is the active permission modules that TENANT_GRANTABLE allows, with their actions", async () => {
   arrange();
   const modules = await roleService.listGrantableModules(IDS.orgA);
-  assert.deepEqual(modules.map((module) => module.module_code), ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "CUSTOMERS", "REGISTRATIONS"], "never platform modules");
+  assert.deepEqual(modules.map((module) => module.module_code), ["ORGANIZATIONS", "BRANCHES", "ROLES", "USER_ROLES", "EVENTS", "CUSTOMERS", "REGISTRATIONS", "PAYMENTS"], "never platform modules");
   assert.deepEqual(modules.find((module) => module.module_code === "ORGANIZATIONS")?.actions, TENANT_GRANTABLE.ORGANIZATIONS);
   assert.deepEqual(modules.find((module) => module.module_code === "REGISTRATIONS")?.actions, TENANT_GRANTABLE.REGISTRATIONS);
 });

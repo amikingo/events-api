@@ -24,6 +24,7 @@ import { registrationRepository, type RegistrationWithDetails } from "../src/rep
 import { ticketOrderRepository } from "../src/repositories/ticket-order.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { chechePayCredentialService, type ChechePayKeys } from "../src/services/cheche-pay-credential.service.js";
+import { paymentCaseService, type AttemptCaseInput } from "../src/services/payment-case.service.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { paymentService } from "../src/services/payment.service.js";
 import { eventRow, IDS, orderPaymentRow, orderRow, organizationRow, PAYMENT_ID, registrationRow, ticketTypeRow, TX_REF } from "./helpers/fixtures.js";
@@ -103,7 +104,13 @@ function arrange(
     expiresAt: new Date(Date.now() + 30 * 60_000),
     raw: { ok: true },
   }));
-  return { issue, verify, initialize, resolve };
+  // Phase 8: cases are opened through the case service (its own tests cover the one-per-attempt rule).
+  const cases = new Map<string, { kind: string; amount: string; currency: string; orderPaymentId: string }>();
+  const openCase = mock.method(paymentCaseService, "openForAttempt", async (input: AttemptCaseInput) => {
+    if (!cases.has(input.txRef)) cases.set(input.txRef, { kind: input.kind, amount: input.amount, currency: input.currency, orderPaymentId: input.orderPaymentId });
+    return {} as never;
+  });
+  return { issue, verify, initialize, resolve, openCase, cases };
 }
 
 afterEach(() => mock.restoreAll());
@@ -180,8 +187,10 @@ test("merchant-verify SUCCEEDED for exactly the order issues every ticket once w
 });
 
 test("SUCCEEDED for another amount issues nothing and is kept as MISMATCH; another currency is refused", async () => {
-  const { issue } = arrange({ verified: { status: "SUCCEEDED", amount: "1.00", currency: "ETB" } });
+  const { issue, cases, openCase } = arrange({ verified: { status: "SUCCEEDED", amount: "1.00", currency: "ETB" } });
   const result = await paymentService.settle(TX_REF);
+  assert.deepEqual(cases.get(TX_REF), { kind: "AMOUNT_MISMATCH", amount: "1.00", currency: "ETB", orderPaymentId: PAYMENT_ID }, "a case to investigate, for what Cheche Pay verified");
+  assert.equal(openCase.mock.calls[0]?.arguments[1], FAKE_TX, "inside the settling transaction");
   assert.deepEqual([result.processed, result.review_reason, state.payment.status, state.order.status], [false, "AMOUNT_MISMATCH", "MISMATCH", "PENDING_PAYMENT"]);
   assert.match(String(state.payment.last_error), /1\.00/);
   assert.equal((await paymentService.settle(TX_REF)).duplicate, true);
@@ -211,10 +220,12 @@ test("anything but SUCCEEDED, or a tx_ref Cheche Pay doesn't know, changes nothi
 });
 
 test("a second attempt that also succeeded is flagged PAID_TWICE for a refund and changes nothing else", async () => {
-  arrange({ payment: { status: "PAID", paid_tx_ref: TX_REF, verified_at: new Date() }, order: { status: "CONFIRMED" } });
+  const { cases } = arrange({ payment: { status: "PAID", paid_tx_ref: TX_REF, verified_at: new Date() }, order: { status: "CONFIRMED" } });
   const second = `${PAYMENT_ID}-mzzz999yyy`;
   const result = await paymentService.settle(second);
   assert.deepEqual([result.processed, result.review_reason, state.payment.paid_tx_ref], [false, "PAID_TWICE", TX_REF]);
+  assert.deepEqual(cases.get(second)?.kind, "PAID_TWICE", "a refund case for the second charge, keyed by its attempt");
+  assert.equal(cases.has(TX_REF), false, "the original valid charge has no case");
   assert.match(String(state.payment.last_error), /refund/);
 });
 
@@ -228,6 +239,9 @@ test("a payment after the places were released takes them again when there's roo
   const full = arrange({ order: { status: "EXPIRED" }, capacity: 10, otherTaken: 9 });
   for (const ticket of state.tickets) ticket.status = "RELEASED";
   const refused = await paymentService.settle(TX_REF);
+  assert.deepEqual(full.cases.get(TX_REF), { kind: "REFUND_REQUIRED", amount: "2000.00", currency: "ETB", orderPaymentId: PAYMENT_ID }, "the order total is due back");
+  await paymentService.settle(TX_REF);
+  assert.equal(full.cases.size, 1, "the same webhook again: still one case");
   assert.deepEqual([refused.order_status, refused.review_reason, state.payment.status], ["REFUND_REQUIRED", "PAID_AFTER_RELEASE", "PAID"], "the payment is kept for follow-up");
   assert.equal(full.issue.mock.callCount(), 0, "never oversold");
   assert.equal(state.messages.length, 0);

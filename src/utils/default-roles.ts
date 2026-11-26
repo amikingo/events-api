@@ -37,6 +37,8 @@ export const DEFAULT_TENANT_ROLES = [
       { moduleCode: MODULE_CODES.EVENTS, actions: ALL_ACTIONS },
       { moduleCode: MODULE_CODES.CUSTOMERS, actions: ALL_ACTIONS },
       { moduleCode: MODULE_CODES.REGISTRATIONS, actions: ALL_ACTIONS },
+      // Phase 8: payment cases (20261208000002 for existing Owners, 20261208000003 for the OWNER template).
+      { moduleCode: MODULE_CODES.PAYMENTS, actions: ALL_ACTIONS },
     ],
   },
   {

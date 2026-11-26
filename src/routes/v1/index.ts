@@ -13,6 +13,7 @@ import { personsRouter } from "./persons.js";
 import { platformRouter } from "./platform.js";
 import { ordersRouter } from "./orders.js";
 import { chechePayCredentialsRouter } from "./cheche-pay-credentials.js";
+import { paymentCasesRouter } from "./payment-cases.js";
 import { paymentsRouter } from "./payments.js";
 import { publicEventsRouter } from "./public-events.js";
 import { checkInsRouter } from "./check-ins.js";
@@ -37,6 +38,7 @@ router.use("/organizations/:organizationId/events/:eventId/registrations", regis
 router.use("/organizations/:organizationId/events/:eventId/check-ins", checkInsRouter); // Phase 8: the door
 router.use("/organizations/:organizationId/events/:eventId/orders", ordersRouter);
 router.use("/organizations/:organizationId/cheche-pay", chechePayCredentialsRouter); // platform scope: where the money goes
+router.use("/organizations/:organizationId/payment-cases", paymentCasesRouter); // Phase 8: refunds and payment issues
 router.use("/organizations/:organizationId/persons", personsRouter);
 router.use("/organizations/:organizationId/roles", rolesRouter);
 router.use("/organizations/:organizationId/role-templates", organizationRoleTemplatesRouter);

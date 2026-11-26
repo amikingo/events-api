@@ -4,6 +4,7 @@ import { BACKFILL_GRANTS } from "../src/migrations/20261127000100-backfill-defau
 import { ROLE_MANAGEMENT_GRANT } from "../src/migrations/20261128000000-grant-role-management-to-owners.js";
 import { GUEST_EXPORT_GRANT } from "../src/migrations/20261129000000-grant-guest-export-to-owners.js";
 import { OWNER_ALL_ACTIONS_GRANT } from "../src/migrations/20261202000000-grant-all-actions-to-owner-roles.js";
+import { PAYMENTS_OWNER_GRANT } from "../src/migrations/20261208000002-grant-payments-to-owner-roles.js";
 import { DEFAULT_TENANT_ROLES } from "../src/utils/default-roles.js";
 
 /**
@@ -32,7 +33,13 @@ test("the default-roles backfill plus later grant migrations equal what a new or
       for (const action of ACTIONS) flags[action] ||= actions.includes(action);
     }
     return [role, module, ...ACTIONS.map((action) => flags[action])].join(":");
-  }).sort();
+  });
+  // Modules added later get a new row of their own (Phase 8: PAYMENTS for OWNER).
+  for (const grant of [PAYMENTS_OWNER_GRANT]) {
+    const actions: readonly string[] = grant.actions;
+    fromMigration.push([grant.role, grant.module, ...ACTIONS.map((action) => actions.includes(action))].join(":"));
+  }
+  fromMigration.sort();
   assert.deepEqual(fromMigration, fromCode);
   for (const role of DEFAULT_TENANT_ROLES) {
     for (const grant of role.grants) {

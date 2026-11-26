@@ -585,7 +585,12 @@ The plan follows the 27 November handoff.
   - bringing back an unnamed ticket whose order had no mobile.
 - On a capped event these now answer 400 `buyer_mobile_required`. Uncapped events are unchanged.
 
-**Step 2 (check-in and the QR payload): built; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test` (rows 97–98).** Migration `20261208000000-create-ticket-admission`.
+**Step 2 (check-in and the QR payload): done (27 November 2026).** `npm run check` passed; the project owner applied the migration, ran `TEST_DATABASE=1 npm test` (rows 97–98; row 89's code comparison made order-independent) and committed. Migration `20261208000000-create-ticket-admission`.
 - `POST …/events/{eventId}/check-ins` (Guests › update, an `Idempotency-Key` header, body `{ code }`). It answers `ADMITTED` or `ALREADY_CHECKED_IN`.
 - The QR payload is the existing ticket code, which events-web draws.
 - The summary, guest list, single registration and CSV gain the check-in fields.
+
+**Step 3 (payment cases and the Payments module): built; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test` (row 99).**
+- **Migrations:** `20261208000001`–`000005` (the module, the Owner role and template grants, `payment_case`, and the backfill).
+- **Cases:** `paymentService.settle` opens one case per payment attempt for `REFUND_REQUIRED`, `PAID_TWICE` and `AMOUNT_MISMATCH`.
+- **Endpoints:** staff with Payments list, read and resolve cases (`REFUNDED` with the merchant reference, or `CLOSED_WITHOUT_REFUND` with a note). Resolving never changes tickets or orders.

@@ -4,6 +4,7 @@ import type { Transaction } from "sequelize";
 import { ConflictError, RoleLockedError, ValidationAppError } from "../src/errors/app-errors.js";
 import { SEED_ROLE_TEMPLATES } from "../src/migrations/20261201000002-seed-role-templates.js";
 import { OWNER_ALL_ACTIONS_GRANT } from "../src/migrations/20261202000000-grant-all-actions-to-owner-roles.js";
+import { PAYMENTS_OWNER_GRANT } from "../src/migrations/20261208000002-grant-payments-to-owner-roles.js";
 import type { RoleTemplateRow } from "../src/models/role-template.js";
 import { moduleRepository } from "../src/repositories/module.repository.js";
 import { roleRepository } from "../src/repositories/role.repository.js";
@@ -85,11 +86,13 @@ afterEach(() => mock.restoreAll());
 test("the seed migration's OWNER and VIEWER templates, plus the Phase 2e grant on OWNER, equal the code's DEFAULT_TENANT_ROLES", () => {
   const withLater = (code: string, moduleCode: string, actions: readonly string[]) =>
     code === "OWNER" ? [...new Set([...actions, ...(OWNER_ALL_ACTIONS_GRANT[moduleCode] ?? [])])] : [...actions];
+  // Phase 8: the OWNER template also gets PAYMENTS (20261208000003, the same grant as 20261208000002).
+  const added = (code: string) => (code === PAYMENTS_OWNER_GRANT.role ? [`${PAYMENTS_OWNER_GRANT.module}:${[...PAYMENTS_OWNER_GRANT.actions].sort().join(",")}`] : []);
   const fromSeed = SEED_ROLE_TEMPLATES.map((seed) => ({
     code: seed.code,
     name: seed.name,
     description: seed.description,
-    grants: seed.grants.map(([moduleCode, actions]) => `${moduleCode}:${withLater(seed.code, moduleCode, actions).sort().join(",")}`).sort(),
+    grants: [...seed.grants.map(([moduleCode, actions]) => `${moduleCode}:${withLater(seed.code, moduleCode, actions).sort().join(",")}`), ...added(seed.code)].sort(),
   }));
   const fromCode = DEFAULT_TENANT_ROLES.map((role) => ({
     code: role.code,

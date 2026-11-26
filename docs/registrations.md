@@ -481,3 +481,43 @@ Looking a ticket up (the guest list's `q` finds a code) and showing a QR never w
 
 **Proof:** unit tests (results, retries, refusals, the race fallback) and matrix rows 97–98 (the exact payload on
 every path, two gates racing, the retried winner, a second ticket of the same order, refusals, tenants, view-only).
+
+### Step 3: payment cases and the Payments module
+
+**A payment case** is a money issue staff resolve by hand through the organizer's own Cheche Pay merchant account. The
+API records what was done; it never moves money.
+
+| Kind | Opened when | Identified by | `amount` |
+|---|---|---|---|
+| `REFUND_REQUIRED` | A payment was verified after its places were released and none were left (the order is `REFUND_REQUIRED`) | the paying attempt's `tx_ref` | the order total |
+| `PAID_TWICE` | A second attempt of an already-paid order also succeeded | the second attempt's `tx_ref` | what Cheche Pay verified |
+| `AMOUNT_MISMATCH` | Cheche Pay verified another amount than the order's: investigate | that attempt's `tx_ref` | what Cheche Pay verified |
+| `TICKET_RETURN` | A paid ticket was returned (Step 4) | the ticket | its stored checkout price |
+
+**One case per issue.** A case is opened in the same transaction that finds the issue (`paymentService.settle`, or the
+return). It's keyed by its payment attempt or its returned ticket, so:
+- two issues on one order are tracked separately;
+- a repeated webhook, buyer check or return opens no second case.
+
+Cases that existed before this step (late payments, mismatches, double-charge notes) were backfilled by migration
+`20261208000005`.
+
+**The Payments module** (`PAYMENTS`, shown as *Event Management › Payments*). Owners hold every action by default;
+Viewers have none. It's separate from Guests, so door staff who check people in can't record refunds.
+- `GET /v1/organizations/{id}/payment-cases?status&kind&event_id&page&pageSize`, Payments › view.
+- `GET …/payment-cases/{caseId}`, Payments › view: the case, its order (status, buyer, total, tickets with codes), the
+  payment (current and paid `tx_ref`, status, `verified_at`, the last verification and error) and, for a return, the
+  ticket.
+- `POST …/payment-cases/{caseId}/resolve`, Payments › update. It locks the case and records the outcome, the staff
+  member and the time:
+  - `REFUNDED`: `refunded_amount`, `refunded_currency` and `merchant_reference` (the refund reference from the
+    organizer's merchant account);
+  - `CLOSED_WITHOUT_REFUND`: a `note` saying why.
+
+  Resolving again with the same outcome changes nothing; a different outcome is 409 `payment_case_already_resolved`.
+  **Resolving never touches tickets or orders:** closing a double charge keeps the tickets issued for the original
+  valid charge, and a late order stays `REFUND_REQUIRED`.
+
+**Proof:** unit tests (one case per attempt or ticket, a lost race, resolutions and repeats, tenants) and matrix row 99
+(a double charge, a late payment with the places sold, and a mismatch, each opening one case; resolving; the ticket
+states; another organization and Viewers refused).

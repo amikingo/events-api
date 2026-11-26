@@ -23,6 +23,7 @@ import { ticketTypeRepository } from "../repositories/ticket-type.repository.js"
 import { logger } from "../utils/logger.js";
 import { MONEY_PATTERN, normalizeAmount } from "../utils/money.js";
 import { chechePayCredentialService } from "./cheche-pay-credential.service.js";
+import { paymentCaseService } from "./payment-case.service.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 import { ticketing } from "./ticketing.js";
 
@@ -161,19 +162,31 @@ async function settle(txRef: string, options: { expectedOrganizationId?: string 
     });
     await orderPaymentRepository.updateById(payment.id, { last_verification: checked, provider_transaction_id: verified.transactionId ?? payment.provider_transaction_id }, { transaction });
 
+    const openCase = (kind: "REFUND_REQUIRED" | "PAID_TWICE" | "AMOUNT_MISMATCH", caseAmount: string) =>
+      paymentCaseService.openForAttempt(
+        { organizationId: order.organization_id, eventId: order.event_id, orderId: order.id, orderPaymentId: payment.id, kind, txRef, amount: caseAmount, currency: payment.currency },
+        transaction,
+      );
+
     if (normalizeAmount(payment.amount) !== amount) {
-      // A success for another amount is kept for staff, never applied.
+      // A success for another amount is kept for staff, never applied; Phase 8: a case to investigate (once per attempt).
       if (payment.status !== "PAID") {
         await orderPaymentRepository.updateById(payment.id, { status: "MISMATCH", last_error: `Cheche Pay verified ${amount} for ${txRef}; the order expects ${payment.amount}` }, { transaction });
       }
+      await openCase("AMOUNT_MISMATCH", amount);
       logger.warn({ orderId: order.id, paymentId: payment.id }, "Cheche Pay verified a payment for another amount: nothing issued");
       return result(false, payment.status === "MISMATCH", "AMOUNT_MISMATCH", order.status);
     }
 
     if (payment.status === "PAID") {
-      if (payment.paid_tx_ref === txRef) return result(false, true, order.status === "REFUND_REQUIRED" ? "PAID_AFTER_RELEASE" : null, order.status);
+      if (payment.paid_tx_ref === txRef) {
+        // A duplicate. A late payment's case exists already; opening is idempotent (one case per attempt).
+        if (order.status === "REFUND_REQUIRED") await openCase("REFUND_REQUIRED", payment.amount);
+        return result(false, true, order.status === "REFUND_REQUIRED" ? "PAID_AFTER_RELEASE" : null, order.status);
+      }
       // Two attempts both succeeded: the buyer paid twice. Kept for a refund; answered 200 so Cheche Pay stops retrying.
       await orderPaymentRepository.updateById(payment.id, { last_error: `A second Cheche Pay attempt (${txRef}) also succeeded: refund one of them` }, { transaction });
+      await openCase("PAID_TWICE", amount);
       logger.warn({ orderId: order.id, paymentId: payment.id }, "A second Cheche Pay attempt also succeeded: refund required for one");
       return result(false, false, "PAID_TWICE", order.status);
     }
@@ -188,6 +201,7 @@ async function settle(txRef: string, options: { expectedOrganizationId?: string 
       return result(true, false, null, "CONFIRMED");
     }
     await ticketOrderRepository.updateById(order.organization_id, order.id, { status: "REFUND_REQUIRED" }, { transaction });
+    await openCase("REFUND_REQUIRED", payment.amount);
     logger.warn({ orderId: order.id, paymentId: payment.id }, "Paid after its places were released and no room is left: refund required");
     return result(true, false, "PAID_AFTER_RELEASE", "REFUND_REQUIRED");
   });
