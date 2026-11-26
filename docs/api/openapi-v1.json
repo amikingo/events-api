@@ -4433,7 +4433,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/orders": {
       "post": {
         "summary": "Phase 7 checkout by staff: several tickets of one or more ticket types in one order (STAFF_ONLY types allowed). 201 with the order and every code; the same Idempotency-Key and body again returns it with 200",
-        "description": "items: [{ ticket_type_id, quantity, holders? }] (at most 20 tickets; each type once). DETAILED events need one holder per ticket following holder_fields; QUICK events take none (unnamed tickets). buyer_mobile is optional for staff (no SMS without it); the purchase limit counts by it. All or nothing. Errors: 400 validation_error (issues[].path names the item and holder, e.g. body.items.0.holders.2.affiliation_name; codes required, not_collected, required_with_details, holders_count, too_many_tickets, mixed_currency), 404 unknown ticket type, 409 registration_closed, 409 ticket_type_inactive, 409 capacity_reached (details.scope, remaining), 409 purchase_limit_reached (details.limit, held, requested), 409 payment_required (a positive total: paid checkout comes in step 3), 409 idempotency_key_reused.",
+        "description": "items: [{ ticket_type_id, quantity, holders? }] (at most 20 tickets; each type once). DETAILED events need one holder per ticket following holder_fields; QUICK events take none (unnamed tickets). buyer_mobile is optional for staff (no SMS without it); the purchase limit counts by it. All or nothing. Errors: 400 validation_error (issues[].path names the item and holder, e.g. body.items.0.holders.2.affiliation_name; codes required, not_collected, required_with_details, holders_count, too_many_tickets, mixed_currency), 404 unknown ticket type, 409 registration_closed, 409 ticket_type_inactive, 409 capacity_reached (details.scope, remaining), 409 purchase_limit_reached (details.limit, held, requested), 409 paid_sales_unavailable (no Cheche Pay service code, or not ETB), 409 idempotency_key_reused. Step 3: a paid order needs buyer_mobile and payment_option_id, and answers PENDING_PAYMENT with payment.checkout_url and order_token for the buyer.",
         "tags": [
           "Orders"
         ],
@@ -4625,6 +4625,95 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/cheche-pay-service": {
+      "get": {
+        "summary": "Phase 7 step 3 (platform scope): the organizer's Cheche Pay service code (which merchant receives its money), its payment options at Cheche Pay, and whether paid sales are available",
+        "tags": [
+          "Payments"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Phase 7 step 3 (platform scope, Super Admin): set the organizer's Cheche Pay service code (stored upper-case) or null to turn paid sales off",
+        "description": "As in bookings, a code Cheche Pay has no payment options for is still saved, with warnings[].code CHECHE_PAY_SERVICE_HAS_NO_OPTIONS (paid sales stay off until it has).",
+        "tags": [
+          "Payments"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChechePayServiceUpdateRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
@@ -5352,7 +5441,7 @@
     "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/orders": {
       "post": {
         "summary": "Phase 7 checkout: get several tickets in one order, without an account or signed in (Idempotency-Key required). 201 with the reference, total and every code; the same key and body again returns them with 200",
-        "description": "items: [{ ticket_type_code, quantity, holders? }] (public ticket types only; at most 20 tickets). Without an account buyer_mobile is required (the codes are sent there by SMS); signed in, the account's verified mobile is used and the tickets appear in My Tickets. A QUICK event's tickets are unnamed; a DETAILED event needs one holder per ticket following holder_fields. All or nothing. Errors: 400 validation_error (issues[].path names the item and holder), 404 unknown event or ticket type, 409 privacy_notice_outdated, 409 registration_closed, 409 capacity_reached, 409 purchase_limit_reached (details.limit, held, requested), 409 payment_required (paid checkout comes in step 3), 409 idempotency_key_reused, 429 rate_limited (shared with the registration form).",
+        "description": "items: [{ ticket_type_code, quantity, holders? }] (public ticket types only; at most 20 tickets). Without an account buyer_mobile is required (the codes are sent there by SMS); signed in, the account's verified mobile is used and the tickets appear in My Tickets. A QUICK event's tickets are unnamed; a DETAILED event needs one holder per ticket following holder_fields. All or nothing. Errors: 400 validation_error (issues[].path names the item and holder), 404 unknown event or ticket type, 409 privacy_notice_outdated, 409 registration_closed, 409 capacity_reached, 409 purchase_limit_reached (details.limit, held, requested), 409 paid_sales_unavailable (no Cheche Pay service code, or not ETB), 409 idempotency_key_reused, 429 rate_limited (shared with the registration form). Step 3: a paid order needs payment_option_id (one of the organizer's Cheche Pay options; 400 unknown_payment_option otherwise) and answers 201 with status PENDING_PAYMENT, every place held (codes null) until hold_expires_at, payment.checkout_url to pay at, and order_token (keep it: it opens the order page).",
         "tags": [
           "Public"
         ],
@@ -5407,6 +5496,330 @@
         },
         "responses": {
           "201": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/orders/{reference}": {
+      "get": {
+        "summary": "Phase 7 step 3: the buyer's order page, with the order token from checkout in X-Order-Token: status, payment link, and every code once paid",
+        "description": "A wrong token answers 404, like an unknown reference.",
+        "tags": [
+          "Public"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJKMNP-Z2-9]{8,10}$"
+            }
+          },
+          {
+            "name": "X-Order-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{20,100}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/orders/{reference}/payment": {
+      "post": {
+        "summary": "Phase 7 step 3: start or resume paying (Cheche Pay createOrder with the same transaction_id every time) and get the checkout URL",
+        "description": "Errors: 404, 409 invalid_order_state (not waiting for payment: details.status), 502 payment_provider_unavailable (try again).",
+        "tags": [
+          "Public"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-HJKMNP-Z2-9]{8,10}$"
+            }
+          },
+          {
+            "name": "X-Order-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{20,100}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/payment-options": {
+      "get": {
+        "summary": "Phase 7 step 3: the organizer's Cheche Pay payment options ({ id, name }, e.g. Telebirr) for the checkout form; [] when paid sales are off. Send the chosen id as payment_option_id",
+        "description": "Errors: 404 unknown event, 502 payment_provider_unavailable.",
+        "tags": [
+          "Public"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "organizationSlug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            }
+          },
+          {
+            "name": "eventSlug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/payments/cheche/notify": {
+      "post": {
+        "summary": "Phase 7 step 3: Cheche Pay's payment callback (as bookings' notify-from-chechepay): transaction_id (our payment id), trade_status, transaction_amount and vendor_ref, with bookings' aliases. No login or signature: a matching \"Completed\" issues the tickets once",
+        "description": "A Completed callback for another amount is kept as MISMATCH and issues nothing; a repeat with the same vendor_ref changes nothing; a different vendor_ref or a contradictory status after payment is 409; other statuses are acknowledged and change nothing. Errors: 400 validation_error, 404 unknown payment, 409 conflict.",
+        "tags": [
+          "Payments"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChechePayNotificationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Phase 7 step 3: the same Cheche Pay callback as a GET with the fields in the query (bookings accepts both)",
+        "tags": [
+          "Payments"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "transaction_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "transactionId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "internal_ref",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "trade_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "tradeStatus",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "transaction_amount",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "transactionAmount",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "amount",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "vendor_ref",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "vendor_reference",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "vendorReference",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "merch_order_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "payment_order_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "trans_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
           },
           "default": {
@@ -7286,6 +7699,11 @@
             "minLength": 9,
             "maxLength": 20
           },
+          "payment_option_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
           "items": {
             "minItems": 1,
             "maxItems": 10,
@@ -7379,6 +7797,19 @@
         },
         "required": [
           "items"
+        ],
+        "additionalProperties": false
+      },
+      "ChechePayServiceUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "cheche_pay_service": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "cheche_pay_service"
         ],
         "additionalProperties": false
       },
@@ -7562,6 +7993,11 @@
             "minLength": 9,
             "maxLength": 20
           },
+          "payment_option_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
           "privacy_notice_version": {
             "type": "string",
             "minLength": 1,
@@ -7663,6 +8099,67 @@
           "items"
         ],
         "additionalProperties": false
+      },
+      "ChechePayNotificationRequest": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "transactionId": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "internal_ref": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "trade_status": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "tradeStatus": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "transaction_amount": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "transactionAmount": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "amount": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "vendor_ref": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "vendor_reference": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "vendorReference": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "merch_order_id": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "payment_order_id": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "trans_id": {
+            "type": "string",
+            "maxLength": 255
+          }
+        }
       }
     },
     "securitySchemes": {

@@ -7,6 +7,7 @@ import type { CustomerAuthContext } from "../src/middleware/authentication.js";
 import { publicRegistrationLimiter } from "../src/middleware/rate-limit.js";
 import { checkoutService } from "../src/services/checkout.service.js";
 import { permissionResolutionService, type PermissionScope } from "../src/services/permission-resolution.service.js";
+import { paymentService } from "../src/services/payment.service.js";
 import { publicCheckoutService } from "../src/services/public-checkout.service.js";
 import type { PublicOrderInput, StaffOrderInput } from "../src/validators/order.js";
 import { centralAccessToken, IDS, staffToken } from "./helpers/fixtures.js";
@@ -116,4 +117,79 @@ test("the public checkout needs an Idempotency-Key, takes codes upper-cased and 
   const [org, event, key, input, account] = checkout.mock.calls[0]?.arguments ?? [];
   assert.deepEqual([org, event, key, input?.buyer_mobile, input?.items[0]?.ticket_type_code, account], ["selam-events", "coffee-festival", KEY, "+251913000001", "GA", null]);
   assert.ok(checkout.mock.calls[1]?.arguments[4], "the guest's account reaches the service");
+});
+
+// --- Phase 7 step 3 ------------------------------------------------------------------------------------
+
+test("the Cheche Pay service code is platform scope (ORGANIZATIONS view and update) and stored upper-case; null turns paid sales off", async () => {
+  const permission = allowPermissions(false);
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/cheche-pay-service`, { token });
+    await call(baseUrl, "PUT", `/v1/organizations/${IDS.orgA}/cheche-pay-service`, { token, body: { cheche_pay_service: "selam" } });
+  });
+  const asked = permission.mock.calls.map((entry) => {
+    const input = entry.arguments[0] as { moduleCode: string; action: string; scope: PermissionScope };
+    return [input.moduleCode, input.action, input.scope.level];
+  });
+  assert.deepEqual(asked, [
+    ["ORGANIZATIONS", "view", "platform"],
+    ["ORGANIZATIONS", "update", "platform"],
+  ]);
+
+  mock.restoreAll();
+  allowPermissions(true);
+  const save = mock.method(paymentService, "setChechePayService", async (_o: string, code: string | null) => ({ cheche_pay_service: code, payment_options: [], paid_sales_available: false, warnings: [] }));
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    const path = `/v1/organizations/${IDS.orgA}/cheche-pay-service`;
+    for (const body of [{}, { cheche_pay_service: "has space" }, { cheche_pay_service: "SELAM", secret_key: "sk" }]) {
+      assert.equal((await call(baseUrl, "PUT", path, { token, body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call(baseUrl, "PUT", path, { token, body: { cheche_pay_service: " selam " } })).status, 200);
+    assert.equal((await call(baseUrl, "PUT", path, { token, body: { cheche_pay_service: null } })).status, 200);
+  });
+  assert.deepEqual(save.mock.calls.map((callArgs) => callArgs.arguments[1]), ["SELAM", null]);
+});
+
+test("the buyer's order page needs the order token in X-Order-Token; the payment options are public", async () => {
+  const read = mock.method(publicCheckoutService, "getOrder", async () => PUBLIC_ORDER);
+  const options = mock.method(publicCheckoutService, "listPaymentOptions", async () => [{ id: "opt-telebirr", name: "Telebirr" }]);
+  await withServer(app, async (baseUrl) => {
+    // References use the code alphabet (no O, 0, I, 1 or L).
+    assert.equal((await fetch(`${baseUrl}/v1/public/orders/ABCDE23456`)).status, 400, "no token");
+    assert.equal((await fetch(`${baseUrl}/v1/public/orders/ABCDE23456`, { headers: { "X-Order-Token": "t".repeat(43) } })).status, 200);
+    assert.equal((await fetch(`${baseUrl}/v1/public/orders/order-23456`, { headers: { "X-Order-Token": "t".repeat(43) } })).status, 400, "a malformed reference");
+    const listed = await fetch(`${baseUrl}/v1/public/organizations/selam-events/events/jazz-night/payment-options`);
+    assert.deepEqual([listed.status, ((await listed.json()) as { data: unknown }).data], [200, [{ id: "opt-telebirr", name: "Telebirr" }]]);
+  });
+  assert.deepEqual(read.mock.calls[0]?.arguments, ["ABCDE23456", "t".repeat(43)]);
+  assert.deepEqual(options.mock.calls[0]?.arguments, ["selam-events", "jazz-night"]);
+});
+
+test("Cheche Pay's callback is accepted as POST (body) and GET (query) with bookings' aliases; a missing vendor_ref is 400", async () => {
+  const notify = mock.method(paymentService, "handleNotification", async () => ({ acknowledged: true as const, processed: true, duplicate: false, review_reason: null, order_status: "CONFIRMED" as const }));
+  await withServer(app, async (baseUrl) => {
+    const posted = await fetch(`${baseUrl}/v1/payments/cheche/notify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transaction_id: "c0000000-0000-4000-8000-000000000001", trade_status: "Completed", transaction_amount: 2000, vendor_ref: "CP-1", extra: "ignored" }),
+    });
+    assert.equal(posted.status, 200);
+    const got = await fetch(`${baseUrl}/v1/payments/cheche/notify?transactionId=c0000000-0000-4000-8000-000000000001&tradeStatus=success&amount=2000.00&merch_order_id=CP-1`);
+    assert.equal(got.status, 200);
+    const missing = await fetch(`${baseUrl}/v1/payments/cheche/notify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trade_status: "Completed", amount: "1" }) });
+    assert.equal(missing.status, 400);
+  });
+  assert.equal(notify.mock.callCount(), 2);
+  assert.deepEqual(
+    notify.mock.calls.map((callArgs) => {
+      const input = callArgs.arguments[0] as { amount: string; vendorRef: string; tradeStatus: string };
+      return [input.amount, input.vendorRef, input.tradeStatus];
+    }),
+    [
+      ["2000.00", "CP-1", "Completed"],
+      ["2000.00", "CP-1", "success"],
+    ],
+  );
 });

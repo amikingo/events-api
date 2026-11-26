@@ -117,6 +117,7 @@ function arrange(options: Arrange = {}) {
     referenceExists: mock.method(ticketOrderRepository, "referenceExists", async () => false),
     findOrder: mock.method(ticketOrderRepository, "findByEventAndId", async () => orderRow({ buyer_mobile: "+251911234567" })),
     countByBuyer: mock.method(registrationRepository, "countConfirmedByBuyerMobile", async () => options.buyerHeld ?? 0),
+    expiredHolds: mock.method(ticketOrderRepository, "listExpiredPendingByEvent", async () => []),
   };
 }
 

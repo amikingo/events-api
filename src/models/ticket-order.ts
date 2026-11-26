@@ -1,7 +1,12 @@
 import { DataTypes, Model, type CreationOptional, type InferAttributes, type InferCreationAttributes } from "sequelize";
 import { sequelize } from "../db.js";
 
-export const ORDER_STATUSES = ["CONFIRMED"] as const;
+/**
+ * CONFIRMED: tickets issued. Phase 7 step 3: PENDING_PAYMENT (places held until hold_expires_at), EXPIRED (unpaid in
+ * time, places released), REFUND_REQUIRED (paid after its places were released with no room left: kept for
+ * follow-up).
+ */
+export const ORDER_STATUSES = ["CONFIRMED", "PENDING_PAYMENT", "EXPIRED", "REFUND_REQUIRED"] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 export const ORDER_SOURCES = ["STAFF", "PUBLIC"] as const;
@@ -24,6 +29,10 @@ export class TicketOrder extends Model<InferAttributes<TicketOrder>, InferCreati
   declare buyer_user_id: string | null;
   declare total_amount: string;
   declare currency: string;
+  /** Phase 7 step 3: when the held places of a PENDING_PAYMENT order are released. */
+  declare hold_expires_at: Date | null;
+  /** Phase 7 step 3: SHA-256 of the order token the buyer got at checkout. */
+  declare access_token_hash: string | null;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
   declare created_by: string | null;
@@ -44,6 +53,8 @@ TicketOrder.init(
     buyer_user_id: { type: DataTypes.UUID, allowNull: true },
     total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
     currency: { type: DataTypes.STRING(3), allowNull: false },
+    hold_expires_at: { type: DataTypes.DATE, allowNull: true },
+    access_token_hash: { type: DataTypes.STRING(64), allowNull: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,
     created_by: { type: DataTypes.UUID, allowNull: true },

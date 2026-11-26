@@ -6,6 +6,13 @@ import type { PublicEventRow } from "../repositories/event.repository.js";
 import type { AccountRegistrationRow, PersonRegistrationRow, RegistrationWithDetails } from "../repositories/registration.repository.js";
 
 /**
+ * The code of an issued ticket. The guest list, a guest's profile, My Tickets and the single-ticket replies only ever
+ * read issued tickets (CONFIRMED or CANCELLED: the repositories filter out HELD and RELEASED ones, Phase 7 step 3),
+ * and an issued ticket always has a code (ck_registration_issued_has_code).
+ */
+const issuedCode = (code: string | null): string => code ?? "";
+
+/**
  * A guest-list entry for staff: the ticket, the holder's contact summary and the ticket type. Since Phase 7 `person`
  * is null for an unnamed QUICK ticket, and every entry names its order (reference and buyer mobile) and its price.
  */
@@ -36,7 +43,7 @@ export function toRegistrationDto(row: RegistrationWithDetails, confirmation: Co
   return {
     id: row.id,
     event_id: row.event_id,
-    code: row.code,
+    code: issuedCode(row.code),
     status: row.status,
     source: row.source,
     registered_by: row.registered_by,
@@ -83,7 +90,7 @@ export function toPersonDetailDto(person: PersonRow, registrations: PersonRegist
     ...person,
     registrations: registrations.map((row) => ({
       id: row.id,
-      code: row.code,
+      code: issuedCode(row.code),
       status: row.status,
       registered_at: row.registered_at,
       cancelled_at: row.cancelled_at,
@@ -145,7 +152,7 @@ export type PublicRegistrationDto = {
 
 export function toPublicRegistrationDto(row: RegistrationWithDetails, event: PublicEventRow): PublicRegistrationDto {
   return {
-    code: row.code,
+    code: issuedCode(row.code),
     status: row.status,
     registered_at: row.registered_at,
     ticket_type: { code: row.ticketType.code, name: row.ticketType.name },
@@ -172,7 +179,7 @@ export type MyTicketDto = {
 
 export function toMyTicketDto(row: AccountRegistrationRow): MyTicketDto {
   return {
-    code: row.code,
+    code: issuedCode(row.code),
     status: row.status,
     registered_at: row.registered_at,
     cancelled_at: row.cancelled_at,

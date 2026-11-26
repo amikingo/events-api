@@ -73,6 +73,15 @@ const EnvSchema = z.object({
   SMS_DAILY_LIMIT: z.coerce.number().int().min(1).max(1_000_000).default(2000),
   OUTBOX_WORKER_ENABLED: z.stringbool().default(true),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(1000).max(600_000).default(10_000),
+
+  // Paid checkout through Cheche Pay (Phase 7 step 3), the legacy payments API bookings_api uses (no API key). Which
+  // merchant receives the money is each organizer's service code, set by the Super Admin. Held places are released
+  // after PAYMENT_HOLD_MINUTES.
+  CHECHE_PAY_BASE_URL: z.url().default("https://pay.cheche.et/api/v1/payments"),
+  CHECHE_PAY_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(45_000),
+  PAYMENT_HOLD_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
+  PAYMENT_WORKER_ENABLED: z.stringbool().default(true),
+  PAYMENT_POLL_INTERVAL_MS: z.coerce.number().int().min(5000).max(600_000).default(60_000),
 }).superRefine((value, ctx) => {
   if (value.SMS_DELIVERY !== "afromessage") return;
   for (const key of ["PLATFORM_SMS_AFROMESSAGE_TOKEN", "PLATFORM_SMS_AFROMESSAGE_FROM_ID", "PLATFORM_SMS_SENDER"] as const) {

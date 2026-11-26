@@ -281,6 +281,34 @@ export class PurchaseLimitReachedError extends AppError {
   }
 }
 
+/** Phase 7 step 3: this organizer can't sell paid tickets yet (no payment provider, or no enabled, verified account). */
+export class PaidSalesUnavailableError extends AppError {
+  constructor(message = "Paid tickets aren't available for this event yet", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "paid_sales_unavailable", details, cause: options?.cause });
+  }
+}
+
+/** Phase 7 step 3: the ticket is held or released for an unpaid order, so it has no code and can't be changed. */
+export class TicketNotIssuedError extends AppError {
+  constructor(message = "This ticket hasn't been issued: its order isn't paid", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "ticket_not_issued", details, cause: options?.cause });
+  }
+}
+
+/** Phase 7 step 3: the order is no longer waiting for payment (`details.status`). */
+export class InvalidOrderStateError extends AppError {
+  constructor(message = "This order isn't waiting for payment", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "invalid_order_state", details, cause: options?.cause });
+  }
+}
+
+/** Phase 7 step 3: Cheche Pay couldn't be reached or refused; the order stays as it was and may be retried. */
+export class PaymentProviderUnavailableError extends AppError {
+  constructor(message = "The payment provider is not available right now. Try again in a moment", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 502, code: "payment_provider_unavailable", details, cause: options?.cause });
+  }
+}
+
 /** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
 export class CapacityReachedError extends AppError {
   constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {

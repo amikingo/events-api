@@ -9,6 +9,7 @@ import {
   PersonInactiveError,
   RegistrationCancelledError,
   RegistrationClosedError,
+  TicketNotIssuedError,
   TicketTypeInactiveError,
   TicketTypeRequiredError,
 } from "../errors/app-errors.js";
@@ -220,7 +221,7 @@ async function queueConfirmation(event: EventRow, person: PersonRow, registratio
         event_name: event.name,
         starts_at: event.starts_at === null ? null : event.starts_at.toISOString(),
         timezone: event.timezone,
-        code: registration.code,
+        code: registration.code as string, // a single-ticket registration is always issued with its code
       },
     },
     { transaction },
@@ -239,10 +240,15 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
 
   const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
   ticketing.assertTakingRegistrations(event, now);
+  await ticketing.releaseExpiredHolds(event, now, transaction);
   const ticketType = await lockTicketType(input, transaction);
   const person = await resolvePerson(input, transaction);
 
   const existing = await registrationRepository.findByEventAndPerson(organizationId, eventId, person.id, { transaction, lock: true });
+  // Phase 7 step 3: a place held (or released) for an unpaid order is never turned into a free ticket here.
+  if (existing && (existing.status === "HELD" || existing.status === "RELEASED")) {
+    throw new TicketNotIssuedError("This guest has a ticket in an order that isn't paid", { registration_id: existing.id, status: existing.status });
+  }
   if (existing?.status === "CONFIRMED") {
     if (existing.ticket_type_id === ticketType.id) return { registration: existing, outcome: "UNCHANGED" };
     throw new AlreadyRegisteredError("This guest is already registered for the event with another ticket type", {
@@ -428,6 +434,7 @@ async function registerGuest(
  */
 async function reactivateUnnamedTicket(event: EventRow, registration: RegistrationRow, actorId: string | null, transaction: Transaction): Promise<void> {
   ticketing.assertTakingRegistrations(event, new Date());
+  await ticketing.releaseExpiredHolds(event, new Date(), transaction);
   const ticketType = await lockTicketType(
     { organizationId: event.organization_id, eventId: event.id, ticketTypeId: registration.ticket_type_id, source: "STAFF" },
     transaction,
@@ -463,6 +470,9 @@ async function changeRegistrationStatus(
       await registrationRepository.findByEventAndId(organizationId, eventId, registrationId, { transaction, lock: true }),
       "Registration not found",
     );
+    if (registration.status === "HELD" || registration.status === "RELEASED") {
+      throw new TicketNotIssuedError(undefined, { registration_id: registration.id, status: registration.status });
+    }
     if (registration.status === target) return toDto(organizationId, eventId, registrationId, transaction);
 
     if (target === "CONFIRMED" && registration.person_id === null) {
@@ -530,6 +540,9 @@ async function changeRegistrationTicketType(
       await registrationRepository.findByEventAndId(organizationId, eventId, registrationId, { transaction, lock: true }),
       "Registration not found",
     );
+    if (registration.status === "HELD" || registration.status === "RELEASED") {
+      throw new TicketNotIssuedError(undefined, { registration_id: registration.id, status: registration.status });
+    }
     if (registration.status !== "CONFIRMED") throw new RegistrationCancelledError(undefined, { registration_id: registration.id });
     if (registration.ticket_type_id === target.id) {
       return { registration: await toDto(organizationId, eventId, registrationId, transaction), changed: false };

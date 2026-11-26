@@ -1,4 +1,4 @@
-import type { CreationAttributes } from "sequelize";
+import { Op, type CreationAttributes } from "sequelize";
 import { TicketOrder } from "../models/index.js";
 import type { TicketOrderRow } from "../models/ticket-order.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
@@ -16,6 +16,8 @@ const attributes = [
   "buyer_user_id",
   "total_amount",
   "currency",
+  "hold_expires_at",
+  "access_token_hash",
   "created_at",
   "updated_at",
   "created_by",
@@ -35,6 +37,12 @@ async function findByEventAndId(organizationId: string, eventId: string, orderId
     ...txOptions(options),
     ...lockOptions(options),
   });
+  return toPlain<TicketOrderRow>(row);
+}
+
+/** Phase 7 step 3: an order by id within its organization (payments know the order, not the event). */
+async function findByOrganizationAndId(organizationId: string, orderId: string, options: RepoOptions = {}): Promise<TicketOrderRow | null> {
+  const row = await TicketOrder.findOne({ where: { organization_id: organizationId, id: orderId }, attributes: [...attributes], ...txOptions(options), ...lockOptions(options) });
   return toPlain<TicketOrderRow>(row);
 }
 
@@ -63,4 +71,51 @@ async function listByEvent(
   return { rows: toPlainList<TicketOrderRow>(rows), count };
 }
 
-export const ticketOrderRepository = { create, findByEventAndId, referenceExists, listByEvent };
+/** Phase 7 step 3: an order by its public reference, in any organization (the buyer's order page). */
+async function findByReference(reference: string, options: RepoOptions = {}): Promise<TicketOrderRow | null> {
+  const row = await TicketOrder.findOne({ where: { reference }, attributes: [...attributes], ...txOptions(options), ...lockOptions(options) });
+  return toPlain<TicketOrderRow>(row);
+}
+
+export type OrderUpdateValues = Partial<Pick<TicketOrderRow, "status" | "hold_expires_at" | "access_token_hash" | "updated_by">>;
+
+async function updateById(organizationId: string, orderId: string, values: OrderUpdateValues, options: WriteOptions = {}): Promise<void> {
+  await TicketOrder.update(values, { where: { organization_id: organizationId, id: orderId }, ...txOptions(options) });
+}
+
+/** Phase 7 step 3: pending orders of one event whose holds have run out (released under the event lock). */
+async function listExpiredPendingByEvent(organizationId: string, eventId: string, now: Date, options: RepoOptions = {}): Promise<TicketOrderRow[]> {
+  const rows = await TicketOrder.findAll({
+    where: { organization_id: organizationId, event_id: eventId, status: "PENDING_PAYMENT", hold_expires_at: { [Op.lte]: now } },
+    attributes: [...attributes],
+    ...txOptions(options),
+  });
+  return toPlainList<TicketOrderRow>(rows);
+}
+
+/** Phase 7 step 3: pending orders past their hold, oldest first, across organizations (the payment worker). */
+async function listExpiredPending(now: Date, limit: number, options: RepoOptions = {}): Promise<TicketOrderRow[]> {
+  const rows = await TicketOrder.findAll({
+    where: { status: "PENDING_PAYMENT", hold_expires_at: { [Op.lte]: now } },
+    attributes: [...attributes],
+    order: [
+      ["hold_expires_at", "ASC"],
+      ["id", "ASC"],
+    ],
+    limit,
+    ...txOptions(options),
+  });
+  return toPlainList<TicketOrderRow>(rows);
+}
+
+export const ticketOrderRepository = {
+  create,
+  findByEventAndId,
+  findByReference,
+  findByOrganizationAndId,
+  referenceExists,
+  listByEvent,
+  updateById,
+  listExpiredPendingByEvent,
+  listExpiredPending,
+};

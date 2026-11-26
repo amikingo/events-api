@@ -10,6 +10,10 @@ import { toPlain, toPlainList } from "../utils/sequelize.js";
 import { lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
 import { likePattern } from "./person-search.js";
 
+/** Phase 7 step 3: an issued ticket (what the guest list, a profile and My Tickets show) and a place-taking one. */
+const ISSUED_STATUSES = ["CONFIRMED", "CANCELLED"] as const satisfies readonly RegistrationStatus[];
+const PLACE_TAKING_STATUSES = ["CONFIRMED", "HELD"] as const satisfies readonly RegistrationStatus[];
+
 /** Explicit projection: never `SELECT *`. */
 const attributes = [
   "id",
@@ -123,9 +127,12 @@ async function codeExists(code: string, options: RepoOptions = {}): Promise<bool
   return (await Registration.count({ where: { code }, ...txOptions(options) })) > 0;
 }
 
-/** Places taken at the event: only CONFIRMED registrations consume capacity. */
+/**
+ * Places taken at the event: CONFIRMED tickets and, since Phase 7 step 3, HELD ones (places held while an order is
+ * paid). Expired holds are released under the event lock before counting (paymentService.releaseExpiredHolds).
+ */
 async function countConfirmedByEvent(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<number> {
-  return Registration.count({ where: { organization_id: organizationId, event_id: eventId, status: "CONFIRMED" }, ...txOptions(options) });
+  return Registration.count({ where: { organization_id: organizationId, event_id: eventId, status: [...PLACE_TAKING_STATUSES] }, ...txOptions(options) });
 }
 
 async function countConfirmedByTicketType(
@@ -135,18 +142,18 @@ async function countConfirmedByTicketType(
   options: RepoOptions = {},
 ): Promise<number> {
   return Registration.count({
-    where: { organization_id: organizationId, event_id: eventId, ticket_type_id: ticketTypeId, status: "CONFIRMED" },
+    where: { organization_id: organizationId, event_id: eventId, ticket_type_id: ticketTypeId, status: [...PLACE_TAKING_STATUSES] },
     ...txOptions(options),
   });
 }
 
 /**
  * Phase 7: confirmed tickets held at the event by one buyer mobile (E.164), across every order: what the purchase
- * limit counts. Cancelled tickets don't count, so cancelling gives the allowance back.
+ * limit counts. Cancelled tickets don't count, so cancelling gives the allowance back. Held ones do (step 3).
  */
 async function countConfirmedByBuyerMobile(organizationId: string, eventId: string, buyerMobile: string, options: RepoOptions = {}): Promise<number> {
   return Registration.count({
-    where: { organization_id: organizationId, event_id: eventId, status: "CONFIRMED" },
+    where: { organization_id: organizationId, event_id: eventId, status: [...PLACE_TAKING_STATUSES] },
     include: [{ model: TicketOrder, as: "order", required: true, attributes: [], where: { buyer_mobile: buyerMobile } }],
     ...txOptions(options),
   });
@@ -196,7 +203,8 @@ function guestListQuery(organizationId: string, eventId: string, filters: Regist
     where: {
       organization_id: organizationId,
       event_id: eventId,
-      ...(filters.status ? { status: filters.status } : {}),
+      // Only issued tickets: held and released places of unpaid orders aren't guests (Phase 7 step 3).
+      status: filters.status ?? [...ISSUED_STATUSES],
       ...(filters.ticketTypeId ? { ticket_type_id: filters.ticketTypeId } : {}),
       ...(filters.q ? guestSearchWhere(filters.q, filters.phoneVariant ?? null) : {}),
     },
@@ -239,7 +247,7 @@ async function listAllByEvent(
 /** A person's registrations in their organization, most recent event first. */
 async function listByPerson(organizationId: string, personId: string, options: RepoOptions = {}): Promise<PersonRegistrationRow[]> {
   const rows = await Registration.findAll({
-    where: { organization_id: organizationId, person_id: personId },
+    where: { organization_id: organizationId, person_id: personId, status: [...ISSUED_STATUSES] },
     attributes: [...attributes],
     include: [
       { model: AppEvent, as: "event", required: true, attributes: [...EVENT_SUMMARY] },
@@ -267,7 +275,7 @@ export type AccountRegistrationRow = RegistrationRow & {
  */
 async function listByAccount(userId: string, options: RepoOptions = {}): Promise<AccountRegistrationRow[]> {
   const rows = await Registration.findAll({
-    where: { [Op.or]: [{ "$person.user_id$": userId }, { "$order.buyer_user_id$": userId }] },
+    where: { status: [...ISSUED_STATUSES], [Op.or]: [{ "$person.user_id$": userId }, { "$order.buyer_user_id$": userId }] },
     attributes: [...attributes],
     include: [
       { model: Person, as: "person", required: false, attributes: [] },
@@ -305,6 +313,23 @@ async function listByOrder(organizationId: string, eventId: string, orderId: str
   return toPlainList<RegistrationWithDetails>(rows);
 }
 
+/** Phase 7 step 3: a held ticket of a paid order becomes a CONFIRMED ticket with its code. */
+async function issueHeld(organizationId: string, eventId: string, registrationId: string, code: string, options: WriteOptions = {}): Promise<void> {
+  await Registration.update(
+    { status: "CONFIRMED", code, registered_at: new Date() },
+    { where: { organization_id: organizationId, event_id: eventId, id: registrationId, status: ["HELD", "RELEASED"] }, ...txOptions(options) },
+  );
+}
+
+/** Phase 7 step 3: every held ticket of an order gives its place back (the order ended unpaid). */
+async function releaseHeldByOrder(organizationId: string, eventId: string, orderId: string, options: WriteOptions = {}): Promise<number> {
+  const [count] = await Registration.update(
+    { status: "RELEASED" },
+    { where: { organization_id: organizationId, event_id: eventId, order_id: orderId, status: "HELD" }, ...txOptions(options) },
+  );
+  return count;
+}
+
 /** Event-scoped update + read-back inside the same transaction. */
 async function updateByEventAndId(
   organizationId: string,
@@ -332,5 +357,7 @@ export const registrationRepository = {
   listByPerson,
   listByAccount,
   listByOrder,
+  issueHeld,
+  releaseHeldByOrder,
   updateByEventAndId,
 };

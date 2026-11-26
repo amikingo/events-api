@@ -7,6 +7,7 @@ import { publicReadLimiter, publicRegistrationLimiter } from "../../middleware/r
 import { validate } from "../../middleware/validate.js";
 import { getPublicEventRequest, listPublicEventsRequest } from "../../validators/public-event.js";
 import { createPublicOrderRequest } from "../../validators/order.js";
+import { getPublicOrderRequest, listPublicPaymentOptionsRequest, startPublicPaymentRequest } from "../../validators/payment.js";
 import { createPublicRegistrationRequest } from "../../validators/public-registration.js";
 
 /**
@@ -41,4 +42,16 @@ publicEventsRouter.post(
   optionalCustomerAuthentication,
   validate(createPublicOrderRequest),
   orderController.createPublicOrder,
+);
+
+// Phase 7 step 3: the buyer's order page, with the order token from checkout in the X-Order-Token header.
+publicEventsRouter.get("/orders/:reference", publicReadLimiter, validate(getPublicOrderRequest), orderController.getPublicOrder);
+publicEventsRouter.post("/orders/:reference/payment", publicRegistrationLimiter, validate(startPublicPaymentRequest), orderController.startPublicPayment);
+
+// Phase 7 step 3: the organizer's Cheche Pay payment options, for the checkout form ([] when paid sales are off).
+publicEventsRouter.get(
+  "/organizations/:organizationSlug/events/:eventSlug/payment-options",
+  publicReadLimiter,
+  validate(listPublicPaymentOptionsRequest),
+  orderController.listPublicPaymentOptions,
 );

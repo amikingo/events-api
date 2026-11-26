@@ -9,6 +9,7 @@ import type { ModuleRow } from "../../src/models/module.js";
 import type { OrganizationRow } from "../../src/models/organization.js";
 import type { PersonRow } from "../../src/models/person.js";
 import type { RegistrationRow } from "../../src/models/registration.js";
+import type { OrderPaymentRow } from "../../src/models/order-payment.js";
 import type { TicketOrderRow } from "../../src/models/ticket-order.js";
 import type { RoleRow } from "../../src/models/role.js";
 import type { StoredFileRow } from "../../src/models/stored-file.js";
@@ -53,6 +54,7 @@ export function organizationRow(overrides: Partial<OrganizationRow> = {}): Organ
     timezone: "Africa/Addis_Ababa",
     default_currency: "ETB",
     is_active: true,
+    cheche_pay_service: null,
     ...audit,
     ...overrides,
   };
@@ -212,6 +214,8 @@ export function orderRow(overrides: Partial<TicketOrderRow> = {}): TicketOrderRo
     buyer_user_id: null,
     total_amount: "0.00",
     currency: "ETB",
+    hold_expires_at: null,
+    access_token_hash: null,
     ...audit,
     ...overrides,
   };
@@ -306,4 +310,29 @@ export function centralAccessToken(): string {
     issuer: authConfig.centralIssuer,
     subject: IDS.user,
   });
+}
+
+/** Phase 7 step 3: the Cheche Pay payment of a 2,000 ETB order, started with a Telebirr option. */
+export function orderPaymentRow(overrides: Partial<OrderPaymentRow> = {}): OrderPaymentRow {
+  return {
+    id: "c0000000-0000-4000-8000-000000000001",
+    organization_id: IDS.orgA,
+    order_id: IDS.registration,
+    payment_option_id: "opt-telebirr",
+    cheche_pay_service: "SELAM",
+    amount: "2000.00",
+    currency: "ETB",
+    status: "INITIATED",
+    checkout_url: "https://pay.cheche.example/checkout/1",
+    vendor_ref: null,
+    provider_order_id: null,
+    notify_time: null,
+    request_object: null,
+    response_object: null,
+    last_notification: null,
+    last_error: null,
+    created_at: new Date("2026-11-26T08:00:00Z"),
+    updated_at: new Date("2026-11-26T08:00:00Z"),
+    ...overrides,
+  };
 }

@@ -12,6 +12,7 @@ import { organizationsRouter } from "./organizations.js";
 import { personsRouter } from "./persons.js";
 import { platformRouter } from "./platform.js";
 import { ordersRouter } from "./orders.js";
+import { chechePayServiceRouter, paymentsRouter } from "./payments.js";
 import { publicEventsRouter } from "./public-events.js";
 import { registrationsRouter } from "./registrations.js";
 import { organizationRoleTemplatesRouter, roleTemplatesRouter } from "./role-templates.js";
@@ -32,6 +33,7 @@ router.use("/organizations/:organizationId/events", eventsRouter);
 router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticketTypesRouter);
 router.use("/organizations/:organizationId/events/:eventId/registrations", registrationsRouter);
 router.use("/organizations/:organizationId/events/:eventId/orders", ordersRouter);
+router.use("/organizations/:organizationId/cheche-pay-service", chechePayServiceRouter); // platform scope: where the money goes
 router.use("/organizations/:organizationId/persons", personsRouter);
 router.use("/organizations/:organizationId/roles", rolesRouter);
 router.use("/organizations/:organizationId/role-templates", organizationRoleTemplatesRouter);
@@ -42,6 +44,7 @@ router.use("/platform", platformRouter); // platform scope: platform roles and p
 router.use("/organizations/:organizationId", staffAssignmentsRouter); // /staff-assignments, /staff-lookup
 router.use("/public", publicEventsRouter); // no login: catalog and event pages
 router.use("/customer", customerRouter); // a signed-in guest's own data (My Tickets)
+router.use("/payments", paymentsRouter); // no login: Cheche Pay's callback
 
 if (env.API_DOCS_ENABLED) {
   router.use(docsRouter); // GET /v1/openapi.json, /v1/docs

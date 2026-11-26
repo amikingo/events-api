@@ -65,7 +65,8 @@ export function dateCells(instant: Date | null, timeZone: string): [string, stri
   return [safeCell(`${ethiopianDateText(local)} at ${ethiopianClockText(local.hour, local.minute)}`), safeCell(gregorianText(local))];
 }
 
-const STATUS_TEXT: Record<RegistrationDto["status"], string> = { CONFIRMED: "Confirmed", CANCELLED: "Cancelled" };
+// HELD and RELEASED tickets (unpaid orders) never reach the guest list; named here for completeness.
+const STATUS_TEXT: Record<RegistrationDto["status"], string> = { CONFIRMED: "Confirmed", CANCELLED: "Cancelled", HELD: "Held for payment", RELEASED: "Released" };
 const SOURCE_TEXT: Record<RegistrationDto["source"], string> = { PUBLIC: "Online", STAFF: "Added by staff" };
 const SMS_TEXT: Record<NonNullable<RegistrationDto["confirmation"]>["status"], string> = {
   PENDING: "Waiting to send",

@@ -1,21 +1,16 @@
 import type { Transaction } from "sequelize";
-import {
-  CapacityReachedError,
-  IdempotencyKeyReusedError,
-  NotFoundError,
-  PaymentRequiredError,
-  TicketTypeInactiveError,
-  ValidationAppError,
-} from "../errors/app-errors.js";
+import { paymentConfig } from "../config/payment.js";
+import { ConflictError, IdempotencyKeyReusedError, NotFoundError, PaidSalesUnavailableError, TicketTypeInactiveError, ValidationAppError } from "../errors/app-errors.js";
 import { toOrderDto, toOrderSummaryDto, type OrderDto, type OrderSummaryDto } from "../mappers/order.mapper.js";
 import type { EventRow } from "../models/event.js";
-import type { OrderConfirmationPayload } from "../models/message-outbox.js";
+import type { OrderPaymentRow } from "../models/order-payment.js";
 import type { RegistrationRow } from "../models/registration.js";
 import type { SubmissionScope } from "../models/submission-key.js";
 import type { OrderSource, TicketOrderRow } from "../models/ticket-order.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { messageOutboxRepository } from "../repositories/message-outbox.repository.js";
+import { orderPaymentRepository } from "../repositories/order-payment.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { personRepository } from "../repositories/person.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
@@ -28,21 +23,26 @@ import { buildPagination } from "../utils/pagination.js";
 import { requestHash } from "../utils/request-hash.js";
 import type { OrderListQuery, StaffOrderInput } from "../validators/order.js";
 import { ensureFound, runTransaction } from "./helpers.js";
+import { paymentService } from "./payment.service.js";
 import { MAX_TICKETS_PER_ORDER, ticketing } from "./ticketing.js";
 
 /**
- * Checkout (Phase 7 step 2): one buyer, one event, one or more ticket types with whole quantities, in one order.
+ * Checkout (Phase 7): one buyer, one event, one or more ticket types with whole quantities, in one order.
  * All or nothing, under the same lock order as every other place change: the event, then the chosen ticket types
- * in id order. Every check runs before anything is written:
+ * in id order. Expired holds of the event are released first. Every check runs before anything is written:
  * 1. the event takes registrations; 2. each ticket type exists, is active and open to the caller (STAFF_ONLY for
  * staff only); 3. at most 20 tickets; 4. a DETAILED event's holder details (one holder per ticket, its required and
- * hidden fields); 5. prices from the server (a positive total is 409 payment_required until paid checkout, step 3);
- * 6. the event's and each type's capacity for the whole order; 7. the buyer mobile's purchase limit.
- * Then the order, one ticket per unit (its own code and its price at checkout; a holder profile when DETAILED, none
- * when QUICK), and one SMS to the buyer with every code (split every 10 codes), all in the caller's transaction.
+ * hidden fields); 5. prices from the server; a paid order needs the organizer's Cheche Pay service code, one of its
+ * payment options (checked by the caller before the transaction), ETB prices and a buyer mobile; 6. the event's and
+ * each type's capacity
+ * for the whole order (held places count); 7. the buyer mobile's purchase limit (held tickets count).
+ * Then the order and one ticket per unit (a holder profile when DETAILED, none when QUICK):
+ * - free: CONFIRMED tickets with codes, and one SMS to the buyer with every code;
+ * - paid (step 3): PENDING_PAYMENT with every place HELD (no codes) until hold_expires_at, and an INITIATED Cheche
+ *   Pay payment (its id is the transaction_id Cheche Pay echoes) for exactly this amount, the chosen option and the
+ *   organizer's service code. Cheche Pay is called only after the transaction commits
+ *   (paymentService.startPaymentIfPending); codes come with its "Completed" callback (paymentService).
  */
-const CODES_PER_SMS = 10;
-
 export type CheckoutItem = {
   /** Staff choose by id; the public form by code. */
   ticketTypeId?: string | undefined;
@@ -60,11 +60,15 @@ export type CheckoutInput = {
   /** The delivery mobile (E.164) and, when signed in, the buyer's verified Cheche account. */
   buyer: { mobile: string | null; userId: string | null };
   items: CheckoutItem[];
+  /** SHA-256 of the order token returned to the caller (the buyer's key to the order without an account). */
+  accessTokenHash: string | null;
+  /** A paid order's Cheche Pay option, already checked against the organizer's service code (paymentService.resolvePaymentOption). */
+  payment?: { optionId: string; serviceCode: string } | null | undefined;
   /** Privacy-notice evidence from the public form; staff checkout has none. */
   evidence?: { privacyNoticeVersion: string; shownAt: Date } | undefined;
 };
 
-export type CheckoutResult = { order: TicketOrderRow; tickets: RegistrationRow[] };
+export type CheckoutResult = { order: TicketOrderRow; tickets: RegistrationRow[]; payment: OrderPaymentRow | null };
 export type CheckoutRequest = { scope: Extract<SubmissionScope, "PUBLIC_CHECKOUT" | "STAFF_CHECKOUT">; key: string; requestHash: string };
 export type CheckoutOutcome = "CREATED" | "REPLAYED";
 
@@ -120,28 +124,6 @@ function assertHolders(event: EventRow, resolved: ResolvedItem[]): void {
   if (issues.length > 0) throw new ValidationAppError("Request validation failed", { issues });
 }
 
-/** The event's capacity and each ticket type's own limit, for the whole order at once. */
-async function assertRoomFor(event: EventRow, resolved: ResolvedItem[], total: number, transaction: Transaction): Promise<void> {
-  if (event.capacity !== null) {
-    const taken = await registrationRepository.countConfirmedByEvent(event.organization_id, event.id, { transaction });
-    if (taken + total > event.capacity) {
-      throw new CapacityReachedError("Not enough places are left at this event", { scope: "EVENT", capacity: event.capacity, remaining: Math.max(0, event.capacity - taken) });
-    }
-  }
-  for (const { ticketType, item } of resolved) {
-    if (ticketType.capacity === null) continue;
-    const taken = await registrationRepository.countConfirmedByTicketType(event.organization_id, event.id, ticketType.id, { transaction });
-    if (taken + item.quantity > ticketType.capacity) {
-      throw new CapacityReachedError("Not enough places are left for this ticket type", {
-        scope: "TICKET_TYPE",
-        ticket_type_code: ticketType.code,
-        capacity: ticketType.capacity,
-        remaining: Math.max(0, ticketType.capacity - taken),
-      });
-    }
-  }
-}
-
 /** The total from the server's prices; one currency per order. */
 function priceOrder(resolved: ResolvedItem[]): { total: string; currency: string } {
   const currencies = new Set(resolved.map(({ ticketType }) => ticketType.currency));
@@ -154,28 +136,29 @@ function priceOrder(resolved: ResolvedItem[]): { total: string; currency: string
   return { total, currency: (resolved[0] as ResolvedItem).ticketType.currency };
 }
 
-/** One SMS to the buyer with every code (several when there are more than 10), only for an Ethiopian mobile. */
-async function queueOrderConfirmation(event: EventRow, order: TicketOrderRow, tickets: RegistrationRow[], transaction: Transaction): Promise<void> {
-  if (order.buyer_mobile === null) return;
-  const organization = ensureFound(await organizationRepository.findById(event.organization_id, { transaction }), "Organization not found");
-  const codes = tickets.map((ticket) => ticket.code);
-  const parts = Math.ceil(codes.length / CODES_PER_SMS);
-  for (let part = 0; part < parts; part += 1) {
-    const payload: OrderConfirmationPayload = {
-      organization_name: organization.name,
-      event_name: event.name,
-      starts_at: event.starts_at === null ? null : event.starts_at.toISOString(),
-      timezone: event.timezone,
-      ticket_count: codes.length,
-      codes: codes.slice(part * CODES_PER_SMS, (part + 1) * CODES_PER_SMS),
-      part: part + 1,
-      parts,
-    };
-    await messageOutboxRepository.create(
-      { organization_id: event.organization_id, registration_id: null, order_id: order.id, kind: "ORDER_CONFIRMATION", channel: "SMS", recipient: order.buyer_mobile, payload },
-      { transaction },
-    );
+/**
+ * Paid sales for this order: the organizer's Cheche Pay service code (trusted server configuration: the buyer never
+ * chooses where the money goes), the option the caller checked against it, ETB prices (Cheche Pay works in ETB) and
+ * a buyer mobile (Cheche Pay needs the phone).
+ */
+async function paidSales(input: CheckoutInput, currency: string, transaction: Transaction): Promise<{ optionId: string; serviceCode: string }> {
+  const organization = ensureFound(await organizationRepository.findById(input.organizationId, { transaction }), "Organization not found");
+  if (organization.cheche_pay_service === null) throw new PaidSalesUnavailableError(undefined, { reason: "NO_CHECHE_PAY_SERVICE" });
+  if (currency !== "ETB") throw new PaidSalesUnavailableError("Online payment is in ETB only", { reason: "CURRENCY", currency });
+  if (!input.payment) {
+    throw new ValidationAppError("Request validation failed", {
+      issues: [{ path: "body.payment_option_id", message: "Choose how to pay: one of this organizer's payment options", code: "required" }],
+    });
   }
+  if (input.payment.serviceCode !== organization.cheche_pay_service) {
+    throw new ConflictError("The organizer's payment settings changed while you were ordering. Try again", { field: "payment_option_id" });
+  }
+  if (input.buyer.mobile === null) {
+    throw new ValidationAppError("Request validation failed", {
+      issues: [{ path: "body.buyer_mobile", message: "A paid order needs the buyer's mobile number", code: "required" }],
+    });
+  }
+  return input.payment;
 }
 
 /** The checkout core. See the module comment for the order of checks; nothing is written before all of them pass. */
@@ -186,6 +169,7 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
 
   const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
   ticketing.assertTakingRegistrations(event, now);
+  await ticketing.releaseExpiredHolds(event, now, transaction);
   const resolved = await lockTicketTypes(input, transaction);
   const count = resolved.reduce((sum, { item }) => sum + item.quantity, 0);
   if (count > MAX_TICKETS_PER_ORDER) {
@@ -195,21 +179,24 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
   }
   assertHolders(event, resolved);
   const { total, currency } = priceOrder(resolved);
-  if (!isZeroAmount(total)) throw new PaymentRequiredError("This order has a price: paid checkout isn't available yet", { total_amount: total, currency });
-  await assertRoomFor(event, resolved, count, transaction);
+  const account = isZeroAmount(total) ? null : await paidSales(input, currency, transaction);
+  await ticketing.assertRoom(event, resolved.map(({ ticketType, item }) => ({ ticketType, quantity: item.quantity })), transaction);
   await ticketing.assertBuyerAllowance(event, input.buyer.mobile, count, transaction);
 
+  const paid = account !== null;
   const order = await ticketOrderRepository.create(
     {
       organization_id: organizationId,
       event_id: eventId,
       reference: await ticketing.newOrderReference(transaction),
       source,
-      status: "CONFIRMED",
+      status: paid ? "PENDING_PAYMENT" : "CONFIRMED",
       buyer_mobile: input.buyer.mobile,
       buyer_user_id: input.buyer.userId,
       total_amount: total,
       currency,
+      hold_expires_at: paid ? new Date(now.getTime() + paymentConfig.holdMinutes * 60_000) : null,
+      access_token_hash: input.accessTokenHash,
       created_by: actorId,
       updated_by: actorId,
     },
@@ -250,12 +237,13 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
             ticket_type_id: ticketType.id,
             price_amount: ticketType.price,
             currency: ticketType.currency,
-            status: "CONFIRMED",
+            // A paid order's places are held without codes until the payment is verified.
+            status: paid ? "HELD" : "CONFIRMED",
             source,
             registered_by: registeredBy,
             registered_at: now,
             cancelled_at: null,
-            code: await ticketing.newCode(transaction),
+            code: paid ? null : await ticketing.newCode(transaction),
             privacy_notice_version: input.evidence?.privacyNoticeVersion ?? null,
             privacy_notice_shown_at: input.evidence?.shownAt ?? null,
             consent_purpose: null,
@@ -270,14 +258,38 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
     }
   }
 
-  await queueOrderConfirmation(event, order, tickets, transaction);
-  return { order, tickets };
+  if (!account) {
+    await ticketing.queueOrderConfirmation(event, order, tickets.map((ticket) => ticket.code as string), transaction);
+    return { order, tickets, payment: null };
+  }
+  const payment = await orderPaymentRepository.create(
+    {
+      organization_id: organizationId,
+      order_id: order.id,
+      payment_option_id: account.optionId,
+      cheche_pay_service: account.serviceCode,
+      amount: total,
+      currency,
+      status: "INITIATED",
+      checkout_url: null,
+      vendor_ref: null,
+      provider_order_id: null,
+      notify_time: null,
+      request_object: null,
+      response_object: null,
+      last_notification: null,
+      last_error: null,
+    },
+    { transaction },
+  );
+  return { order, tickets, payment };
 }
 
 /**
  * Checkout behind a retry key (the registerOnce pattern). The event is locked first, so retries of one submission
- * are decided one after the other. The same key with the same request returns the original order and codes (no new
- * ticket, place or SMS); the same key with another request is refused. Only a successful order stores its key.
+ * are decided one after the other. The same key with the same request returns the original order (no new ticket,
+ * place, payment or SMS) with a fresh order token (only a hash is stored, so the first can't be shown again); the
+ * same key with another request is refused. Only a successful order stores its key.
  */
 async function checkoutOnce(input: CheckoutInput, submission: CheckoutRequest, transaction: Transaction): Promise<{ order: TicketOrderRow; outcome: CheckoutOutcome }> {
   const { organizationId, eventId } = input;
@@ -287,6 +299,7 @@ async function checkoutOnce(input: CheckoutInput, submission: CheckoutRequest, t
   if (earlier) {
     if (earlier.request_hash !== submission.requestHash || earlier.order_id === null) throw new IdempotencyKeyReusedError();
     const order = ensureFound(await ticketOrderRepository.findByEventAndId(organizationId, eventId, earlier.order_id, { transaction }), "Order not found");
+    if (input.accessTokenHash !== null) await ticketOrderRepository.updateById(organizationId, order.id, { access_token_hash: input.accessTokenHash }, { transaction });
     return { order, outcome: "REPLAYED" };
   }
 
@@ -298,16 +311,21 @@ async function checkoutOnce(input: CheckoutInput, submission: CheckoutRequest, t
   return { order, outcome: "CREATED" };
 }
 
-/** The order with its tickets and its confirmation SMS, for staff. */
-async function orderDto(organizationId: string, eventId: string, orderId: string, transaction?: Transaction): Promise<OrderDto> {
+/** The order with its tickets, payment and confirmation SMS, for staff. `orderToken` only on create or replay. */
+async function orderDto(organizationId: string, eventId: string, orderId: string, transaction?: Transaction, orderToken: string | null = null): Promise<OrderDto> {
   const options = { transaction: transaction ?? null };
   const order = ensureFound(await ticketOrderRepository.findByEventAndId(organizationId, eventId, orderId, options), "Order not found");
   const tickets = await registrationRepository.listByOrder(organizationId, eventId, orderId, options);
+  const payment = await orderPaymentRepository.findByOrder(organizationId, orderId, options);
   const confirmation = (await messageOutboxRepository.latestByOrders(organizationId, [orderId], options)).get(orderId) ?? null;
-  return toOrderDto(order, tickets, confirmation);
+  return toOrderDto(order, tickets, confirmation, payment, orderToken);
 }
 
-/** Staff checkout: any active ticket type, STAFF_ONLY included; the buyer mobile is optional (no SMS without one). */
+/**
+ * Staff checkout: any active ticket type, STAFF_ONLY included; the buyer mobile is optional for a free order (no SMS
+ * without one) and required for a paid one. A paid order's payment is started after the transaction commits; staff
+ * share the checkout link (and the order token) with the buyer.
+ */
 async function createStaffOrder(
   organizationId: string,
   eventId: string,
@@ -315,7 +333,10 @@ async function createStaffOrder(
   actorId: string | null,
   idempotencyKey?: string,
 ): Promise<{ order: OrderDto; outcome: CheckoutOutcome }> {
-  return runTransaction(async (transaction) => {
+  const { token, hash } = ticketing.newOrderToken();
+  // Checked with Cheche Pay before the transaction: no network call under a lock.
+  const payment = body.payment_option_id === undefined ? null : await paymentService.resolvePaymentOption(organizationId, body.payment_option_id);
+  const { orderId, outcome } = await runTransaction(async (transaction) => {
     const input: CheckoutInput = {
       organizationId,
       eventId,
@@ -323,13 +344,17 @@ async function createStaffOrder(
       actorId,
       buyer: { mobile: body.buyer_mobile ?? null, userId: null },
       items: body.items.map((item) => ({ ticketTypeId: item.ticket_type_id, quantity: item.quantity, holders: item.holders })),
+      accessTokenHash: hash,
+      payment,
     };
-    const { order, outcome } =
+    const result =
       idempotencyKey === undefined
         ? { ...(await checkoutInTransaction(input, transaction)), outcome: "CREATED" as const }
         : await checkoutOnce(input, { scope: "STAFF_CHECKOUT", key: idempotencyKey, requestHash: requestHash({ event_id: eventId, body }) }, transaction);
-    return { order: await orderDto(organizationId, eventId, order.id, transaction), outcome };
+    return { orderId: result.order.id, outcome: result.outcome };
   });
+  await paymentService.startPaymentIfPending(organizationId, orderId);
+  return { order: await orderDto(organizationId, eventId, orderId, undefined, token), outcome };
 }
 
 async function listOrders(organizationId: string, eventId: string, query: OrderListQuery): Promise<{ rows: OrderSummaryDto[]; count: number }> {

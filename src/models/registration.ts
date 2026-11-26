@@ -10,7 +10,8 @@ import { sequelize } from "../db.js";
 import type { Person } from "./person.js";
 import type { TicketType } from "./ticket-type.js";
 
-export const REGISTRATION_STATUSES = ["CONFIRMED", "CANCELLED"] as const;
+/** Phase 7 step 3: HELD (a place held while its order is paid; no code yet) and RELEASED (the hold ended unpaid). */
+export const REGISTRATION_STATUSES = ["CONFIRMED", "CANCELLED", "HELD", "RELEASED"] as const;
 export type RegistrationStatus = (typeof REGISTRATION_STATUSES)[number];
 
 export const REGISTRATION_SOURCES = ["STAFF", "PUBLIC"] as const;
@@ -35,7 +36,8 @@ export class Registration extends Model<InferAttributes<Registration>, InferCrea
   declare registered_by: string | null;
   declare registered_at: Date;
   declare cancelled_at: Date | null;
-  declare code: string;
+  /** Issued with the ticket; null while HELD (Phase 7 step 3) and for a RELEASED hold. */
+  declare code: string | null;
   declare privacy_notice_version: string | null;
   declare privacy_notice_shown_at: Date | null;
   declare consent_purpose: string | null;
@@ -68,7 +70,7 @@ Registration.init(
     registered_by: { type: DataTypes.UUID, allowNull: true },
     registered_at: { type: DataTypes.DATE, allowNull: false },
     cancelled_at: { type: DataTypes.DATE, allowNull: true },
-    code: { type: DataTypes.STRING(8), allowNull: false },
+    code: { type: DataTypes.STRING(8), allowNull: true },
     privacy_notice_version: { type: DataTypes.STRING(40), allowNull: true },
     privacy_notice_shown_at: { type: DataTypes.DATE, allowNull: true },
     consent_purpose: { type: DataTypes.STRING(80), allowNull: true },

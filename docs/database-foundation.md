@@ -207,3 +207,20 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
   one), scopes `PUBLIC_CHECKOUT` and `STAFF_CHECKOUT`.
 - `message_outbox`: `order_id` (composite FK), `registration_id` nullable, `ck_message_outbox_one_subject`, kind
   `ORDER_CONFIRMATION`.
+
+### Phase 7 step 3 (paid checkout)
+- `ticket_order`: statuses `PENDING_PAYMENT`, `EXPIRED`, `REFUND_REQUIRED` added; `hold_expires_at`
+  (`ck_ticket_order_pending_has_expiry`); `access_token_hash` (SHA-256 of the order token,
+  `ck_ticket_order_access_token_hash_format`); `idx_ticket_order_status_hold_expires`.
+- `registration`: statuses `HELD` and `RELEASED`; `code` nullable for those only (`ck_registration_issued_has_code`);
+  `ck_registration_cancelled_at_status` now reads "cancelled_at exactly when CANCELLED".
+- `organization`: `cheche_pay_service` (VARCHAR(80), nullable; the organizer's Cheche Pay service code,
+  `ck_organization_cheche_pay_service_format`: upper-case letters, digits, `-` and `_`). Null means no paid sales.
+- `order_payment` (new, shaped like bookings' payment record): `id` (UUID, sent to Cheche Pay as `transaction_id`),
+  `organization_id`, `order_id` (`uq_order_payment_order_id`, tenant composite `fk_order_payment_organization_order`),
+  `payment_option_id`, `cheche_pay_service` (the code at checkout time), `amount` (`ck_order_payment_amount_positive`),
+  `currency` (`ck_order_payment_currency_format`), `status` (`INITIATED`, `PAID`, `MISMATCH`; `ck_order_payment_status`),
+  `checkout_url`, `vendor_ref` (Cheche Pay's reference, unique once set: `uq_order_payment_vendor_ref`),
+  `provider_order_id` (`idx_order_payment_provider_order_id`), `notify_time`, `request_object`, `response_object`,
+  `last_notification` (JSONB, kept for review), `last_error`. A `PAID` row has `vendor_ref` and `notify_time`
+  (`ck_order_payment_paid_has_vendor_ref`).

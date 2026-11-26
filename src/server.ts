@@ -4,6 +4,7 @@ import { env } from "./config/env.js";
 import { smsConfig } from "./config/sms.js";
 import { sequelize } from "./db.js";
 import { startOutboxWorker } from "./jobs/outbox-worker.js";
+import { startPaymentWorker } from "./jobs/payment-worker.js";
 import { lifecycle } from "./utils/lifecycle.js";
 import { logger } from "./utils/logger.js";
 
@@ -20,6 +21,7 @@ if (env.NODE_ENV === "production" && smsConfig.delivery === "log") {
   logger.warn("SMS_DELIVERY=log in production: confirmation SMS are only logged, never sent");
 }
 const outboxWorker = startOutboxWorker();
+const paymentWorker = startPaymentWorker();
 
 async function shutdown(reason: string, exitCode: number): Promise<void> {
   if (lifecycle.shuttingDown) return;
@@ -38,6 +40,7 @@ async function shutdown(reason: string, exitCode: number): Promise<void> {
     server.closeIdleConnections();
   });
   await outboxWorker.stop();
+  await paymentWorker.stop();
   await sequelize.close();
   process.exit(exitCode);
 }
