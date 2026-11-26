@@ -5,6 +5,7 @@ import { centralAuthClient, type CentralUser } from "../src/clients/central-auth
 import {
   CentralAccountNotFoundError,
   CentralAuthUnavailableError,
+  AssignmentScopeConflictError,
   ConflictError,
   InvalidBranchStateError,
   LastOwnerAssignmentError,
@@ -215,4 +216,56 @@ test("changing the role reports how many permission overrides the person still h
 
   const same = await staffAssignmentService.update(IDS.orgA, "assignment-1", { role_id: VIEWER.id, branch_id: undefined }, IDS.user);
   assert.equal(same.role_changed, false);
+});
+
+// --- Phase 2e step 1: one assignment, filters, and no overlap between org-wide and branch -----------------------
+
+test("one assignment is read with the person's name; the list passes the role and branch filters through", async () => {
+  const fakes = arrange();
+  const list = mock.method(userRoleRepository, "listByOrganization", async (_o: string, _filters: unknown) => ({ rows: [], count: 0 }));
+
+  const one = await staffAssignmentService.get(IDS.orgA, "assignment-1");
+  assert.equal(one.profile?.firstname, "Hana");
+  assert.deepEqual(fakes.staff.mock.calls[0]?.arguments.slice(0, 2), [IDS.orgA, "assignment-1"]);
+
+  await staffAssignmentService.list(IDS.orgA, { page: 1, pageSize: 20, is_active: true, role_id: VIEWER.id, branch_id: IDS.branchA1 });
+  assert.deepEqual(list.mock.calls[0]?.arguments[1], { isActive: true, roleId: VIEWER.id, branchId: IDS.branchA1, limit: 20, offset: 0 });
+});
+
+test("the same role can't be held organization-wide and on a branch at once; several branches are fine", async () => {
+  const onBranch = assignment({ id: "held-branch", user_id: PERSON_ID, role_id: VIEWER.id, branch_id: IDS.branchA1 });
+  const orgWide = assignment({ id: "held-org", user_id: PERSON_ID, role_id: VIEWER.id, branch_id: null });
+
+  arrange({ elsewhere: [onBranch] });
+  await assert.rejects(staffAssignmentService.assign(IDS.orgA, { mobile: PERSON.mobile as string, role_id: VIEWER.id }, IDS.user), AssignmentScopeConflictError);
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  arrange({ elsewhere: [orgWide] });
+  await assert.rejects(
+    staffAssignmentService.assign(IDS.orgA, { mobile: PERSON.mobile as string, role_id: VIEWER.id, branch_id: IDS.branchA2 }, IDS.user),
+    AssignmentScopeConflictError,
+  );
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  const fakes = arrange({ elsewhere: [onBranch] });
+  await staffAssignmentService.assign(IDS.orgA, { mobile: PERSON.mobile as string, role_id: VIEWER.id, branch_id: IDS.branchA2 }, IDS.user);
+  assert.equal(fakes.create.mock.callCount(), 1, "another branch is fine");
+});
+
+test("moving an assignment, or switching it back on, into an overlap is refused", async () => {
+  const onBranch = assignment({ id: "held-branch", user_id: PERSON_ID, role_id: VIEWER.id, branch_id: IDS.branchA1 });
+  const current = assignment({ id: "assignment-1", user_id: PERSON_ID, role_id: VIEWER.id, branch_id: IDS.branchA2 });
+  const fakes = arrange({ current, elsewhere: [onBranch, current] });
+  await assert.rejects(staffAssignmentService.update(IDS.orgA, "assignment-1", { branch_id: null }, IDS.user), AssignmentScopeConflictError);
+  assert.equal(fakes.updateRole.mock.callCount(), 0);
+  assert.equal(fakes.lockUser.mock.callCount(), 1, "the person's assignments are locked while checking");
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  const switchedOff = assignment({ id: "assignment-1", user_id: PERSON_ID, role_id: VIEWER.id, branch_id: null, is_active: false });
+  const reactivate = arrange({ current: switchedOff, elsewhere: [onBranch, switchedOff] });
+  await assert.rejects(staffAssignmentService.changeStatus(IDS.orgA, "assignment-1", true, IDS.user), AssignmentScopeConflictError);
+  assert.equal(reactivate.setActive.mock.callCount(), 0);
 });

@@ -1809,3 +1809,66 @@ test("row 75: the Super Admin renames and reorders a module and /me follows; Own
     await as("SUPER", "PATCH", `/v1/modules/${registrations.id}`, { module_name: "Guests", sno: 3 });
   }
 });
+
+// --- Phase 2e step 1: reads, filters, counts and the overlap rule ---------------------------------------------
+
+const OVERLAP_ID = "cbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+test("row 76: one assignment is read with its name; the staff list filters by role and branch; roles and templates carry counts", { skip }, async () => {
+  stubPhase2cUsers();
+  try {
+    const viewerAssignment = await assignmentIdOf(PEOPLE.SELAM_VIEWER);
+    const one = await as("SELAM_OWNER", "GET", `${staffBase()}/staff-assignments/${viewerAssignment}`);
+    assert.deepEqual([one.status, one.body.data.id, one.body.data.role.code], [200, viewerAssignment, "VIEWER"]);
+    assert.equal((await as("HORN_OWNER", "GET", `${staffBase()}/staff-assignments/${viewerAssignment}`)).status, 403, "another tenant");
+
+    const roles = (await as("SELAM_OWNER", "GET", `${staffBase()}/roles`)).body.data as Array<{ id: string; code: string; grant_count: number; member_count: number }>;
+    const viewerRole = roles.find((role) => role.code === "VIEWER");
+    assert.ok(viewerRole);
+    const members = await as("SELAM_OWNER", "GET", `${staffBase()}/staff-assignments?role_id=${viewerRole.id}&is_active=true`);
+    assert.ok(members.body.data.every((row: { role: { code: string } }) => row.role.code === "VIEWER"));
+    assert.equal(members.body.meta.count, viewerRole.member_count, "the role's member count matches its members");
+    assert.equal(viewerRole.grant_count, 5, "Viewer gives view on five modules");
+
+    const atAddis = await as("SELAM_OWNER", "GET", `${staffBase()}/staff-assignments?branch_id=${fixture.selamAddisBranchId}`);
+    assert.ok(atAddis.body.data.length > 0 && atAddis.body.data.every((row: { branch: { id: string } | null }) => row.branch?.id === fixture.selamAddisBranchId));
+
+    const templates = (await as("SUPER", "GET", "/v1/role-templates")).body.data as Array<{ code: string; grant_count: number }>;
+    assert.equal(templates.find((template) => template.code === "OWNER")?.grant_count, 7);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 77: the same role can't be held organization-wide and on a branch at once; several branches are fine", { skip }, async () => {
+  mock.method(centralAuthClient, "findUserByMobile", async (mobile: string) =>
+    mobile === "+251933000010" ? { userId: OVERLAP_ID, mobile, firstname: "Overlap", middlename: null, lastname: "Test" } : null,
+  );
+  mock.method(centralAuthClient, "getUsersByIds", async (ids: readonly string[]) =>
+    ids.map((userId) => ({ userId, mobile: null, firstname: "Name", middlename: null, lastname: "Of Staff" })),
+  );
+  try {
+    const roles = (await as("SELAM_OWNER", "GET", `${staffBase()}/roles`)).body.data as Array<{ id: string; code: string }>;
+    const viewerRole = roles.find((role) => role.code === "VIEWER");
+    assert.ok(viewerRole);
+    const assignAt = (branchId?: string) =>
+      as("SELAM_OWNER", "POST", `${staffBase()}/staff-assignments`, { mobile: "0933000010", role_id: viewerRole.id, ...(branchId ? { branch_id: branchId } : {}) });
+
+    const atAddis = await assignAt(fixture.selamAddisBranchId);
+    assert.equal(atAddis.status, 201, JSON.stringify(atAddis.body));
+    const orgWide = await assignAt();
+    assert.deepEqual([orgWide.status, orgWide.body.error.code], [409, "assignment_scope_conflict"]);
+    const atMain = await assignAt(fixture.selamMainBranchId);
+    assert.equal(atMain.status, 201, "several branches are fine");
+
+    const moveToOrg = await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${atMain.body.data.id}`, { branch_id: null });
+    assert.deepEqual([moveToOrg.status, moveToOrg.body.error.code], [409, "assignment_scope_conflict"]);
+
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${atAddis.body.data.id}/status`, { is_active: false })).status, 200);
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${atMain.body.data.id}`, { branch_id: null })).status, 200);
+    const backOn = await as("SELAM_OWNER", "PATCH", `${staffBase()}/staff-assignments/${atAddis.body.data.id}/status`, { is_active: true });
+    assert.deepEqual([backOn.status, backOn.body.error.code], [409, "assignment_scope_conflict"], "switching on into an overlap is refused");
+  } finally {
+    mock.restoreAll();
+  }
+});

@@ -11,10 +11,13 @@ export type RoleTemplateDto = {
   for_new_organizations: boolean;
   /** The built-in OWNER template: can't be edited or switched off, always used for new organizations. */
   locked: boolean;
+  /** Modules a role made from it gives at least one action on (Phase 2e). */
+  grant_count: number;
   grants: Array<{ module_code: string; module_name: string; view: boolean; create: boolean; update: boolean; export: boolean }>;
 };
 
 export function toRoleTemplateDto(template: RoleTemplateRow, grants: RoleTemplateGrantRow[], lockedCode: string): RoleTemplateDto {
+  const own = grants.filter((grant) => grant.role_template_id === template.id);
   return {
     id: template.id,
     code: template.code,
@@ -23,9 +26,10 @@ export function toRoleTemplateDto(template: RoleTemplateRow, grants: RoleTemplat
     is_active: template.is_active,
     for_new_organizations: template.for_new_organizations,
     locked: template.code === lockedCode,
-    grants: grants
-      .filter((grant) => grant.role_template_id === template.id)
-      .map((grant) => ({
+    grant_count: own.filter(
+      (grant) => grant.can_view || grant.can_create || grant.can_update || grant.can_delete || grant.can_import || grant.can_export || grant.can_notify,
+    ).length,
+    grants: own.map((grant) => ({
         module_code: grant.module.code,
         module_name: grant.module.module_name,
         view: grant.can_view,

@@ -5,6 +5,7 @@ import { sendList, sendSuccess } from "../utils/http.js";
 import {
   changeStaffAssignmentStatusRequest,
   createStaffAssignmentRequest,
+  getStaffAssignmentRequest,
   listStaffAssignmentsRequest,
   listStaffOverridesRequest,
   lookUpStaffRequest,
@@ -22,6 +23,11 @@ async function list(req: Request, res: Response): Promise<void> {
   const { params, query } = getValidated(req, listStaffAssignmentsRequest);
   const { rows, count } = await staffAssignmentService.list(params.organizationId, query);
   sendList(res, 200, rows, { count, page: query.page, pageSize: query.pageSize }, "Staff assignments retrieved");
+}
+
+async function get(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, getStaffAssignmentRequest);
+  sendSuccess(res, 200, await staffAssignmentService.get(params.organizationId, params.assignmentId), "Staff assignment retrieved");
 }
 
 /** 201 when the person was given the role (new or reactivated); 200 when they already had it. */
@@ -69,4 +75,4 @@ async function changeStatus(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, assignment, "Staff assignment status updated");
 }
 
-export const staffAssignmentController = { lookUp, list, assign, update, changeStatus, listOverrides, replaceOverrides };
+export const staffAssignmentController = { lookUp, list, get, assign, update, changeStatus, listOverrides, replaceOverrides };

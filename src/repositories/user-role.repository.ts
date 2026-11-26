@@ -1,4 +1,4 @@
-import type { CreationAttributes, Transaction } from "sequelize";
+import { col, fn, Op, type CreationAttributes, type Transaction } from "sequelize";
 import { Branch, Organization, Role, UserRole } from "../models/index.js";
 import type { BranchRow } from "../models/branch.js";
 import type { OrganizationRow } from "../models/organization.js";
@@ -133,11 +133,16 @@ const staffIncludes = [
 
 async function listByOrganization(
   organizationId: string,
-  filters: { isActive?: boolean | undefined; limit: number; offset: number },
+  filters: { isActive?: boolean | undefined; roleId?: string | undefined; branchId?: string | undefined; limit: number; offset: number },
   options: RepoOptions = {},
 ): Promise<{ rows: StaffAssignmentRow[]; count: number }> {
   const { rows, count } = await UserRole.findAndCountAll({
-    where: { organization_id: organizationId, ...(typeof filters.isActive === "boolean" ? { is_active: filters.isActive } : {}) },
+    where: {
+      organization_id: organizationId,
+      ...(typeof filters.isActive === "boolean" ? { is_active: filters.isActive } : {}),
+      ...(filters.roleId ? { role_id: filters.roleId } : {}),
+      ...(filters.branchId ? { branch_id: filters.branchId } : {}),
+    },
     attributes: [...attributes],
     include: staffIncludes,
     order: [
@@ -199,6 +204,19 @@ async function countActiveByRole(organizationId: string, roleId: string, options
   return UserRole.count({ where: { organization_id: organizationId, role_id: roleId, is_active: true }, ...txOptions(options) });
 }
 
+/** Active assignments per role in one organization (the role list's member counts, Phase 2e). One query. */
+async function countActiveByRoles(organizationId: string, roleIds: readonly string[], options: RepoOptions = {}): Promise<Map<string, number>> {
+  if (roleIds.length === 0) return new Map();
+  const rows = (await UserRole.findAll({
+    where: { organization_id: organizationId, role_id: { [Op.in]: [...roleIds] }, is_active: true },
+    attributes: ["role_id", [fn("COUNT", col("id")), "members"]],
+    group: ["role_id"],
+    raw: true,
+    ...txOptions(options),
+  })) as unknown as Array<{ role_id: string; members: string | number }>;
+  return new Map(rows.map((row) => [row.role_id, Number(row.members)]));
+}
+
 /** Serializes Owner changes in one organization, so two Owners can't remove each other at the same moment. */
 async function lockOwnersOfOrganization(organizationId: string, options: { transaction: Transaction }): Promise<void> {
   await acquireAdvisoryXactLock("organization_owners", organizationId, options);
@@ -211,6 +229,7 @@ export const userRoleRepository = {
   updateRoleAndBranch,
   countActiveOwners,
   countActiveByRole,
+  countActiveByRoles,
   lockOwnersOfOrganization,
   listActiveAssignmentsByUser,
   findActiveAssignmentByIdAndUser,

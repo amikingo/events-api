@@ -347,6 +347,13 @@ export class OwnAssignmentError extends AppError {
   }
 }
 
+/** Phase 2e: the same role can't be held organization-wide and on a branch at the same time. */
+export class AssignmentScopeConflictError extends AppError {
+  constructor(message = "This person already has this role for the whole organization or for a branch. Use one or the other", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "assignment_scope_conflict", details, cause: options?.cause });
+  }
+}
+
 /** The change would leave the organization without an active Owner. */
 export class LastOwnerAssignmentError extends AppError {
   constructor(message = "The organization must keep at least one active Owner", details?: unknown, options?: ErrorOptions) {

@@ -243,3 +243,20 @@ on/off stay fixed: the code and the web app depend on them, and switching a modu
 
 **Not built:** endpoints for platform roles and platform staff beyond the Super Admin; creating, deleting or switching
 off modules.
+
+## Access control brought up to bookings (Phase 2e, from 26 November 2026)
+
+Built in six steps (`docs/plan/implementation-plan.md`, Phase 2e). Bookings' design was already ours; Phase 2e adds the
+management bookings has, without its security holes (tenant routes never touch platform rows; nobody grants what they
+don't hold; overrides stay with their assignment; switched-off overrides never count; modules and templates are
+platform scope; adding staff never returns a token; every route checks a permission; module codes are upper case).
+
+**Step 1: reads, filters, counts and the overlap rule.**
+- `GET /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` (`USER_ROLES.view`): one assignment, with
+  the person's name from Central Auth (profile null when it can't be read).
+- `GET …/staff-assignments?is_active&role_id&branch_id`: `role_id` lists the members of a role.
+- Roles carry `grant_count` (modules with at least one action) and `member_count` (active assignments); templates carry
+  `grant_count`.
+- **Overlap rule:** one person can't hold the same role for the whole organization and for a branch at the same time
+  (409 `assignment_scope_conflict`); several branches are fine. Checked on assign, on changing role or branch, and on
+  switching back on, under the person's assignment lock.

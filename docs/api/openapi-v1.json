@@ -2600,7 +2600,7 @@
     },
     "/v1/organizations/{organizationId}/staff-assignments": {
       "get": {
-        "summary": "The organization's staff: role, branch and name (profile is null when Central Auth can't be read)",
+        "summary": "The organization's staff: role, branch and name (profile is null when Central Auth can't be read). Filters: is_active, role_id (the members of a role), branch_id",
         "tags": [
           "Access control"
         ],
@@ -2655,6 +2655,26 @@
                 "false"
               ]
             }
+          },
+          {
+            "name": "role_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "branch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
           }
         ],
         "responses": {
@@ -2675,7 +2695,7 @@
       },
       "post": {
         "summary": "Give the person behind a mobile number a role of this organization: 201 when given (new or reactivated), 200 when they already had it",
-        "description": "The mobile is looked up in Central Auth on the server; the person must already have a Cheche account. Errors: 404 central_account_not_found, 409 conflict (already staff of another organization or the platform), 409 role_inactive, 409 branch_inactive, 409 invalid_branch_state (no branches), 503 central_auth_unavailable.",
+        "description": "The mobile is looked up in Central Auth on the server; the person must already have a Cheche account. Errors: 404 central_account_not_found, 409 conflict (already staff of another organization or the platform), 409 role_inactive, 409 branch_inactive, 409 invalid_branch_state (no branches), 409 assignment_scope_conflict (the same role organization-wide and on a branch), 503 central_auth_unavailable.",
         "tags": [
           "Access control"
         ],
@@ -2724,6 +2744,54 @@
       }
     },
     "/v1/organizations/{organizationId}/staff-assignments/{assignmentId}": {
+      "get": {
+        "summary": "Read one staff assignment: role, branch and the person's name from Central Auth (profile null when it can't be read)",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "assignmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
       "patch": {
         "summary": "Change the role or branch of an assignment (the last active Owner keeps the Owner role: 409 last_owner_assignment). When the role changes, data.override_count says how many permission overrides the person still has",
         "tags": [

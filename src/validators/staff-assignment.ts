@@ -21,7 +21,12 @@ export const staffAssignmentUpdateSchema = z
 
 export const staffAssignmentParamsSchema = organizationIdParamsSchema.extend({ assignmentId: uuidSchema });
 
-export const staffAssignmentListQuerySchema = paginationQuerySchema.extend({ is_active: booleanQuerySchema });
+/** `role_id` lists the members of a role; `branch_id` the staff limited to one branch (Phase 2e). */
+export const staffAssignmentListQuerySchema = paginationQuerySchema.extend({
+  is_active: booleanQuerySchema,
+  role_id: uuidSchema.optional(),
+  branch_id: uuidSchema.optional(),
+});
 
 export const staffLookupQuerySchema = z.strictObject({ mobile: mobileSchema });
 
@@ -69,6 +74,8 @@ export const createStaffAssignmentRequest = { params: organizationIdParamsSchema
 export const updateStaffAssignmentRequest = { params: staffAssignmentParamsSchema, body: staffAssignmentUpdateSchema } satisfies RequestContract;
 
 export const changeStaffAssignmentStatusRequest = { params: staffAssignmentParamsSchema, body: statusChangeSchema } satisfies RequestContract;
+
+export const getStaffAssignmentRequest = { params: staffAssignmentParamsSchema } satisfies RequestContract;
 
 export const listStaffOverridesRequest = { params: staffAssignmentParamsSchema } satisfies RequestContract;
 

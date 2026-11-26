@@ -77,6 +77,7 @@ function arrange(options: Arrange = {}) {
       order.push("replace");
     }),
     holders: mock.method(userRoleRepository, "countActiveByRole", async () => options.holders ?? 0),
+    members: mock.method(userRoleRepository, "countActiveByRoles", async () => new Map<string, number>()),
     permission: mock.method(
       permissionResolutionService,
       "resolvePermission",
@@ -340,4 +341,15 @@ test("Owners export the guest list by default; Viewers don't", () => {
   const actionsOf = (code: string) => DEFAULT_TENANT_ROLES.find((role) => role.code === code)?.grants.find((entry) => entry.moduleCode === "REGISTRATIONS")?.actions;
   assert.deepEqual(actionsOf("OWNER"), ["view", "create", "update", "export"]);
   assert.deepEqual(actionsOf("VIEWER"), ["view"]);
+});
+
+// --- Phase 2e step 1: counts on roles -----------------------------------------------------------------------
+
+test("roles carry how many modules they give access to and how many active staff hold them", async () => {
+  const fakes = arrange({ stored: [storedGrant(DOOR.id, "REGISTRATIONS", { view: true }), storedGrant(DOOR.id, "EVENTS", {})] });
+  fakes.members.mock.mockImplementation(async () => new Map([[DOOR.id, 3]]));
+  const roles = await roleService.listRoles(IDS.orgA);
+  const door = roles.find((role) => role.code === "DOOR_STAFF");
+  assert.deepEqual([door?.grant_count, door?.member_count], [1, 3], "a grant with no action doesn't count");
+  assert.equal(roles.find((role) => role.code === "VIEWER")?.member_count, 0);
 });

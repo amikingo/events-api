@@ -108,3 +108,20 @@ test("a role change with overrides left says so in the message", async () => {
     ]);
   });
 });
+
+test("one assignment is read with Staff Assignments › view; the list's role and branch filters must be ids", async () => {
+  const permission = allowPermissions(true);
+  const get = mock.method(staffAssignmentService, "get", async () => ({ id: ASSIGNMENT }) as never);
+  const list = mock.method(staffAssignmentService, "list", async (_o: string, _query: unknown) => ({ rows: [], count: 0 }));
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    assert.equal((await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/staff-assignments/${ASSIGNMENT}`, { token })).status, 200);
+    assert.equal((await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/staff-assignments?role_id=nope`, { token })).status, 400);
+    assert.equal((await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/staff-assignments?role_id=${TEMPLATE}&branch_id=${MODULE}`, { token })).status, 200);
+  });
+  assert.deepEqual(get.mock.calls[0]?.arguments, [IDS.orgA, ASSIGNMENT]);
+  const [, query] = list.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([(query as { role_id: string }).role_id, (query as { branch_id: string }).branch_id], [TEMPLATE, MODULE]);
+  const first = permission.mock.calls[0]?.arguments[0] as { moduleCode: string; action: string };
+  assert.deepEqual([first.moduleCode, first.action], ["USER_ROLES", "view"]);
+});

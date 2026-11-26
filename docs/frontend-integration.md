@@ -305,6 +305,7 @@ The permission column shows what the signed-in role needs: module code and actio
 | `PATCH /v1/organizations/{organizationId}/roles/{roleId}/status` | `ROLES.update` | `{ is_active }`. |
 | `GET /v1/organizations/{organizationId}/staff-assignments` | `USER_ROLES.view` | `?is_active&page&pageSize`. Each row is `{ id, user_id, is_active, role { id, code, name }, branch { id, code, name } \| null, profile { firstname, middlename, lastname, mobile } \| null }`. |
 | `GET /v1/organizations/{organizationId}/staff-lookup?mobile=` | `USER_ROLES.create` | Who uses this mobile (`09…` or `+251…`): `{ user_id, firstname, middlename, lastname, mobile }`. |
+| `GET /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` | `USER_ROLES.view` | Phase 2e. One assignment with the person's name. The list also takes `?role_id` (a role's members) and `?branch_id`. Roles carry `grant_count` and `member_count`; templates `grant_count`. `409 assignment_scope_conflict`: the same role organization-wide and on a branch. |
 | `POST /v1/organizations/{organizationId}/staff-assignments` | `USER_ROLES.create` | `{ mobile, role_id, branch_id? }`. **201** = role given (new or reactivated); **200** = they already had it. |
 | `PATCH /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` | `USER_ROLES.update` | `{ role_id?, branch_id? }`; `branch_id: null` makes it organization-wide again. |
 | `PATCH /v1/organizations/{organizationId}/staff-assignments/{assignmentId}/status` | `USER_ROLES.update` | `{ is_active }`. |

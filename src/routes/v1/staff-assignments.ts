@@ -7,6 +7,7 @@ import { MODULE_CODES } from "../../utils/module-codes.js";
 import {
   changeStaffAssignmentStatusRequest,
   createStaffAssignmentRequest,
+  getStaffAssignmentRequest,
   listStaffAssignmentsRequest,
   listStaffOverridesRequest,
   lookUpStaffRequest,
@@ -43,6 +44,14 @@ staffAssignmentsRouter.post(
   validate(createStaffAssignmentRequest),
   requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "create", scope: organizationScopeFromParams }),
   staffAssignmentController.assign,
+);
+
+staffAssignmentsRouter.get(
+  "/staff-assignments/:assignmentId",
+  requireStaffAuthentication,
+  validate(getStaffAssignmentRequest),
+  requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "view", scope: organizationScopeFromParams }),
+  staffAssignmentController.get,
 );
 
 staffAssignmentsRouter.patch(

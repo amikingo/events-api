@@ -1,6 +1,7 @@
 import type { Transaction } from "sequelize";
 import { centralAuthClient, type CentralUser } from "../clients/central-auth.client.js";
 import {
+  AssignmentScopeConflictError,
   BranchInactiveError,
   CentralAccountNotFoundError,
   InvalidBranchStateError,
@@ -93,11 +94,38 @@ async function lookUp(mobile: string): Promise<StaffLookupDto> {
   return { user_id: user.userId, ...(toStaffProfileDto(user) as NonNullable<StaffProfileDto>) };
 }
 
+/**
+ * One person can't hold the same role for the whole organization and for a branch at the same time (Phase 2e);
+ * holding it on several branches is fine. Call under lockAssignmentsOfUser; `exceptId` is the assignment being changed.
+ */
+async function assertNoScopeOverlap(
+  scope: { userId: string; organizationId: string; roleId: string; branchId: string | null; exceptId?: string },
+  transaction: Transaction,
+): Promise<void> {
+  const others = (await userRoleRepository.listAllByUser(scope.userId, { transaction })).filter(
+    (row) => row.is_active && row.id !== scope.exceptId && row.organization_id === scope.organizationId && row.role_id === scope.roleId,
+  );
+  const clash = scope.branchId === null ? others.some((row) => row.branch_id !== null) : others.some((row) => row.branch_id === null);
+  if (clash) throw new AssignmentScopeConflictError(undefined, { role_id: scope.roleId });
+}
+
 async function list(organizationId: string, query: StaffAssignmentListQuery): Promise<{ rows: StaffAssignmentDto[]; count: number }> {
   const { limit, offset } = buildPagination(query);
-  const { rows, count } = await userRoleRepository.listByOrganization(organizationId, { isActive: query.is_active, limit, offset });
+  const { rows, count } = await userRoleRepository.listByOrganization(organizationId, {
+    isActive: query.is_active,
+    roleId: query.role_id,
+    branchId: query.branch_id,
+    limit,
+    offset,
+  });
   const profiles = await profilesOf(rows.map((row) => row.user_id));
   return { rows: rows.map((row) => toStaffAssignmentDto(row, profiles.get(row.user_id))), count };
+}
+
+/** One assignment with the person's name from auth-cheche (best effort: profile null when it can't be read). */
+async function get(organizationId: string, assignmentId: string): Promise<StaffAssignmentDto> {
+  const assignment = await staffDto(organizationId, assignmentId);
+  return { ...assignment, profile: toStaffProfileDto((await profilesOf([assignment.user_id])).get(assignment.user_id)) };
 }
 
 /**
@@ -123,6 +151,9 @@ async function assign(
       { userId: user.userId, roleId: role.id, organizationId: organization.id, branchId },
       { transaction, lock: true },
     );
+    if (!existing?.is_active) {
+      await assertNoScopeOverlap({ userId: user.userId, organizationId: organization.id, roleId: role.id, branchId, exceptId: existing?.id }, transaction);
+    }
     let assignmentId: string;
     let outcome: AssignOutcome;
     if (existing?.is_active) {
@@ -172,6 +203,10 @@ async function update(
     }
 
     if (current.is_active && currentRole.code === OWNER_ROLE_CODE && nextRole.code !== OWNER_ROLE_CODE) await keepAnOwner(organizationId, transaction);
+    if (current.is_active) {
+      await userRoleRepository.lockAssignmentsOfUser(current.user_id, { transaction });
+      await assertNoScopeOverlap({ userId: current.user_id, organizationId, roleId: nextRole.id, branchId, exceptId: current.id }, transaction);
+    }
     await userRoleRepository.updateRoleAndBranch(current.id, { role_id: nextRole.id, branch_id: branchId, updated_by: actorId }, { transaction });
     roleChanged = nextRole.id !== current.role_id;
     overrideCount = await userModuleAccessRepository.countActiveByUserRole(current.id, { transaction });
@@ -197,6 +232,13 @@ async function changeStatus(organizationId: string, assignmentId: string, isActi
       const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, current.role_id, { transaction }), "Role not found");
       if (!isActive && role.code === OWNER_ROLE_CODE) await keepAnOwner(organizationId, transaction);
       if (isActive && !role.is_active) throw new RoleInactiveError();
+      if (isActive) {
+        await userRoleRepository.lockAssignmentsOfUser(current.user_id, { transaction });
+        await assertNoScopeOverlap(
+          { userId: current.user_id, organizationId, roleId: current.role_id, branchId: current.branch_id, exceptId: current.id },
+          transaction,
+        );
+      }
       await userRoleRepository.setActive(current.id, isActive, actorId, { transaction });
     }
     return staffDto(organizationId, current.id, undefined, transaction);
@@ -327,4 +369,4 @@ async function replaceOverrides(
   });
 }
 
-export const staffAssignmentService = { lookUp, list, assign, update, changeStatus, listOverrides, replaceOverrides };
+export const staffAssignmentService = { lookUp, list, get, assign, update, changeStatus, listOverrides, replaceOverrides };

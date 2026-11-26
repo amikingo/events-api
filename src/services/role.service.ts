@@ -24,13 +24,16 @@ export type RoleEditor = { userId: string; assignmentId: string };
 
 async function listRoles(organizationId: string): Promise<RoleDto[]> {
   const roles = await roleRepository.listByOrganization(organizationId);
-  const grants = await roleModuleAccessRepository.listWithModulesByRoleIds(roles.map((role) => role.id));
-  return roles.map((role) => toRoleDto(role, grants));
+  const ids = roles.map((role) => role.id);
+  const grants = await roleModuleAccessRepository.listWithModulesByRoleIds(ids);
+  const members = await userRoleRepository.countActiveByRoles(organizationId, ids);
+  return roles.map((role) => toRoleDto(role, grants, members.get(role.id) ?? 0));
 }
 
 async function getRole(organizationId: string, roleId: string): Promise<RoleDto> {
   const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId), "Role not found");
-  return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id]));
+  const members = await userRoleRepository.countActiveByRoles(organizationId, [role.id]);
+  return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id]), members.get(role.id) ?? 0);
 }
 
 const grantedActions = (grant: RoleGrantInput): GrantableAction[] => GRANTABLE_ACTIONS.filter((action) => grant[action] === true);
@@ -99,7 +102,8 @@ function assertUnlocked(role: RoleRow): void {
 
 async function roleDto(organizationId: string, roleId: string, transaction: Transaction): Promise<RoleDto> {
   const role = ensureFound(await roleRepository.findByOrganizationAndId(organizationId, roleId, { transaction }), "Role not found");
-  return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id], { transaction }));
+  const members = await userRoleRepository.countActiveByRoles(organizationId, [role.id], { transaction });
+  return toRoleDto(role, await roleModuleAccessRepository.listWithModulesByRoleIds([role.id], { transaction }), members.get(role.id) ?? 0);
 }
 
 async function createRole(organizationId: string, input: RoleCreateInput, editor: RoleEditor): Promise<RoleDto> {

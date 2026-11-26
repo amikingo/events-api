@@ -533,3 +533,13 @@ Connect the staff and public screens to the API and run the full flow against Po
 - **Who builds what:** the API here; the screens by Antigravity from `docs/ui-brief-phase-2d.md`.
 
 **Status: API done (25 November 2026).** `npm run check` passed, with the OpenAPI snapshot up to date. Migrations `20261201000000-create-role-template`, `…001-create-role-template-module-access` and `…002-seed-role-templates` were applied to `events_dev`. `TEST_DATABASE=1 npm test` passed 359 of 359 on the real database, none skipped, including matrix rows 71–75: overrides allow and deny on the next request; the Owner, own-assignment, platform-module and escalation refusals; a template reaching new organizations only once marked; a role made from a template staying a copy; module names and order following in `/me`. The screens follow from `docs/ui-brief-phase-2d.md`.
+
+### Phase 2e — Access control brought up to bookings (26 November 2026)
+
+**Why:** comparing with the bookings project showed management that events-api lacked: R1–R5, U1–U6 and M1–M4 (platform roles and staff, roles remembering their template, a role's members, counts, all 7 actions; reading one assignment, filters, the overlap rule, creating Cheche accounts, editing names, deleting assignments; a grantable modules list, switching modules, creating and editing modules, feature gates). Bookings' security holes are not copied.
+
+**Decisions (26 November 2026):** all 7 actions on every module (Organizations never create or delete); the Owner sets a new staff member's password, shown once; any assignment may be deleted except the last active Owner. Six steps, each verified and committed before the next; a UI brief per step.
+
+**Step 1 (U1, U2, R3, R4, U3): API done (26 November 2026).** No migration. `npm run check` passed, with the OpenAPI snapshot up to date. `TEST_DATABASE=1 npm test` passed 366 of 366 on the real database, none skipped, including matrix rows 76–77 (one assignment read, role and branch filters, counts; the overlap rule on assign, change and switch-on).
+
+**Screens:** at the project owner's request, the UI briefs for every step (`docs/ui-brief-phase-2e-<n>.md`) go to Antigravity together, once all six backend steps are done.

@@ -12,7 +12,7 @@ import { call, withServer } from "./helpers/http.js";
 /** HTTP-level tests of the Phase 2c role and organization endpoints: real auth, validation and envelope; services stubbed. */
 const app = createApp();
 const base = `/v1/organizations/${IDS.orgA}`;
-const ROLE: RoleDto = { id: IDS.roleA, code: "DOOR_STAFF", name: "Door staff", description: null, is_active: true, grants: [] };
+const ROLE: RoleDto = { id: IDS.roleA, code: "DOOR_STAFF", name: "Door staff", description: null, is_active: true, grant_count: 0, member_count: 0, grants: [] };
 const GRANT = { module_code: "registrations", view: true, create: false, update: true };
 
 function allowPermissions(allowed: boolean) {

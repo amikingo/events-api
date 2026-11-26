@@ -10,6 +10,10 @@ export type RoleDto = {
   name: string;
   description: string | null;
   is_active: boolean;
+  /** Modules this role gives at least one action on (Phase 2e). */
+  grant_count: number;
+  /** Active staff assignments holding this role (Phase 2e). */
+  member_count: number;
   grants: Array<{
     module_code: string;
     module_name: string;
@@ -23,15 +27,20 @@ export type RoleDto = {
   }>;
 };
 
-export function toRoleDto(role: RoleRow, grants: RoleGrantRow[]): RoleDto {
+const givesAnything = (grant: RoleGrantRow): boolean =>
+  grant.can_view || grant.can_create || grant.can_update || grant.can_delete || grant.can_import || grant.can_export || grant.can_notify;
+
+export function toRoleDto(role: RoleRow, grants: RoleGrantRow[], memberCount = 0): RoleDto {
+  const own = grants.filter((grant) => grant.role_id === role.id);
   return {
     id: role.id,
     code: role.code,
     name: role.name,
     description: role.description,
     is_active: role.is_active,
-    grants: grants
-      .filter((grant) => grant.role_id === role.id)
+    grant_count: own.filter(givesAnything).length,
+    member_count: memberCount,
+    grants: own
       .map((grant) => ({
         module_code: grant.module.code,
         module_name: grant.module.module_name,
