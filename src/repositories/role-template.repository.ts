@@ -4,7 +4,7 @@ import type { ModuleRow } from "../models/module.js";
 import type { RoleTemplateRow } from "../models/role-template.js";
 import type { RoleTemplateModuleAccessRow } from "../models/role-template-module-access.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
-import { lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
+import { activeModuleIds, lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
 
 /** Role templates (Phase 2d): a platform library, never tenant data. Explicit projections: never `SELECT *`. */
 const attributes = [
@@ -86,26 +86,63 @@ async function updateById(templateId: string, values: RoleTemplateUpdateValues, 
   return findById(templateId, options);
 }
 
-async function listGrantsWithModules(templateIds: readonly string[], options: RepoOptions = {}): Promise<RoleTemplateGrantRow[]> {
+async function findGrants(templateIds: readonly string[], activeModulesOnly: boolean, options: RepoOptions): Promise<RoleTemplateGrantRow[]> {
   if (templateIds.length === 0) return [];
   const rows = await RoleTemplateModuleAccess.findAll({
     where: { role_template_id: { [Op.in]: [...templateIds] } },
     attributes: [...grantAttributes],
-    include: [{ model: AppModule, as: "module", required: true, attributes: ["code", "module_name", "sno"] }],
+    include: [
+      { model: AppModule, as: "module", required: true, ...(activeModulesOnly ? { where: { is_active: true } } : {}), attributes: ["code", "module_name", "sno"] },
+    ],
     order: [[{ model: AppModule, as: "module" }, "sno", "ASC"]],
     ...txOptions(options),
   });
   return toPlainList<RoleTemplateGrantRow>(rows);
 }
 
-/** Replaces a template's whole grant set: delete, then insert, in the caller's transaction. */
+/** The templates' grants on switched-on modules (what the screens show and what a new role copies, Phase 2e). */
+async function listGrantsWithModules(templateIds: readonly string[], options: RepoOptions = {}): Promise<RoleTemplateGrantRow[]> {
+  return findGrants(templateIds, true, options);
+}
+
+/**
+ * Every grant of the templates, switched-off modules included: what a new organization's roles start with, so a
+ * module switched off today still works for them when it is switched back on (Phase 2e).
+ */
+async function listAllGrantsWithModules(templateIds: readonly string[], options: RepoOptions = {}): Promise<RoleTemplateGrantRow[]> {
+  return findGrants(templateIds, false, options);
+}
+
+/**
+ * Replaces a template's grant set: delete, then insert, in the caller's transaction. Grants on switched-off modules
+ * stay (Phase 2e), as for roles.
+ */
 async function replaceGrants(
   templateId: string,
   values: CreationAttributes<RoleTemplateModuleAccess>[],
   options: { transaction: Transaction },
 ): Promise<void> {
-  await RoleTemplateModuleAccess.destroy({ where: { role_template_id: templateId }, transaction: options.transaction });
+  await RoleTemplateModuleAccess.destroy({
+    where: { role_template_id: templateId, module_id: { [Op.in]: activeModuleIds() } },
+    transaction: options.transaction,
+  });
   if (values.length > 0) await RoleTemplateModuleAccess.bulkCreate(values, { transaction: options.transaction });
 }
 
-export const roleTemplateRepository = { list, listByIds, findById, findByCode, create, updateById, listGrantsWithModules, replaceGrants };
+/** How many templates grant this module (a module can't stop being a permission module while any do, Phase 2e). */
+async function countGrantsByModule(moduleId: string, options: RepoOptions = {}): Promise<number> {
+  return RoleTemplateModuleAccess.count({ where: { module_id: moduleId }, ...txOptions(options) });
+}
+
+export const roleTemplateRepository = {
+  list,
+  listByIds,
+  findById,
+  findByCode,
+  create,
+  updateById,
+  listGrantsWithModules,
+  listAllGrantsWithModules,
+  replaceGrants,
+  countGrantsByModule,
+};

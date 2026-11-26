@@ -165,7 +165,8 @@ function actionsOf(grant: RoleTemplateGrantRow): PermissionAction[] {
 async function templatesForNewOrganization(transaction: Transaction): Promise<readonly DefaultRoleTemplate[]> {
   const templates = await roleTemplateRepository.list({ activeOnly: true, forNewOrganizations: true }, { transaction });
   if (!templates.some((template) => template.code === OWNER_ROLE_CODE)) return DEFAULT_TENANT_ROLES;
-  const grants = await roleTemplateRepository.listGrantsWithModules(
+  // Switched-off modules included, so the new organization's roles work when a module is switched back on.
+  const grants = await roleTemplateRepository.listAllGrantsWithModules(
     templates.map((template) => template.id),
     { transaction },
   );

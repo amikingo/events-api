@@ -1,6 +1,6 @@
 import type { Request, RequestHandler } from "express";
 import { AuthenticationRequiredError, InvalidScopeError, PermissionDeniedError } from "../errors/app-errors.js";
-import { permissionResolutionService, type PermissionScope } from "../services/permission-resolution.service.js";
+import { permissionResolutionService, type PermissionScope, type PermissionSource } from "../services/permission-resolution.service.js";
 import type { ModuleCode } from "../utils/module-codes.js";
 import type { PermissionAction } from "../utils/rbac.js";
 
@@ -13,6 +13,7 @@ export type PermissionOptions = { scope: "platform" | ScopeResolver } & (
 );
 
 const PLATFORM_SCOPE: PermissionScope = { level: "platform" };
+const SWITCHED_OFF_SOURCES: ReadonlySet<PermissionSource> = new Set(["module_unavailable", "feature_disabled"]);
 
 /**
  * RBAC gate. Runs AFTER authentication and validate() so scope resolvers read validated params.
@@ -30,6 +31,7 @@ export function requirePermission(options: PermissionOptions): RequestHandler {
 
     const scope = options.scope === "platform" ? PLATFORM_SCOPE : await options.scope(req);
 
+    const sources: PermissionSource[] = [];
     for (const requirement of requirements) {
       const resolution = await permissionResolutionService.resolvePermission({
         userId: auth.userId,
@@ -43,8 +45,12 @@ export function requirePermission(options: PermissionOptions): RequestHandler {
         next();
         return;
       }
+      sources.push(resolution.source);
     }
-    throw new PermissionDeniedError();
+    // Phase 2e: when nobody could do this (a switched-off module, or an organization setting that turns it off), say
+    // so in details.reason, so the web app can explain it instead of suggesting the person ask for access.
+    const reason = sources.every((source) => SWITCHED_OFF_SOURCES.has(source)) ? sources[0] : undefined;
+    throw new PermissionDeniedError(undefined, reason === undefined ? undefined : { reason });
   };
 }
 

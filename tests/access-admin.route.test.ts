@@ -66,7 +66,7 @@ test("overrides use Staff Assignments in the organization; templates and modules
   );
 });
 
-test("bodies are strict: an override box is true, false or null; a module's code or route can't be sent; nothing invalid reaches a service", async () => {
+test("bodies are strict: an override box is true, false or null; a module's code or on/off can't be sent in an edit; nothing invalid reaches a service", async () => {
   allowPermissions(true);
   const replace = mock.method(staffAssignmentService, "replaceOverrides", async () => ({ assignment_id: ASSIGNMENT, role: { id: "r", code: "VIEWER", name: "Viewer" }, overridable: true, modules: [] }));
   const update = mock.method(moduleService, "updateModule", async () => ({}) as never);
@@ -77,7 +77,7 @@ test("bodies are strict: an override box is true, false or null; a module's code
     for (const body of [{}, { overrides: [{ module_code: "EVENTS", view: "yes" }] }, { overrides: [{ module_code: "EVENTS", approve: true }] }, { overrides: [{ module_code: "EVENTS" }, { module_code: "EVENTS" }] }]) {
       assert.equal((await call(baseUrl, "PUT", staffPath, { token, body })).status, 400, JSON.stringify(body));
     }
-    for (const body of [{}, { code: "NEW" }, { route_name: "/x" }, { is_active: false }, { icon: "not an icon!" }, { sno: -1 }]) {
+    for (const body of [{}, { code: "NEW" }, { route_name: "x" }, { is_active: false }, { icon: "not an icon!" }, { sno: -1 }, { parent_id: "nope" }, { is_menu: "yes" }]) {
       assert.equal((await call(baseUrl, "PATCH", `/v1/modules/${MODULE}`, { token, body })).status, 400, JSON.stringify(body));
     }
     assert.equal((await call(baseUrl, "POST", "/v1/role-templates", { token, body: { code: "bad code", name: "X", grants: [] } })).status, 400);
@@ -206,4 +206,62 @@ test("platform roles use Roles and platform staff use Staff Assignments, both at
     ["USER_ROLES", "create", "platform"],
     ["USER_ROLES", "delete", "platform"],
   ]);
+});
+
+// --- Phase 2e step 6 ------------------------------------------------------------------------------------
+
+test("modules: create needs Modules › create and status Modules › update, both at platform scope; bodies are strict", async () => {
+  const permission = allowPermissions(false);
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    await call(baseUrl, "POST", "/v1/modules", { token, body: { code: "INSIGHTS", module_name: "Insights", is_menu: true, is_permission: false } });
+    const denied = await call(baseUrl, "PATCH", `/v1/modules/${MODULE}/status`, { token, body: { is_active: false } });
+    assert.deepEqual([denied.status, denied.body.error.code, denied.body.error.details], [403, "permission_denied", undefined], "an ordinary denial gives no reason");
+  });
+  const asked = permission.mock.calls.map((entry) => {
+    const input = entry.arguments[0] as { moduleCode: string; action: string; scope: PermissionScope };
+    return [input.moduleCode, input.action, input.scope.level];
+  });
+  assert.deepEqual(asked, [
+    ["MODULES", "create", "platform"],
+    ["MODULES", "update", "platform"],
+  ]);
+
+  mock.restoreAll();
+  allowPermissions(true);
+  const create = mock.method(moduleService, "createModule", async () => ({ code: "INSIGHTS" }) as never);
+  const status = mock.method(moduleService, "changeModuleStatus", async (_id: string, active: boolean) => ({ is_active: active }) as never);
+  await withServer(app, async (baseUrl) => {
+    const token = staffToken();
+    for (const body of [
+      { module_name: "Insights", is_menu: true, is_permission: false },
+      { code: "INSIGHTS", module_name: "Insights", is_menu: true },
+      { code: "IN SIGHTS", module_name: "Insights", is_menu: true, is_permission: false },
+      { code: "INSIGHTS", module_name: "Insights", is_menu: true, is_permission: false, is_active: false },
+      { code: "INSIGHTS", module_name: "Insights", is_menu: true, is_permission: false, route_name: "insights" },
+    ]) {
+      assert.equal((await call(baseUrl, "POST", "/v1/modules", { token, body })).status, 400, JSON.stringify(body));
+    }
+    const created = await call(baseUrl, "POST", "/v1/modules", { token, body: { code: "insights", module_name: "Insights", is_menu: true, is_permission: false, route_name: "/insights" } });
+    assert.deepEqual([created.status, created.body.message], [201, "Module created"]);
+    assert.equal((await call(baseUrl, "PATCH", `/v1/modules/${MODULE}/status`, { token, body: {} })).status, 400);
+    const off = await call(baseUrl, "PATCH", `/v1/modules/${MODULE}/status`, { token, body: { is_active: false } });
+    assert.equal(off.status, 200);
+    assert.match(off.body.message, /nobody can use it, the Super Admin included/);
+  });
+  assert.equal(create.mock.callCount(), 1);
+  assert.equal((create.mock.calls[0]?.arguments[0] as unknown as { code: string }).code, "INSIGHTS", "codes are upper-cased");
+  assert.deepEqual(status.mock.calls[0]?.arguments.slice(0, 2), [MODULE, false]);
+});
+
+test("a denial because a module is switched off or an organization setting turns it off says so in details.reason", async () => {
+  const reasons: Array<"feature_disabled" | "module_unavailable"> = ["feature_disabled", "module_unavailable"];
+  for (const source of reasons) {
+    mock.method(permissionResolutionService, "resolvePermission", async (input: { scope: PermissionScope }) => ({ allowed: false, source, scope: input.scope, roleIds: [] }));
+    await withServer(app, async (baseUrl) => {
+      const denied = await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/branches`, { token: staffToken() });
+      assert.deepEqual([denied.status, denied.body.error.code, denied.body.error.details], [403, "permission_denied", { reason: source }]);
+    });
+    mock.restoreAll();
+  }
 });

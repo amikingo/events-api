@@ -123,7 +123,9 @@ for the user's convenience, not security.
 
 **Organizations without branches.** Most organizers have no branches. When `assignment.organization.has_branches`
 is `false`, **hide everything about branches**: branch pickers, branch columns, branch pages, branch filters. The
-server already leaves *Branches* out of `navigation` for them. Behind the scenes the organization still has one
+server already leaves *Branches* out of `navigation` for them: since Phase 2e a feature gate turns every *Branches*
+action except `create` off (`permissions.BRANCHES` shows them `false`), and the branch routes answer 403 with
+`details.reason: "feature_disabled"`. Don't call `GET …/branches` for these users. Behind the scenes the organization still has one
 hidden `MAIN` branch, so the API never needs a branch from these users. If an owner adds a branch (`POST …/branches`),
 branches switch on for that organization. Fetch `/me` again afterwards, and the branch screens appear.
 
@@ -229,7 +231,7 @@ Usage: `await api("/v1/organizations/<id>/branches?page=1")`, or
 | `authentication_required`, `malformed_bearer_token`, `invalid_token`, `unsupported_token` | 401 | Missing or unusable access token | Try refresh; if that fails, go to login |
 | `refresh_token_missing`, `refresh_token_invalid` | 401 | No usable session cookie | Go to login |
 | `refresh_origin_not_allowed` | 403 | Your origin isn't in `AUTH_REFRESH_TRUSTED_ORIGINS` | A set-up problem, not a user error |
-| `permission_denied` | 403 | This role may not do this | "You don't have permission"; hide the action next time |
+| `permission_denied` | 403 | This role may not do this. Since Phase 2e, `details.reason` says when nobody could: `module_unavailable` (the module is switched off) or `feature_disabled` (an organization setting turns it off, e.g. Branches without branches) | "You don't have permission"; hide the action next time. With a `details.reason`: "This part of the app is switched off" |
 | `role_inactive`, `organization_inactive`, `branch_inactive`, `invalid_tenant_scope` | 409 | The role, organization or branch was deactivated | Explain, then back to login or the role picker |
 | `rate_limited` | 429 | This API's limit per IP: login 10/min; refresh and logout 20/min combined | "Too many attempts, wait a minute" |
 | `central_auth_rate_limited` | 429 | auth-cheche's limit, or the account is locked after failed attempts | "Too many attempts. Try again later." |
@@ -253,6 +255,9 @@ Usage: `await api("/v1/organizations/<id>/branches?page=1")`, or
 | `grant_exceeds_own_access` | 403 | A role edit would grant an action the editor doesn't hold (`details.module_code`, `details.action`) | "You can't give access you don't have yourself" |
 | `role_locked` | 409 | The built-in Owner role can't be renamed, re-granted or switched off | Show Owner read only |
 | `role_in_use` | 409 | Staff still hold the role (`details.active_assignments`) | "Give them another role first" |
+| `module_protected` | 409 | Phase 2e. An always-on module can't be switched off, or a core module's route or permission flag can't change (`details.field`) | Show those controls read only (`always_on`, `is_core`) |
+| `module_in_use` | 409 | Phase 2e. Roles, templates or overrides still grant the module (`details.grants`) | "Remove its grants first" |
+| `invalid_module_state` | 409 | Phase 2e. Switching off a module with switched-on submodules (`details.active_children`), or on under a switched-off parent (`details.parent_id`) | Say which, from the message |
 
 ---
 
@@ -309,6 +314,7 @@ The permission column shows what the signed-in role needs: module code and actio
 | `POST …/staff-assignments` with `new_account` and `PATCH …/staff-assignments/{assignmentId}/profile` | `USER_ROLES.create` / `USER_ROLES.update` | Phase 2e. `new_account: { firstname, middlename?, lastname, password (8–128) }` creates a Cheche account when the mobile has none (`account_created` in the reply; show the password once, the API never returns it). `/profile` changes names only; `409 central_auth_refused`. |
 | `/v1/platform/roles…` and `/v1/platform/staff-assignments…` | `ROLES` / `USER_ROLES` at platform scope | Phase 2e. Super Admin screens: platform roles (any module, all 7 actions; `SUPER_ADMIN` read-only) and platform staff (by mobile, optional `new_account`). Errors: `409 role_locked`, `409 role_in_use`, `409 last_super_admin`, `409 own_assignment`, `409 conflict` (`field: user_id`: staff of an organization). |
 | `GET /v1/organizations/{organizationId}/grantable-modules` | `ROLES.view` or `USER_ROLES.view` | Phase 2e. `[{ module_code, module_name, sno, actions }]`: build the role, template and override grids from it. All 7 actions are grantable on tenant modules (Organizations never create or delete); `delete`, `import`, `export`, `notify` may be left out of a grant. |
+| `GET`, `POST /v1/modules`; `PATCH /v1/modules/{moduleId}`, `PATCH /v1/modules/{moduleId}/status` | `MODULES` view, create, update at platform scope | Phase 2e (Super Admin). Each node is `{ id, code, module_name, description, parent_id, sno, icon, route_name, is_menu, is_permission, is_active, is_core, always_on, children }`. Create: `{ code, module_name, description?, parent_id?, sno?, icon?, route_name?, is_menu, is_permission }` (a menu group, link or platform-role module; never grantable to organizations). Edit: any of the display fields plus `parent_id`, `route_name`, `is_menu`, `is_permission`. Status: `{ is_active }`; switched off, nobody can use it, the Super Admin included. Errors: 400 (`issues[].code` `parent_not_found`, `parent_inactive`, `parent_cycle`), `409 conflict` (code), `409 module_protected`, `409 module_in_use`, `409 invalid_module_state`. |
 | `DELETE /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` | `USER_ROLES.delete` | Phase 2e. Deletes the assignment and its overrides; 204. `409 last_owner_assignment`, `409 own_assignment`. |
 | `GET /v1/organizations/{organizationId}/staff-assignments/{assignmentId}` | `USER_ROLES.view` | Phase 2e. One assignment with the person's name. The list also takes `?role_id` (a role's members) and `?branch_id`. Roles carry `grant_count` and `member_count`; templates `grant_count`. `409 assignment_scope_conflict`: the same role organization-wide and on a branch. |
 | `POST /v1/organizations/{organizationId}/staff-assignments` | `USER_ROLES.create` | `{ mobile, role_id, branch_id? }`. **201** = role given (new or reactivated); **200** = they already had it. |

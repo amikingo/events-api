@@ -3987,11 +3987,49 @@
             }
           }
         }
+      },
+      "post": {
+        "summary": "Create a module (platform scope): a menu group, a link, or a permission module for platform roles. Never grantable to an organization. The code is upper case, unique and fixed",
+        "description": "Errors: 400 validation_error (issues[].code parent_not_found, parent_inactive); 409 conflict (field code).",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/modules/{moduleId}": {
       "patch": {
-        "summary": "Change a module's name, description, order or icon (platform scope). Codes, routes, parents and on/off can't change",
+        "summary": "Change a module's name, description, order, icon, parent, route, menu flag or permission flag (platform scope). The code never changes; core modules (is_core) keep their route and permission flag",
+        "description": "Errors: 400 validation_error (issues[].code parent_not_found, parent_inactive or parent_cycle); 409 module_protected (details.field: a core module's route_name or is_permission); 409 module_in_use (details.grants: roles, templates or overrides still grant it, so it stays a permission module).",
         "tags": [
           "Access control"
         ],
@@ -4018,6 +4056,57 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ModuleUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/modules/{moduleId}/status": {
+      "patch": {
+        "summary": "Switch a module off or on (platform scope). Switched off, nobody can use it, the Super Admin included, and it leaves every menu; its grants are kept",
+        "description": "Errors: 409 module_protected (always_on modules: Modules, Role Templates, Organizations, Roles, Staff Assignments); 409 invalid_module_state (details.active_children: switch its submodules off or move them first; or details.parent_id: its parent is switched off).",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "moduleId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChangeRequest"
               }
             }
           }
@@ -6525,6 +6614,60 @@
         ],
         "additionalProperties": false
       },
+      "ModuleCreateRequest": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "module_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 250
+          },
+          "description": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 2000
+          },
+          "parent_id": {
+            "nullable": true,
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "sno": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "icon": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$"
+          },
+          "route_name": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^\\/[A-Za-z0-9\\-_/]{0,249}$"
+          },
+          "is_menu": {
+            "type": "boolean"
+          },
+          "is_permission": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "module_name",
+          "is_menu",
+          "is_permission"
+        ],
+        "additionalProperties": false
+      },
       "ModuleUpdateRequest": {
         "type": "object",
         "properties": {
@@ -6547,6 +6690,23 @@
             "nullable": true,
             "type": "string",
             "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$"
+          },
+          "parent_id": {
+            "nullable": true,
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "route_name": {
+            "nullable": true,
+            "type": "string",
+            "pattern": "^\\/[A-Za-z0-9\\-_/]{0,249}$"
+          },
+          "is_menu": {
+            "type": "boolean"
+          },
+          "is_permission": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

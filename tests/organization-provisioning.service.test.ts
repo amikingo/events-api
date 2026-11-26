@@ -51,7 +51,7 @@ afterEach(() => mock.restoreAll());
 function arrangeProvisioning(options: { slugTaken?: boolean; existingAssignments?: UserRoleRow[] } = {}) {
   mock.method(organizationRepository, "findBySlug", async () => (options.slugTaken ? organizationRow() : null));
   mock.method(userRoleRepository, "listAllByUser", async () => options.existingAssignments ?? []);
-  mock.method(moduleRepository, "listActiveOrdered", async () => MODULES);
+  mock.method(moduleRepository, "listAllOrdered", async () => MODULES);
   // No OWNER template here, so new organizations use the code's DEFAULT_TENANT_ROLES (the templates' own fallback).
   mock.method(roleTemplateRepository, "list", async () => []);
   return {

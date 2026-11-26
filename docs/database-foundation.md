@@ -42,9 +42,9 @@ references without FKs.
   `ck_module_parent_not_self`, `ck_module_sno_non_negative`
 - Indexes: `idx_module_parent_id_sno`
 - Triggers: none
-- Cycles (A → B → A through `parent_id`) are **not** checked yet: the constraints only stop a module being its
-  own parent, and there are no module-editing endpoints. When module editing is built, its service must reject
-  a parent that is the module itself or one of its descendants.
+- Cycles (A → B → A through `parent_id`): the constraints only stop a module being its own parent. Since Phase 2e
+  the module service refuses a parent that is the module itself or one of its descendants (400 `parent_cycle`),
+  under the module-tree advisory lock, so two moves at once can't build one.
 
 ### `role`
 - Constraints: `fk_role_organization_id`, `ck_role_code_format`, partial uniques

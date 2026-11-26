@@ -5,6 +5,7 @@ import type { RoleModuleAccessRow } from "../src/models/role-module-access.js";
 import type { UserModuleAccessRow } from "../src/models/user-module-access.js";
 import { branchRepository } from "../src/repositories/branch.repository.js";
 import { moduleRepository } from "../src/repositories/module.repository.js";
+import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { roleModuleAccessRepository } from "../src/repositories/role-module-access.repository.js";
 import { userModuleAccessRepository } from "../src/repositories/user-module-access.repository.js";
 import { userRoleRepository, type AssignmentRow } from "../src/repositories/user-role.repository.js";
@@ -75,6 +76,8 @@ function arrange(input: { assignments: AssignmentRow[]; grants?: RoleModuleAcces
 
 beforeEach(() => {
   mock.method(moduleRepository, "findActivePermissionByCode", async () => moduleRow());
+  // Platform staff acting in an organization: the feature gates read its settings (organizations use branches here).
+  mock.method(organizationRepository, "findById", async (id: string) => organizationRow({ id }));
   mock.method(branchRepository, "findByOrganizationAndId", async (orgId: string, branchId: string) =>
     orgId === IDS.orgA ? branchRow({ id: branchId }) : null,
   );
@@ -346,15 +349,20 @@ function arrangeSession() {
 const administrationItems = (navigation: Array<{ code: string; children: Array<{ code: string }> }>) =>
   navigation.find((node) => node.code === "ADMINISTRATION")?.children.map((child) => child.code);
 
-test("staff of an organization without branches never see the Branches menu item; the permission map is unchanged", async () => {
+test("feature gate: without branches, Branches leaves the menu and every action but create is false in /me", async () => {
   arrangeSession();
+  mock.method(roleModuleAccessRepository, "listByRoleId", async () => [
+    grant(IDS.roleA, { module_id: ORGANIZATIONS_MODULE.id, can_view: true }),
+    grant(IDS.roleA, { module_id: BRANCHES_MODULE.id, can_view: true, can_create: true, can_update: true, can_delete: true, can_export: true }),
+  ]);
 
   const session = await permissionResolutionService.resolveStaffSession(
     assignment({ organization: organizationRow({ has_branches: false }) }),
   );
 
   assert.deepEqual(administrationItems(session.navigation), ["ORGANIZATIONS"]);
-  assert.equal(session.permissions.BRANCHES?.view, true, "the permission map still states what the API allows");
+  assert.deepEqual(session.permissions.BRANCHES, { ...DENIED_PERMISSION, create: true }, "the map states what the API allows: only adding the first branch");
+  assert.equal(session.permissions.ORGANIZATIONS?.view, true, "other modules are untouched");
 });
 
 test("staff of an organization with branches, and platform staff, see the Branches menu item", async () => {
@@ -365,4 +373,56 @@ test("staff of an organization with branches, and platform staff, see the Branch
 
   const platform = await permissionResolutionService.resolveStaffSession(platformSuperAdmin());
   assert.deepEqual(administrationItems(platform.navigation), ["ORGANIZATIONS", "BRANCHES"]);
+});
+
+// --- Phase 2e step 6: organization feature gates in the engine -------------------------------------------
+
+test("feature gate: without branches, Branches view and update are feature_disabled; create still follows the role", async () => {
+  const noBranches = organizationRow({ has_branches: false });
+  arrange({ assignments: [assignment({ organization: noBranches })], grants: [grant(IDS.roleA, { can_view: true, can_create: true, can_update: true })] });
+
+  const view = await resolveAs(IDS.assignment, "view");
+  const update = await resolveAs(IDS.assignment, "update");
+  const create = await resolveAs(IDS.assignment, "create");
+
+  assert.deepEqual([view.allowed, view.source], [false, "feature_disabled"]);
+  assert.deepEqual([update.allowed, update.source], [false, "feature_disabled"]);
+  assert.deepEqual([create.allowed, create.source], [true, "role_permission"], "adding the first branch is what switches branches on");
+});
+
+test("feature gate: an allow override can't open a gated action; the Super Admin is exempt", async () => {
+  const noBranches = organizationRow({ has_branches: false });
+  arrange({ assignments: [assignment({ organization: noBranches })], overrides: [override(IDS.assignment, { can_view: true })] });
+  const overridden = await resolveAs(IDS.assignment, "view");
+  assert.deepEqual([overridden.allowed, overridden.source], [false, "feature_disabled"]);
+
+  arrange({ assignments: [platformSuperAdmin()] });
+  const superAdmin = await permissionResolutionService.resolvePermission({ userId: IDS.user, assignmentId: null, scope: ORG_SCOPE, moduleCode: "BRANCHES", action: "view" });
+  assert.deepEqual([superAdmin.allowed, superAdmin.source], [true, "super_admin_bypass"]);
+});
+
+test("feature gate: platform staff acting in an organization read its settings from the database; with branches nothing is gated", async () => {
+  const platformSupport = assignment({
+    organization_id: null,
+    organization: null,
+    role: roleRow({ id: IDS.rolePlatform, organization_id: null, code: "PLATFORM_SUPPORT", name: "Platform support" }),
+    role_id: IDS.rolePlatform,
+  });
+  arrange({ assignments: [platformSupport], grants: [grant(IDS.rolePlatform, { can_view: true })] });
+  const lookup = mock.method(organizationRepository, "findById", async () => organizationRow({ has_branches: false }));
+
+  const gated = await resolveAs(IDS.assignment, "view");
+  assert.deepEqual([gated.allowed, gated.source], [false, "feature_disabled"]);
+  assert.equal(lookup.mock.calls[0]?.arguments[0], IDS.orgA);
+
+  lookup.mock.mockImplementation(async () => organizationRow({ has_branches: true }));
+  assert.deepEqual([(await resolveAs(IDS.assignment, "view")).source], ["role_permission"]);
+});
+
+test("feature gate: other modules never load the organization", async () => {
+  const lookup = mock.method(organizationRepository, "findById", async () => organizationRow({ has_branches: false }));
+  arrange({ assignments: [assignment({ organization: organizationRow({ has_branches: false }) })], grants: [grant(IDS.roleA, { can_view: true })] });
+  const result = await permissionResolutionService.resolvePermission({ userId: IDS.user, assignmentId: IDS.assignment, scope: ORG_SCOPE, moduleCode: "EVENTS", action: "view" });
+  assert.deepEqual([result.allowed, result.source], [true, "role_permission"]);
+  assert.equal(lookup.mock.callCount(), 0);
 });

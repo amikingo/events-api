@@ -71,6 +71,7 @@ function arrange(templates: RoleTemplateRow[] = [OWNER_T, DOOR_T], grants: RoleT
     }),
     update: mock.method(roleTemplateRepository, "updateById", async (_id: string, _values: Record<string, unknown>, _options?: unknown) => null),
     grants: mock.method(roleTemplateRepository, "listGrantsWithModules", async () => grants),
+    allGrants: mock.method(roleTemplateRepository, "listAllGrantsWithModules", async () => grants),
     replace: mock.method(roleTemplateRepository, "replaceGrants", async (_id: string, _rows: unknown[], _options: { transaction: Transaction }) => undefined),
     modules: mock.method(moduleRepository, "listActiveOrdered", async () => MODULES),
   };
@@ -153,7 +154,7 @@ test("the OWNER template is locked: no edits and never switched off; other templ
 
 test("new organizations get the active templates for new organizations, and fall back to the code's defaults without an OWNER template", async () => {
   const forNew = template({ id: "template-gate", code: "GATE", name: "Gate", for_new_organizations: true });
-  arrange([OWNER_T, forNew, DOOR_T, template({ id: "template-off", code: "OFF", for_new_organizations: true, is_active: false })], [
+  const fakes = arrange([OWNER_T, forNew, DOOR_T, template({ id: "template-off", code: "OFF", for_new_organizations: true, is_active: false })], [
     grantRow(OWNER_T.id, "REGISTRATIONS", { can_view: true, can_update: true, can_export: true }),
     grantRow(forNew.id, "REGISTRATIONS", { can_view: true }),
   ]);
@@ -162,6 +163,7 @@ test("new organizations get the active templates for new organizations, and fall
   assert.deepEqual(templates.map((entry) => entry.code), ["OWNER", "GATE"], "active and for new organizations only");
   assert.deepEqual(templates.map((entry) => entry.templateId), [OWNER_T.id, forNew.id], "new roles remember their template");
   assert.deepEqual(templates[0]?.grants, [{ moduleCode: "REGISTRATIONS", actions: ["view", "update", "export"] }]);
+  assert.equal(fakes.allGrants.mock.callCount(), 1, "switched-off modules included, so the grants work once a module is back on");
 
   mock.restoreAll();
   arrange([forNew]);

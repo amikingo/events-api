@@ -1,7 +1,8 @@
+import type { CreationAttributes, Transaction } from "sequelize";
 import { AppModule } from "../models/index.js";
 import type { ModuleRow } from "../models/module.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
-import { lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
+import { acquireAdvisoryXactLock, lockOptions, txOptions, type RepoOptions, type WriteOptions } from "./helpers.js";
 
 const attributes = [
   "id",
@@ -64,12 +65,29 @@ async function findById(moduleId: string, options: RepoOptions = {}): Promise<Mo
   return toPlain<ModuleRow>(row);
 }
 
-/** Only the display fields can change; codes, routes, parents and on/off stay as the migrations set them. */
-export type ModuleDisplayValues = Partial<Pick<ModuleRow, "module_name" | "description" | "sno" | "icon" | "updated_by">>;
+async function findByCode(code: string, options: RepoOptions = {}): Promise<ModuleRow | null> {
+  const row = await AppModule.findOne({ where: { code }, attributes: [...attributes], ...txOptions(options) });
+  return toPlain<ModuleRow>(row);
+}
 
-async function updateDisplay(moduleId: string, values: ModuleDisplayValues, options: WriteOptions = {}): Promise<ModuleRow | null> {
+async function create(values: CreationAttributes<AppModule>, options: WriteOptions = {}): Promise<ModuleRow> {
+  const row = await AppModule.create(values, txOptions(options));
+  return row.get({ plain: true });
+}
+
+/** What the Super Admin may change (Phase 2e): display fields, structure and on/off. The code never changes. */
+export type ModuleUpdateValues = Partial<
+  Pick<ModuleRow, "module_name" | "description" | "sno" | "icon" | "parent_id" | "route_name" | "is_menu" | "is_permission" | "is_active" | "updated_by">
+>;
+
+async function updateById(moduleId: string, values: ModuleUpdateValues, options: WriteOptions = {}): Promise<ModuleRow | null> {
   await AppModule.update(values, { where: { id: moduleId }, ...txOptions(options) });
   return findById(moduleId, options);
 }
 
-export const moduleRepository = { findActivePermissionByCode, listActiveOrdered, listAllOrdered, findById, updateDisplay };
+/** Serializes changes to the module tree (Phase 2e), so two moves at the same moment can't build a loop. */
+async function lockTree(options: { transaction: Transaction }): Promise<void> {
+  await acquireAdvisoryXactLock("module_tree", "all", options);
+}
+
+export const moduleRepository = { findActivePermissionByCode, listActiveOrdered, listAllOrdered, findById, findByCode, create, updateById, lockTree };

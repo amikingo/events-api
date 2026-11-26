@@ -378,6 +378,27 @@ export class AssignmentScopeConflictError extends AppError {
   }
 }
 
+/** Phase 2e: the admin screens need this module, or the code depends on this field of a core module. */
+export class ModuleProtectedError extends AppError {
+  constructor(message = "This module is protected: the platform needs it as it is", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "module_protected", details, cause: options?.cause });
+  }
+}
+
+/** Phase 2e: roles, templates or overrides still grant this module (`details.grants`), so it must stay a permission module. */
+export class ModuleInUseError extends AppError {
+  constructor(message = "Roles, templates or overrides still grant this module; remove those grants first", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "module_in_use", details, cause: options?.cause });
+  }
+}
+
+/** Phase 2e: the module tree doesn't allow this on/off change (active submodules, or a switched-off parent). */
+export class InvalidModuleStateError extends AppError {
+  constructor(message = "This module can't be switched in its current place in the tree", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "invalid_module_state", details, cause: options?.cause });
+  }
+}
+
 /** The change would leave the organization without an active Owner. */
 export class LastOwnerAssignmentError extends AppError {
   constructor(message = "The organization must keep at least one active Owner", details?: unknown, options?: ErrorOptions) {

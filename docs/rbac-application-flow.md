@@ -37,7 +37,9 @@ the same request must pass `req.auth.assignmentId` too.
    apply everywhere; tenant assignments only inside their organization; organization-wide covers all branches;
    branch-scoped only its branch. None — deny (`no_assignment`).
 4. Platform `SUPER_ADMIN` — allow (`super_admin_bypass`). Only when the signed-in assignment is the super admin one.
-5. (Extension point) organization feature gates.
+5. Organization feature gates (Phase 2e): an organization setting that switches an action off — deny
+   (`feature_disabled`). Overrides can't reopen it. Today: *Branches* everything but `create` when `has_branches` is
+   false (`FEATURE_GATES` in `permission-resolution.service.ts`).
 6. Explicit overrides, branch-specific bucket first, then organization-wide/platform; deny wins among equals.
 7. Any role grant — allow (`role_permission`), else deny (`default_deny`).
 
@@ -114,8 +116,9 @@ Most organizers have no branches. `organization.has_branches` (default `false`) 
 - Every organization still gets a default `MAIN` branch, created with it, so anything that needs a branch can
   rely on one. With `has_branches = false` that branch is **hidden**:
   - `/me` reports `assignment.organization.has_branches = false`;
-  - the server leaves the *Branches* item out of the navigation. The `permissions` map is unchanged, because it
-    states what the API allows. Platform staff always see *Branches*.
+  - a feature gate (Phase 2e, step 5 of the resolution order) denies every *Branches* action except `create`
+    (`feature_disabled`): the `permissions` map shows them false, so *Branches* leaves the menu, and the branch
+    routes answer 403 with `details.reason: "feature_disabled"`. The Super Admin is exempt.
 - **Adding a branch turns branches on.** `branch.service.createBranch` sets `has_branches = true` in the same
   transaction. From then on `MAIN` and the new branch are both visible, and the owner can rename `MAIN`.
 - **No branch-limited staff while branches are off.** `assign:staff --branch-code` is refused with
@@ -237,12 +240,8 @@ hold in their signed-in assignment, 403 `grant_exceeds_own_access`).
   escalation rule applies there.
 
 **Modules:** `GET /v1/modules` (`MODULES.view`, platform) returns every module as a tree; `PATCH /v1/modules/{moduleId}`
-(`MODULES.update`, platform) changes `module_name`, `description`, `sno` and `icon` only. Codes, routes, parents and
-on/off stay fixed: the code and the web app depend on them, and switching a module off would lock everyone out of it.
-`/me` follows on the next request.
-
-**Not built:** endpoints for platform roles and platform staff beyond the Super Admin; creating, deleting or switching
-off modules.
+(`MODULES.update`, platform) changes `module_name`, `description`, `sno` and `icon`. Phase 2e step 6 adds creating
+modules, the structure fields and switching on and off (below). `/me` follows on the next request.
 
 ## Access control brought up to bookings (Phase 2e, from 26 November 2026)
 
@@ -308,3 +307,35 @@ keyed by `organization_id`, so tenant routes never see platform rows.
   nobody changes or deletes their own platform assignment (409 `own_assignment`).
 - **A platform role's grants on tenant modules apply in every organization.** "Platform support" with *Guests › view*
   reads every organization's guest list. Give platform roles only what platform staff need everywhere.
+
+**Step 6: module administration and feature gates.**
+- `POST /v1/modules` (`MODULES.create`, platform): `{ code, module_name, description?, parent_id?, sno?, icon?,
+  route_name?, is_menu, is_permission }`. A menu group, a link, or a permission module for platform roles. Codes are
+  upper case, unique (409 `conflict`, field `code`) and fixed.
+- `PATCH /v1/modules/{moduleId}` also takes `parent_id`, `route_name`, `is_menu` and `is_permission`:
+  - **the tree:** the parent must exist and be switched on, and a module can't sit under itself or its own submodules
+    (400, `issues[].code` `parent_not_found`, `parent_inactive`, `parent_cycle`);
+  - **core modules** (`is_core`: the codes in `MODULE_CODES`, which the code checks) keep their `route_name` and
+    `is_permission` (409 `module_protected`, `details.field`); their parent and menu flag may change;
+  - **grants:** a module stops being a permission module only when no role, template or override grants it
+    (409 `module_in_use`, `details.grants`).
+- `PATCH /v1/modules/{moduleId}/status` (`MODULES.update`, platform) `{ is_active }`:
+  - **always on** (`always_on`): Modules, Role Templates, Organizations, Roles and Staff Assignments (409
+    `module_protected`), so the admin screens can't lock themselves out;
+  - a module with switched-on submodules can't be switched off, and one under a switched-off parent can't be switched
+    on (409 `invalid_module_state`), so nothing floats loose in the menu;
+  - **switched off,** nobody can use it, the Super Admin included (`module_unavailable`; 403 with
+    `details.reason: "module_unavailable"`), and it leaves every menu and grid.
+- **Grants on a switched-off module are kept.** Replacing a role's, template's or override set's grants deletes only
+  rows of switched-on modules, and the screens list switched-on modules only, so editing a role while Guests is off
+  doesn't wipe its Guests grant. New organizations still get their template grants on switched-off modules. A role
+  made from a template while a module is off doesn't get that module (copies go through the grantable check).
+- **New modules are never tenant-grantable:** `TENANT_GRANTABLE` stays in code, because only code can make a module
+  mean something. Platform roles may hold them.
+- **Feature gates** (`FEATURE_GATES` in `permission-resolution.service.ts`): an organization setting that switches
+  actions off for its staff, checked after the Super Admin bypass and before overrides (`feature_disabled`; false in
+  `/me`; out of the menu when `view` is gated; 403 with `details.reason: "feature_disabled"`). The first gate:
+  *Branches* everything but `create` when `has_branches` is false. This replaces the old special case that only hid
+  the menu item.
+- Every module change takes the module-tree lock (`moduleRepository.lockTree`), so two moves at once can't build a
+  loop.

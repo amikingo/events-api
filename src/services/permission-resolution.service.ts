@@ -1,9 +1,11 @@
 import { InvalidScopeError } from "../errors/app-errors.js";
 import type { ModuleRow } from "../models/module.js";
+import type { OrganizationRow } from "../models/organization.js";
 import type { RoleModuleAccessRow } from "../models/role-module-access.js";
 import type { UserModuleAccessRow } from "../models/user-module-access.js";
 import { branchRepository } from "../repositories/branch.repository.js";
 import { moduleRepository } from "../repositories/module.repository.js";
+import { organizationRepository } from "../repositories/organization.repository.js";
 import { roleModuleAccessRepository } from "../repositories/role-module-access.repository.js";
 import { userModuleAccessRepository } from "../repositories/user-module-access.repository.js";
 import { userRoleRepository, type AssignmentRow } from "../repositories/user-role.repository.js";
@@ -30,6 +32,7 @@ export type PermissionSource =
   | "module_unavailable"
   | "no_assignment"
   | "super_admin_bypass"
+  | "feature_disabled"
   | "user_override_allow"
   | "user_override_deny"
   | "role_permission"
@@ -82,6 +85,35 @@ export function appliesToScope(assignment: AssignmentRow, scope: PermissionScope
   return scope.branchId !== null && assignment.branch_id === scope.branchId;
 }
 
+/**
+ * Organization feature gates (Phase 2e, decided 26 November 2026): an organization setting that switches part of a
+ * module off for that organization's staff, whatever their role or overrides say. A gated action is denied with
+ * source `feature_disabled`, shows as false in `/me` and, when `view` is gated, leaves the menu. The platform Super
+ * Admin is exempt (the bypass runs first). Adding a gate is one entry here.
+ *
+ * Branches: without branches an organization keeps one hidden default branch, so everything but `create` is off.
+ * `create` stays open because adding the first branch is what switches branches on.
+ */
+type FeatureGate = { moduleCode: string; actions: readonly PermissionAction[]; isOff: (organization: OrganizationRow) => boolean };
+
+export const FEATURE_GATES: readonly FeatureGate[] = [
+  {
+    moduleCode: MODULE_CODES.BRANCHES,
+    actions: PERMISSION_ACTIONS.filter((action) => action !== "create"),
+    isOff: (organization) => !organization.has_branches,
+  },
+];
+
+/** The actions of this module that the organization's settings switch off (empty when nothing is gated). */
+export function gatedActions(moduleCode: string, organization: OrganizationRow | null): Set<PermissionAction> {
+  const off = new Set<PermissionAction>();
+  if (!organization) return off;
+  for (const gate of FEATURE_GATES) {
+    if (gate.moduleCode === moduleCode && gate.isOff(organization)) gate.actions.forEach((action) => off.add(action));
+  }
+  return off;
+}
+
 /** Among equally specific explicit overrides, deny wins. */
 function mergeExplicit(values: boolean[]): boolean | null {
   if (values.includes(false)) return false;
@@ -125,8 +157,17 @@ async function resolvePermission(input: {
     return { allowed: true, source: "super_admin_bypass", scope, roleIds };
   }
 
-  // Extension point: organization feature gates (e.g. a disabled feature forces deny) go here,
-  // before overrides and role grants. Platform super admins are exempt (handled above).
+  // Organization feature gates come before overrides and role grants (the Super Admin is exempt, handled above).
+  // The organization is loaded only when a gate could apply: from the signed-in assignment, or for platform staff
+  // acting in an organization, from the database.
+  if (scope.level === "organization" && FEATURE_GATES.some((gate) => gate.moduleCode === moduleCode && gate.actions.includes(action))) {
+    const organization =
+      applicable.find((assignment) => assignment.organization?.id === scope.organizationId)?.organization ??
+      (await organizationRepository.findById(scope.organizationId));
+    if (gatedActions(moduleCode, organization).has(action)) {
+      return { allowed: false, source: "feature_disabled", scope, roleIds };
+    }
+  }
 
   const field = ACTION_TO_FIELD[action];
   const [overrides, roleAccesses] = await Promise.all([
@@ -247,20 +288,21 @@ async function resolveStaffSession(
   const roleAccessByModuleId = new Map(roleAccessRows.map((row) => [row.module_id, row]));
   const overrideByModuleId = new Map(overrideRows.map((row) => [row.module_id, row]));
 
+  // Feature gates (see FEATURE_GATES) turn gated actions false, so the map states what the API allows and a gated
+  // `view` takes the module out of the menu. Platform staff (no organization) have no gates here.
   const permissions: Record<string, PermissionMatrix> = {};
   for (const module of modules) {
     if (!module.is_permission) continue;
-    permissions[module.code] = superAdmin
-      ? { ...FULL_PERMISSION }
-      : effectivePermission(roleAccessByModuleId.get(module.id), overrideByModuleId.get(module.id));
+    if (superAdmin) {
+      permissions[module.code] = { ...FULL_PERMISSION };
+      continue;
+    }
+    const matrix = effectivePermission(roleAccessByModuleId.get(module.id), overrideByModuleId.get(module.id));
+    for (const action of gatedActions(module.code, assignment.organization)) matrix[action] = false;
+    permissions[module.code] = matrix;
   }
 
-  // An organization without branches keeps a hidden default branch: its staff never see the Branches menu item.
-  // The permissions map is left as is, because it states what the API allows.
-  const hidesBranches = assignment.organization !== null && !assignment.organization.has_branches;
-  const navigationModules = hidesBranches ? modules.filter((module) => module.code !== MODULE_CODES.BRANCHES) : modules;
-
-  return { permissions, navigation: buildNavigationTree(navigationModules, permissions) };
+  return { permissions, navigation: buildNavigationTree(modules, permissions) };
 }
 
 export const permissionResolutionService = { resolvePermission, resolveStaffSession };

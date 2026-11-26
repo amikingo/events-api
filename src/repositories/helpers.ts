@@ -1,4 +1,4 @@
-import { Transaction, type LOCK, type Model, type ModelStatic } from "sequelize";
+import { literal, Transaction, type LOCK, type Model, type ModelStatic } from "sequelize";
 import { sequelize } from "../db.js";
 
 /**
@@ -42,4 +42,13 @@ export async function acquireAdvisoryXactLock(
     replacements: { group, key },
     transaction: options.transaction,
   });
+}
+
+/**
+ * The ids of switched-on modules, as a subquery for `{ module_id: { [Op.in]: activeModuleIds() } }` (Phase 2e).
+ * Replacing a grant set deletes only the rows of switched-on modules: the form never shows a switched-off module, so
+ * its grants are kept for when it is switched back on.
+ */
+export function activeModuleIds(): ReturnType<typeof literal> {
+  return literal('(SELECT "id" FROM "module" WHERE "is_active" = true)');
 }

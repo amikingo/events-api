@@ -2,7 +2,7 @@ import { Op, type CreationAttributes, type Transaction } from "sequelize";
 import { UserModuleAccess } from "../models/index.js";
 import type { UserModuleAccessRow } from "../models/user-module-access.js";
 import { toPlainList } from "../utils/sequelize.js";
-import { txOptions, type RepoOptions } from "./helpers.js";
+import { activeModuleIds, txOptions, type RepoOptions } from "./helpers.js";
 
 const attributes = [
   "id",
@@ -50,14 +50,28 @@ async function countActiveByUserRole(userRoleId: string, options: RepoOptions = 
   return UserModuleAccess.count({ where: { user_role_id: userRoleId, is_active: true }, ...txOptions(options) });
 }
 
-/** Replaces an assignment's whole override set: delete, then insert, in the caller's transaction (Phase 2d). */
+/**
+ * Replaces an assignment's override set: delete, then insert, in the caller's transaction (Phase 2d). Overrides on
+ * switched-off modules stay (Phase 2e): the screen never shows them.
+ */
 async function replaceForUserRole(
   userRoleId: string,
   values: CreationAttributes<UserModuleAccess>[],
   options: { transaction: Transaction },
 ): Promise<void> {
-  await UserModuleAccess.destroy({ where: { user_role_id: userRoleId }, transaction: options.transaction });
+  await UserModuleAccess.destroy({ where: { user_role_id: userRoleId, module_id: { [Op.in]: activeModuleIds() } }, transaction: options.transaction });
   if (values.length > 0) await UserModuleAccess.bulkCreate(values, { transaction: options.transaction });
 }
 
-export const userModuleAccessRepository = { listActiveByUserRoleIdsAndModule, listActiveByUserRole, countActiveByUserRole, replaceForUserRole };
+/** How many overrides name this module, switched-off ones included (Phase 2e: the module must stay a permission module). */
+async function countByModule(moduleId: string, options: RepoOptions = {}): Promise<number> {
+  return UserModuleAccess.count({ where: { module_id: moduleId }, ...txOptions(options) });
+}
+
+export const userModuleAccessRepository = {
+  listActiveByUserRoleIdsAndModule,
+  listActiveByUserRole,
+  countActiveByUserRole,
+  replaceForUserRole,
+  countByModule,
+};

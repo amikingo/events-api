@@ -2149,3 +2149,139 @@ test("row 84: Owners can't reach platform routes or see platform rows; SUPER_ADM
     mock.restoreAll();
   }
 });
+
+// --- Phase 2e step 6: module administration and feature gates ----------------------------------------------
+
+type ModuleNode = { id: string; code: string; is_active: boolean; parent_id: string | null; children: ModuleNode[] };
+
+/** Every module by code, from the Super Admin's tree (switched-off ones included). */
+async function modulesByCode(): Promise<Map<string, ModuleNode>> {
+  const tree = (await as("SUPER", "GET", "/v1/modules")).body.data as ModuleNode[];
+  const flat = (nodes: ModuleNode[]): ModuleNode[] => nodes.flatMap((node) => [node, ...flat(node.children)]);
+  return new Map(flat(tree).map((node) => [node.code, node]));
+}
+
+const moduleIdOf = (modules: Map<string, ModuleNode>, code: string): string => {
+  const found = modules.get(code);
+  assert.ok(found, `module ${code}`);
+  return found.id;
+};
+
+test("row 85: the Super Admin builds a menu group with a link and a permission module; /me shows the tree; loops, core routes and granted modules are refused; new modules aren't tenant-grantable", { skip }, async () => {
+  stubPlatformPeople();
+  try {
+    const group = await as("SUPER", "POST", "/v1/modules", { code: "insights", module_name: "Insights", is_menu: true, is_permission: false, sno: 90, icon: "ChartBar" });
+    assert.equal(group.status, 201, JSON.stringify(group.body));
+    assert.deepEqual([group.body.data.code, group.body.data.is_core, group.body.data.always_on], ["INSIGHTS", false, false]);
+    const link = await as("SUPER", "POST", "/v1/modules", {
+      code: "SALES_DASHBOARD",
+      module_name: "Sales dashboard",
+      parent_id: group.body.data.id,
+      route_name: "/insights/sales",
+      is_menu: true,
+      is_permission: false,
+    });
+    assert.equal(link.status, 201, JSON.stringify(link.body));
+    const report = await as("SUPER", "POST", "/v1/modules", { code: "SALES_REPORT", module_name: "Sales report", route_name: "/insights/report", is_menu: true, is_permission: true });
+    assert.equal(report.status, 201, JSON.stringify(report.body));
+    assert.equal((await as("SUPER", "POST", "/v1/modules", { code: "SALES_REPORT", module_name: "Again", is_menu: true, is_permission: true })).status, 409, "codes are unique");
+
+    // Move the permission module under the group; /me shows the new tree.
+    const moved = await as("SUPER", "PATCH", `/v1/modules/${report.body.data.id}`, { parent_id: group.body.data.id, sno: 2 });
+    assert.equal(moved.status, 200, JSON.stringify(moved.body));
+    const me = await as("SUPER", "GET", "/v1/auth/staff/me");
+    const insights = (me.body.data.navigation as Array<{ code: string; children: Array<{ code: string }> }>).find((node) => node.code === "INSIGHTS");
+    assert.deepEqual(insights?.children.map((child) => child.code), ["SALES_DASHBOARD", "SALES_REPORT"]);
+    assert.equal(me.body.data.permissions.SALES_REPORT.view, true);
+
+    // A loop is 400; a core module's route is fixed.
+    const loop = await as("SUPER", "PATCH", `/v1/modules/${group.body.data.id}`, { parent_id: report.body.data.id });
+    assert.deepEqual([loop.status, loop.body.error.details.issues[0].code], [400, "parent_cycle"]);
+    const modules = await modulesByCode();
+    const coreRoute = await as("SUPER", "PATCH", `/v1/modules/${moduleIdOf(modules, "EVENTS")}`, { route_name: "/programs" });
+    assert.deepEqual([coreRoute.status, coreRoute.body.error.code], [409, "module_protected"]);
+
+    // A platform role may hold the new permission module; an organization's role may not.
+    const support = await as("SUPER", "PATCH", `/v1/platform/roles/${platformFixture.supportRoleId}`, {
+      grants: [
+        grantOf("ORGANIZATIONS", true, false, false),
+        grantOf("REGISTRATIONS", true, false, false),
+        { ...grantOf("USER_ROLES", true, false, true), delete: true },
+        grantOf("SALES_REPORT", true, false, false),
+      ],
+    });
+    assert.equal(support.status, 200, JSON.stringify(support.body));
+    const tenant = await as("SELAM_OWNER", "POST", `${staffBase()}/roles`, { code: "ANALYST", name: "Analyst", grants: [grantOf("SALES_REPORT", true, false, false)] });
+    assert.deepEqual([tenant.status, tenant.body.error.details.issues[0].code], [400, "module_not_grantable"]);
+
+    // While a role grants it, it stays a permission module.
+    const inUse = await as("SUPER", "PATCH", `/v1/modules/${report.body.data.id}`, { is_permission: false });
+    assert.deepEqual([inUse.status, inUse.body.error.code, inUse.body.error.details.grants], [409, "module_in_use", 1]);
+
+    // Tidy up: a group with switched-on submodules can't be switched off; switch them off first.
+    const groupFirst = await as("SUPER", "PATCH", `/v1/modules/${group.body.data.id}/status`, { is_active: false });
+    assert.deepEqual([groupFirst.status, groupFirst.body.error.code, groupFirst.body.error.details.active_children], [409, "invalid_module_state", 2]);
+    for (const id of [link.body.data.id, report.body.data.id, group.body.data.id]) {
+      assert.equal((await as("SUPER", "PATCH", `/v1/modules/${id}/status`, { is_active: false })).status, 200);
+    }
+    const after = await as("SUPER", "GET", "/v1/auth/staff/me");
+    assert.ok(!(after.body.data.navigation as Array<{ code: string }>).some((node) => node.code === "INSIGHTS"), "switched off, it leaves the menu");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 86: switching Guests off denies everyone and keeps its grants; Modules stays on; without branches, Branches is feature_disabled but adding one stays open", { skip }, async () => {
+  stubPlatformPeople();
+  try {
+    const modules = await modulesByCode();
+    const protectedOff = await as("SUPER", "PATCH", `/v1/modules/${moduleIdOf(modules, "MODULES")}/status`, { is_active: false });
+    assert.deepEqual([protectedOff.status, protectedOff.body.error.code], [409, "module_protected"]);
+
+    const guests = moduleIdOf(modules, "REGISTRATIONS");
+    const off = await as("SUPER", "PATCH", `/v1/modules/${guests}/status`, { is_active: false });
+    assert.deepEqual([off.status, off.body.data.is_active], [200, false]);
+    let newOrganizationId = "";
+    try {
+      for (const person of ["SELAM_OWNER", "SUPER"] as const) {
+        const denied = await as(person, "GET", swapFixture.guestsPath);
+        assert.deepEqual([denied.status, denied.body.error.details], [403, { reason: "module_unavailable" }], `${person}: the Super Admin included`);
+      }
+      const me = await as("SELAM_OWNER", "GET", "/v1/auth/staff/me");
+      assert.equal(me.body.data.permissions.REGISTRATIONS, undefined);
+      const codes = (me.body.data.navigation as Array<{ code: string; children: Array<{ code: string }> }>).flatMap((node) => [node.code, ...node.children.map((child) => child.code)]);
+      assert.ok(!codes.includes("REGISTRATIONS"), JSON.stringify(codes));
+
+      // Editing a role while Guests is off: the form doesn't show Guests, and its grant is kept.
+      const edited = await as("SUPER", "PATCH", `/v1/platform/roles/${platformFixture.supportRoleId}`, {
+        grants: [grantOf("ORGANIZATIONS", true, false, false), { ...grantOf("USER_ROLES", true, false, true), delete: true }],
+      });
+      assert.equal(edited.status, 200, JSON.stringify(edited.body));
+      assert.ok(!(edited.body.data.grants as Array<{ module_code: string }>).some((grant) => grant.module_code === "REGISTRATIONS"));
+
+      // A new organization while Guests is off still gets its Owner's Guests grant (for when it is back on).
+      const created = await as("SUPER", "POST", "/v1/organizations", { organization: { name: "Blue Nile Pilot" } });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      newOrganizationId = created.body.data.organization.id;
+    } finally {
+      assert.equal((await as("SUPER", "PATCH", `/v1/modules/${guests}/status`, { is_active: true })).status, 200);
+    }
+    const supportToken = await tokenFor(SUPPORT_ID);
+    assert.equal((await asToken(supportToken, "GET", swapFixture.guestsPath)).status, 200, "the kept grant works again");
+    const roles = (await as("SUPER", "GET", `/v1/organizations/${newOrganizationId}/roles`)).body.data as Array<{ code: string; grants: Array<{ module_code: string }> }>;
+    assert.ok(roles.find((role) => role.code === "OWNER")?.grants.some((grant) => grant.module_code === "REGISTRATIONS"));
+
+    // Abay Pilot (row 62) has no branches: its Owner may only add the first one (row 21 shows that switching them on).
+    const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
+    assert.ok(abay);
+    assert.equal(abay.has_branches, false);
+    const abayOwner = await tokenFor(ABAY_OWNER_ID);
+    const list = await asToken(abayOwner, "GET", `/v1/organizations/${abay.id}/branches`);
+    assert.deepEqual([list.status, list.body.error.details], [403, { reason: "feature_disabled" }]);
+    const abayMe = await asToken(abayOwner, "GET", "/v1/auth/staff/me");
+    assert.deepEqual(abayMe.body.data.permissions.BRANCHES, { view: false, create: true, update: false, delete: false, import: false, export: false, notify: false });
+    assert.equal((await as("SUPER", "GET", `/v1/organizations/${abay.id}/branches`)).status, 200, "the Super Admin is exempt");
+  } finally {
+    mock.restoreAll();
+  }
+});

@@ -25,7 +25,8 @@ function permissionFlags(actions: readonly PermissionAction[]): Record<Permissio
 }
 
 async function createDefaultRoles(organizationId: string, actorId: string | null, transaction: Transaction): Promise<Map<string, RoleRow>> {
-  const modules = await moduleRepository.listActiveOrdered({ transaction });
+  // Switched-off modules included (Phase 2e): their grants apply once they are switched back on.
+  const modules = await moduleRepository.listAllOrdered({ transaction });
   const moduleIdByCode = new Map(modules.filter((row) => row.is_permission).map((row) => [row.code, row.id]));
 
   const roles = new Map<string, RoleRow>();
