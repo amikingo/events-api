@@ -10,6 +10,7 @@ import {
   getRegistrationRequest,
   getRegistrationSummaryRequest,
   listRegistrationsRequest,
+  returnRegistrationRequest,
 } from "../validators/registration.js";
 import { getActorId } from "./helpers.js";
 
@@ -94,12 +95,20 @@ async function exportRegistrations(req: Request, res: Response): Promise<void> {
     .send(csv);
 }
 
+/** Phase 8: a ticket returned (RETURNED), or returned before (ALREADY_RETURNED, the same refund case); both 200. */
+async function returnRegistration(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, returnRegistrationRequest);
+  const result = await registrationService.returnRegistration(params.organizationId, params.eventId, params.registrationId, getActorId(req));
+  sendSuccess(res, 200, result, result.outcome === "RETURNED" ? "Ticket returned" : "Ticket already returned");
+}
+
 export const registrationController = {
   registerGuest,
   listRegistrations,
   getRegistrationSummary,
   getRegistration,
   changeRegistrationStatus,
+  returnRegistration,
   changeRegistrationTicketType,
   exportRegistrations,
 };

@@ -28,6 +28,7 @@ import {
   OrderPayment,
   Organization,
   OrganizationChechePayCredential,
+  PaymentCase,
   Person as PersonModel,
   Registration,
   Role,
@@ -2990,6 +2991,102 @@ test("row 99: a double charge, a late payment whose places were sold and a misma
     assert.equal((await as("HORN_OWNER", "GET", casesPath)).status, 403, "another organization");
     assert.equal((await as("SELAM_VIEWER", "GET", casesPath)).status, 403, "Viewers have no Payments");
     assert.equal((await as("SELAM_VIEWER", "POST", `${casesPath}/${caseOf("AMOUNT_MISMATCH")}/resolve`, refund)).status, 403);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+// --- Phase 8 step 4: partial returns ------------------------------------------------------------------------------
+
+/** An order's tickets as staff see them (ids, codes, ticket types), by its reference. */
+async function staffTicketsOf(eventPath: string, reference: string): Promise<Array<{ id: string; code: string; status: string; ticket_type: { code: string } }>> {
+  const order = await TicketOrder.findOne({ where: { reference }, raw: true });
+  assert.ok(order);
+  return (await as("SELAM_OWNER", "GET", `${eventPath}/orders/${order.id}`)).body.data.tickets;
+}
+
+test("row 100: returning the unused VIP of a paid order after its price changed leaves exactly 1,000 ETB due, frees one place and the buyer's allowance, keeps both General Admission codes valid; a retry gives one case; a free ticket returns with no case; a return racing a check-in has one winner; the status route opens a case and refuses a used ticket", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pilot Gala Dinner", registration_mode: "QUICK", purchase_limit_per_mobile: 3 }, [
+      { code: "VIP", name: "VIP", price: "1000" },
+      { code: "KIDS", name: "Kids", price: "0" },
+    ]);
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    const orders = `${event.publicPath}/orders`;
+    const pay = async (reference: string, amount: string) => {
+      const txRef = await txRefOf(reference);
+      ledger.set(txRef, { status: "SUCCEEDED", amount });
+      assert.equal((await signedWebhook(txRef)).body.data.order_status, "CONFIRMED");
+    };
+
+    const bought = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 2 }, { ticket_type_code: "VIP", quantity: 1 }], "0913600001"), randomUUID());
+    assert.equal(bought.status, 201, JSON.stringify(bought.body));
+    await pay(bought.body.data.reference, "2000.00");
+    const tickets = await staffTicketsOf(event.path, bought.body.data.reference);
+    const vip = tickets.find((ticket) => ticket.ticket_type.code === "VIP");
+    const gas = tickets.filter((ticket) => ticket.ticket_type.code === "GA");
+    assert.ok(vip && gas.length === 2);
+    const atLimit = await postWithKey(orders, orderForm([{ ticket_type_code: "KIDS", quantity: 1 }], "0913600001"), randomUUID());
+    assert.equal(atLimit.body.error?.code, "purchase_limit_reached", "3 of 3 before the return");
+
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.VIP}`, { price: "1500" })).status, 200, "the catalog price changes");
+    const before = (await as("SELAM_OWNER", "GET", `${event.path}/registrations/summary`)).body.data;
+
+    const returned = await as("SELAM_OWNER", "POST", `${event.path}/registrations/${vip.id}/return`);
+    assert.deepEqual(
+      [returned.status, returned.body.data.outcome, returned.body.data.registration.status, returned.body.data.refund_case.kind, returned.body.data.refund_case.amount, returned.body.data.refund_case.currency],
+      [200, "RETURNED", "CANCELLED", "TICKET_RETURN", "1000.00", "ETB"],
+      "exactly the 1,000 ETB paid, not today's 1,500",
+    );
+    const after = (await as("SELAM_OWNER", "GET", `${event.path}/registrations/summary`)).body.data;
+    const vipCount = (summary: { ticket_types: Array<{ code: string; confirmed: number }> }) => summary.ticket_types.find((type) => type.code === "VIP")?.confirmed;
+    assert.deepEqual([after.confirmed, vipCount(after)], [before.confirmed - 1, (vipCount(before) as number) - 1], "one event place and one VIP place back");
+    assert.equal((await postWithKey(orders, orderForm([{ ticket_type_code: "KIDS", quantity: 1 }], "+251913600001"), randomUUID())).status, 201, "one unit of the buyer's allowance back");
+
+    const retried = await as("SELAM_OWNER", "POST", `${event.path}/registrations/${vip.id}/return`);
+    assert.deepEqual([retried.body.data.outcome, retried.body.data.refund_case.id], ["ALREADY_RETURNED", returned.body.data.refund_case.id]);
+    assert.equal(await PaymentCase.count({ where: { registration_id: vip.id } }), 1, "one refund case");
+    const vipAtDoor = await gateScan("SELAM_OWNER", event.path, vip.code, randomUUID());
+    assert.deepEqual([vipAtDoor.status, vipAtDoor.body.error.code], [409, "ticket_not_admissible"], "the returned ticket is invalid at the door");
+    for (const ga of gas) assert.equal((await gateScan("SELAM_OWNER", event.path, ga.code, randomUUID())).body.data.result, "ADMITTED", "the other tickets stay usable");
+    const usedCancel = await as("SELAM_OWNER", "PATCH", `${event.path}/registrations/${gas[0]?.id}/status`, { status: "CANCELLED" });
+    assert.deepEqual([usedCancel.status, usedCancel.body.error.code], [409, "ticket_already_used"]);
+    assert.deepEqual([(await as("SELAM_OWNER", "POST", `${event.path}/registrations/${gas[1]?.id}/return`)).body.error?.code], ["ticket_already_used"]);
+
+    // A mixed order: the free ticket returns with no case; its paid ticket races a check-in.
+    const mixed = await postWithKey(orders, orderForm([{ ticket_type_code: "KIDS", quantity: 1 }, { ticket_type_code: "GA", quantity: 1 }], "0913600002"), randomUUID());
+    await pay(mixed.body.data.reference, "500.00");
+    const mixedTickets = await staffTicketsOf(event.path, mixed.body.data.reference);
+    const kids = mixedTickets.find((ticket) => ticket.ticket_type.code === "KIDS");
+    const mixedGa = mixedTickets.find((ticket) => ticket.ticket_type.code === "GA");
+    assert.ok(kids && mixedGa);
+    const freeReturn = await as("SELAM_OWNER", "POST", `${event.path}/registrations/${kids.id}/return`);
+    assert.deepEqual([freeReturn.body.data.outcome, freeReturn.body.data.refund_case], ["RETURNED", null], "a free ticket finishes at cancellation");
+    const [scan, giveBack] = await Promise.all([gateScan("SELAM_OWNER", event.path, mixedGa.code, randomUUID()), as("SELAM_OWNER", "POST", `${event.path}/registrations/${mixedGa.id}/return`)]);
+    const admittedWon = scan.status === 200 && giveBack.status === 409 && giveBack.body.error.code === "ticket_already_used";
+    const returnWon = giveBack.status === 200 && scan.status === 409 && scan.body.error.code === "ticket_not_admissible";
+    assert.ok(admittedWon !== returnWon, `exactly one wins: scan ${scan.status}, return ${giveBack.status}`);
+    assert.equal(await PaymentCase.count({ where: { registration_id: mixedGa.id } }), returnWon ? 1 : 0);
+
+    // The status route cancels a paid ticket as a return.
+    const single = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913600003"), randomUUID());
+    await pay(single.body.data.reference, "500.00");
+    const [singleTicket] = await staffTicketsOf(event.path, single.body.data.reference);
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/registrations/${singleTicket?.id}/status`, { status: "CANCELLED" })).status, 200);
+    const statusCase = await PaymentCase.findOne({ where: { registration_id: singleTicket?.id }, raw: true });
+    assert.deepEqual([statusCase?.kind, statusCase?.amount], ["TICKET_RETURN", "500.00"]);
+
+    // The refund is complete once staff record the merchant's refund reference.
+    const casesPath = `/v1/organizations/${fixture.selamId}/payment-cases`;
+    const refunded = await as("SELAM_OWNER", "POST", `${casesPath}/${returned.body.data.refund_case.id}/resolve`, { resolution: "REFUNDED", refunded_amount: "1000", refunded_currency: "ETB", merchant_reference: "CP-RET-100" });
+    assert.deepEqual([refunded.body.data.status, refunded.body.data.ticket.status, refunded.body.data.order.status], ["RESOLVED", "CANCELLED", "CONFIRMED"], "the original charge and order stand");
+    const original = await OrderPayment.findOne({ where: { tx_ref: await txRefOf(bought.body.data.reference) }, raw: true });
+    assert.deepEqual([original?.status, original?.amount], ["PAID", "2000.00"], "the original charge and price history are kept");
+
+    assert.equal((await as("HORN_OWNER", "POST", `${event.path}/registrations/${singleTicket?.id}/return`)).status, 403, "another organization");
+    assert.equal((await as("SELAM_VIEWER", "POST", `${event.path}/registrations/${gas[0]?.id}/return`)).status, 403, "view-only");
   } finally {
     mock.restoreAll();
   }

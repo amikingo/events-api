@@ -72,6 +72,9 @@ export const changeRegistrationStatusRequest = {
   body: registrationStatusChangeSchema,
 } satisfies RequestContract;
 
+/** Phase 8: staff approve the return of one confirmed, unused ticket (no body). */
+export const returnRegistrationRequest = { params: registrationParamsSchema } satisfies RequestContract;
+
 export const exportRegistrationsRequest = { params: eventParamsSchema, query: registrationExportQuerySchema } satisfies RequestContract;
 
 export const changeRegistrationTicketTypeRequest = {

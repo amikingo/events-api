@@ -590,7 +590,14 @@ The plan follows the 27 November handoff.
 - The QR payload is the existing ticket code, which events-web draws.
 - The summary, guest list, single registration and CSV gain the check-in fields.
 
-**Step 3 (payment cases and the Payments module): built; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test` (row 99).**
+**Step 3 (payment cases and the Payments module): done (27 November 2026).** `npm run check` passed; the project owner applied the 5 migrations, ran `TEST_DATABASE=1 npm test` (row 99; row 76's OWNER template count updated to 8) and committed.
 - **Migrations:** `20261208000001`–`000005` (the module, the Owner role and template grants, `payment_case`, and the backfill).
 - **Cases:** `paymentService.settle` opens one case per payment attempt for `REFUND_REQUIRED`, `PAID_TWICE` and `AMOUNT_MISMATCH`.
 - **Endpoints:** staff with Payments list, read and resolve cases (`REFUNDED` with the merchant reference, or `CLOSED_WITHOUT_REFUND` with a note). Resolving never changes tickets or orders.
+
+**Step 4 (partial returns): built; waiting on `npm run openapi`, `npm run check`, then `TEST_DATABASE=1 npm test` (row 100). No migration.**
+- `POST …/registrations/{id}/return` (Guests › update) returns one confirmed, unused ticket. It frees one event place, one place of its type and one unit of the buyer's allowance.
+- A paid ticket opens one `TICKET_RETURN` case for its stored price in the same transaction.
+- A repeat gives the original result.
+- The status route's `CANCELLED` shares the same logic.
+- Under the locks, a ticket used at the door is refused, so a return and a check-in can't both succeed.

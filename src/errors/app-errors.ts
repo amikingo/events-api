@@ -341,6 +341,13 @@ export class PaymentCaseAlreadyResolvedError extends AppError {
   }
 }
 
+/** Phase 8: the ticket was admitted at the door (`details.checked_in_at`), so it can't be returned or cancelled. */
+export class TicketAlreadyUsedError extends AppError {
+  constructor(message = "This ticket was already used at the door", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "ticket_already_used", details, cause: options?.cause });
+  }
+}
+
 /** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
 export class CapacityReachedError extends AppError {
   constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {

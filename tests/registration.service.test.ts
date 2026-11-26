@@ -13,6 +13,8 @@ import {
   RegistrationCancelledError,
   RegistrationClosedError,
   TicketTypeInactiveError,
+  TicketAlreadyUsedError,
+  TicketNotIssuedError,
   TicketTypeRequiredError,
   ValidationAppError,
 } from "../src/errors/app-errors.js";
@@ -28,13 +30,18 @@ import { organizationRepository } from "../src/repositories/organization.reposit
 import { personRepository } from "../src/repositories/person.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
 import { submissionKeyRepository } from "../src/repositories/submission-key.repository.js";
+import { orderPaymentRepository } from "../src/repositories/order-payment.repository.js";
+import { ticketAdmissionRepository } from "../src/repositories/ticket-admission.repository.js";
 import { ticketOrderRepository } from "../src/repositories/ticket-order.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
+import { paymentCaseService, type ReturnCaseInput } from "../src/services/payment-case.service.js";
 import { registrationService } from "../src/services/registration.service.js";
 import { generateRegistrationCode, REGISTRATION_CODE_PATTERN } from "../src/utils/registration-code.js";
 import { requestHash } from "../src/utils/request-hash.js";
-import { eventRow, IDS, organizationRow, personRow, registrationRow, orderRow, orderSummary, ticketTypeRow } from "./helpers/fixtures.js";
+import { eventRow, IDS, organizationRow, orderPaymentRow, PAYMENT_ID, personRow, registrationRow, orderRow, orderSummary, ticketTypeRow } from "./helpers/fixtures.js";
+import type { PaymentCaseRow } from "../src/models/payment-case.js";
+import type { TicketAdmissionRow } from "../src/models/ticket-admission.js";
 
 /** The registration service against mocked repositories and a fake transaction: no database needed. */
 const FAKE_TX = { id: "fake-transaction" } as unknown as Transaction;
@@ -56,6 +63,10 @@ type Arrange = {
   eventTaken?: number;
   ticketTypeTaken?: number;
   buyerHeld?: number;
+  /** Phase 8: the ticket's admission at the door, if any. */
+  admission?: Partial<TicketAdmissionRow> | null;
+  /** Phase 8: a ticket's existing return case, if any. */
+  returnCase?: Partial<PaymentCaseRow> | null;
 };
 
 /** Records every repository call in order, so the lock order can be checked. */
@@ -119,6 +130,40 @@ function arrange(options: Arrange = {}) {
     findOrder: mock.method(ticketOrderRepository, "findByEventAndId", async () => orderRow({ buyer_mobile: "+251911234567" })),
     countByBuyer: mock.method(registrationRepository, "countConfirmedByBuyerMobile", async () => options.buyerHeld ?? 0),
     expiredHolds: mock.method(ticketOrderRepository, "listExpiredPendingByEvent", async () => []),
+    // Phase 8: returns read the admission and open a refund case for a paid ticket.
+    admission: mock.method(ticketAdmissionRepository, "findByRegistration", async () =>
+      options.admission ? ({ admitted_at: new Date("2026-11-27T10:00:00Z"), admitted_by: IDS.user, ...options.admission } as TicketAdmissionRow) : null,
+    ),
+    findPayment: mock.method(orderPaymentRepository, "findByOrder", async () => orderPaymentRow({ order_id: "order-1" })),
+    openReturn: mock.method(paymentCaseService, "openForReturn", async (input: ReturnCaseInput) => returnCaseRow({ registration_id: input.registrationId, amount: input.amount, currency: input.currency })),
+    findReturnCase: mock.method(paymentCaseService, "findReturnCase", async () => (options.returnCase ? returnCaseRow(options.returnCase) : null)),
+  };
+}
+
+function returnCaseRow(overrides: Partial<PaymentCaseRow> = {}): PaymentCaseRow {
+  return {
+    id: "case-return-1",
+    organization_id: IDS.orgA,
+    event_id: IDS.event,
+    order_id: "order-1",
+    order_payment_id: PAYMENT_ID,
+    registration_id: IDS.registration,
+    kind: "TICKET_RETURN",
+    tx_ref: null,
+    amount: "1000.00",
+    currency: "ETB",
+    status: "OPEN",
+    resolution: null,
+    refunded_amount: null,
+    refunded_currency: null,
+    merchant_reference: null,
+    note: null,
+    resolved_by: null,
+    resolved_at: null,
+    created_by: IDS.user,
+    created_at: new Date("2026-11-27T10:00:00Z"),
+    updated_at: new Date("2026-11-27T10:00:00Z"),
+    ...overrides,
   };
 }
 
@@ -792,4 +837,58 @@ test("on an event with a purchase limit, an unnamed ticket whose order has no bu
     (error: unknown) => issueOf(error)?.code === "buyer_mobile_required",
   );
   assert.equal(calls.update.mock.callCount(), 0);
+});
+
+// --- Phase 8 step 4: partial returns ---------------------------------------------------------------------------
+
+test("returning a paid ticket: CANCELLED under the event, ticket type and registration locks, and one refund case for its stored price", async () => {
+  const calls = arrangeStatus(registrationRow({ price_amount: "1000.00", currency: "ETB", order_id: "order-1" }));
+  const result = await registrationService.returnRegistration(IDS.orgA, IDS.event, IDS.registration, IDS.user);
+  assert.deepEqual(calls.calls.filter((call) => call.endsWith(":lock")), ["event:lock", "ticket_type:lock", "registration:lock"]);
+  assert.deepEqual([calls.update.mock.calls[0]?.arguments[3]?.status, result.outcome], ["CANCELLED", "RETURNED"]);
+  const [input, transaction] = calls.openReturn.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual(
+    [input?.registrationId, input?.orderId, input?.orderPaymentId, input?.amount, input?.currency, input?.actorId, transaction],
+    [IDS.registration, "order-1", PAYMENT_ID, "1000.00", "ETB", IDS.user, FAKE_TX],
+    "the ticket's checkout price, in the same transaction",
+  );
+  assert.deepEqual([result.refund_case?.kind, result.refund_case?.amount], ["TICKET_RETURN", "1000.00"]);
+});
+
+test("returning a free ticket finishes at cancellation, with no case", async () => {
+  const calls = arrangeStatus(registrationRow({ price_amount: "0.00" }));
+  const result = await registrationService.returnRegistration(IDS.orgA, IDS.event, IDS.registration, IDS.user);
+  assert.deepEqual([result.outcome, result.refund_case], ["RETURNED", null]);
+  assert.equal(calls.openReturn.mock.callCount(), 0);
+});
+
+test("a ticket used at the door can't be returned or cancelled; held and released tickets aren't issued; nothing is written", async () => {
+  const used = arrangeStatus(registrationRow({ price_amount: "500.00" }), { admission: {} });
+  await assert.rejects(registrationService.returnRegistration(IDS.orgA, IDS.event, IDS.registration, IDS.user), (error: unknown) => error instanceof TicketAlreadyUsedError && (error.details as { checked_in_at: Date }).checked_in_at instanceof Date);
+  await assert.rejects(registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user), TicketAlreadyUsedError, "the old status route too");
+  assert.equal(used.update.mock.callCount(), 0);
+  assert.equal(used.openReturn.mock.callCount(), 0);
+  resetTransaction();
+
+  for (const status of ["HELD", "RELEASED"] as const) {
+    const held = arrangeStatus(registrationRow({ status, code: null }));
+    await assert.rejects(registrationService.returnRegistration(IDS.orgA, IDS.event, IDS.registration, IDS.user), TicketNotIssuedError);
+    assert.equal(held.update.mock.callCount(), 0);
+    resetTransaction();
+  }
+});
+
+test("returning a ticket again gives the original result: ALREADY_RETURNED with the same case, nothing new", async () => {
+  const calls = arrangeStatus(registrationRow({ status: "CANCELLED", cancelled_at: new Date(), price_amount: "1000.00" }), { returnCase: {} });
+  const result = await registrationService.returnRegistration(IDS.orgA, IDS.event, IDS.registration, IDS.user);
+  assert.deepEqual([result.outcome, result.refund_case?.id], ["ALREADY_RETURNED", "case-return-1"]);
+  assert.equal(calls.update.mock.callCount(), 0);
+  assert.equal(calls.openReturn.mock.callCount(), 0);
+});
+
+test("cancelling a paid ticket through the status route is a return too: it opens the refund case; its reply is unchanged", async () => {
+  const calls = arrangeStatus(registrationRow({ price_amount: "500.00" }));
+  const dto = await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user);
+  assert.equal(calls.openReturn.mock.callCount(), 1);
+  assert.equal(dto.id, IDS.registration, "still the registration, as before");
 });

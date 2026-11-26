@@ -468,8 +468,13 @@ the gate validates online.
   - a ticket that is `HELD`, `RELEASED` or `CANCELLED`: 409 `ticket_not_admissible`;
   - an event that isn't `PUBLISHED`: 409 `invalid_event_state`;
   - a key that already admitted another ticket: 409 `idempotency_key_reused`.
-- **Atomic:** the registration row is locked. It's the only lock check-in takes, so it can't deadlock with a return or
-  a cancellation. One admission per ticket is a unique key, so two gates racing produce exactly one admission.
+- **Atomic:** the event row is key-share locked first, then the registration row, which is the lock order every place
+  change uses (event first). Key-share locks don't block each other, so gates never wait on one another; a return, a
+  cancellation or a checkout (which lock the event `FOR UPDATE`) goes before or after. One admission per ticket is a
+  unique key, so two gates racing produce exactly one admission.
+  - *Why the event comes first:* inserting the admission takes a key-share lock on the event anyway, through its
+    foreign key. Taking it last deadlocked with a return that held the event while waiting for the same registration.
+    Matrix row 100's race found this before release.
 
 **Reporting:**
 - the summary has `checked_in`, overall and per ticket type;
@@ -521,3 +526,44 @@ Viewers have none. It's separate from Guests, so door staff who check people in 
 **Proof:** unit tests (one case per attempt or ticket, a lost race, resolutions and repeats, tenants) and matrix row 99
 (a double charge, a late payment with the places sold, and a mismatch, each opening one case; resolving; the ticket
 states; another organization and Viewers refused).
+
+### Step 4: partial returns
+
+**Staff approve the return of one confirmed, unused ticket from an order:**
+`POST /v1/organizations/{id}/events/{eventId}/registrations/{registrationId}/return` (Guests › update, no body).
+- **What comes back:** the ticket becomes `CANCELLED`, so it's invalid at the door. Exactly one event place, one place
+  of its ticket type and one unit of the buyer's mobile allowance come back, because all three counts use `CONFIRMED`
+  and `HELD` only.
+- **What doesn't change:** the order's other tickets stay usable, and the order, its original charge and every
+  ticket's stored price are kept.
+- **A paid ticket** opens one `TICKET_RETURN` payment case in the same transaction, for the ticket's own stored
+  checkout price and currency, not today's catalog price. The refund is complete when staff resolve that case as
+  `REFUNDED` with the merchant's refund reference (Step 3).
+- **A free ticket**, including a free one in a mixed order, finishes at cancellation, with no case.
+- **Reply:** `{ outcome: "RETURNED" | "ALREADY_RETURNED", registration, refund_case | null }`. A repeat gives the
+  original result: the same case, and never a second one, because cases are unique per ticket.
+- **Refusals:**
+  - a ticket admitted at the door: 409 `ticket_already_used`, with `details.checked_in_at`;
+  - a held or released ticket: 409 `ticket_not_issued`;
+  - an event that isn't `PUBLISHED` or `CLOSED`: 409 `invalid_event_state`.
+
+**The status route** (`PATCH …/status` → `CANCELLED`) now behaves the same: it refuses a used ticket and opens the
+refund case for a paid one. Its reply doesn't change.
+
+**Return vs check-in:**
+- A return locks the event (`FOR UPDATE`), then the ticket type, then the registration. Check-in key-share locks the
+  event, then locks the registration. Both take the event first, so neither can deadlock the other.
+- A return needs no admission, and check-in needs a `CONFIRMED` ticket, so for the same unused ticket exactly one
+  succeeds.
+- A cancelled paid ticket still can't come back for free (`payment_required`).
+
+**Proof:** unit tests (paid and free returns, a used ticket, held and released tickets, a repeat, the status route)
+and matrix row 100. Row 100 covers:
+- the VIP returned after its price changed, leaving exactly 1,000 ETB due;
+- the freed place and allowance, and the two General Admission codes still admitted;
+- one case on a retry;
+- a free ticket in a mixed order;
+- a return racing a check-in, with exactly one winner;
+- the status route;
+- the refund recorded while the original charge stands;
+- tenants and view-only staff refused.

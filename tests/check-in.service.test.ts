@@ -37,7 +37,10 @@ function arrange(options: { ticket?: Partial<RegistrationRow> | null; event?: Pa
   };
   let raced = options.raceOnce === true;
   mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
-  mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED", ...options.event }));
+  mock.method(eventRepository, "findByOrganizationAndId", async (_o: string, _e: string, repo?: { lock?: boolean | "keyShare" }) => {
+    if (repo?.lock) state.locks.push(`event:${String(repo.lock)}`);
+    return eventRow({ status: "PUBLISHED", ...options.event });
+  });
   mock.method(registrationRepository, "findByEventAndCode", async (_o: string, _e: string, code: string, repo?: { lock?: boolean }) => {
     if (repo?.lock) state.locks.push(`registration:${code}`);
     return state.ticket?.code === code ? { ...state.ticket } : null;
@@ -74,7 +77,7 @@ test("a confirmed ticket is admitted once: the registration is locked, the staff
   const { create } = arrange();
   const result = await checkInService.admit(input());
   assert.deepEqual([result.result, result.checked_in_by, result.ticket.code, result.ticket.ticket_type.name, result.ticket.order.reference], ["ADMITTED", IDS.user, CODE, "General Admission", "ABCDE23456"]);
-  assert.deepEqual(state.locks, [`registration:${CODE}`]);
+  assert.deepEqual(state.locks, ["event:keyShare", `registration:${CODE}`], "the event (key share) before the registration, like every other path");
   assert.deepEqual(create.mock.calls[0]?.arguments[0], { organization_id: IDS.orgA, event_id: IDS.event, registration_id: IDS.registration, admitted_by: IDS.user, idempotency_key: KEY });
 });
 

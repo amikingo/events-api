@@ -12,8 +12,11 @@ import { ensureFound, runTransaction } from "./helpers.js";
  *   changes the registration, so its place stays taken.
  * - The gate's Idempotency-Key makes retries unambiguous: the same request again (a lost response) returns its
  *   original result; a separate scan of an admitted ticket is ALREADY_CHECKED_IN with the original time.
- * - Atomic: the registration row is locked (the only lock taken, so it can't deadlock with a return or a
- *   cancellation, which lock event → ticket type → registration), and one admission per ticket is a unique key.
+ * - Atomic: the event row is key-share locked first, then the registration row is locked; one admission per ticket is
+ *   a unique key. The event comes first because inserting the admission takes a key-share lock on the event anyway (its
+ *   foreign key): taken last, it would wait on a return holding the event while that return waits on this
+ *   registration (a deadlock). Key-share locks don't block each other, so gates never wait on one another; a return or
+ *   a checkout (event FOR UPDATE) simply goes before or after.
  * Looking a ticket up or showing its QR never writes anything.
  */
 
@@ -64,10 +67,9 @@ async function attempt(input: CheckInInput): Promise<CheckInDto | { raced: true 
   const replayed = await replay(input);
   if (replayed) return replayed;
 
-  const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId), "Event not found");
-  if (event.status !== "PUBLISHED") throw new InvalidEventStateError(`Guests of a ${event.status} event can't be checked in`, { status: event.status });
-
   const outcome = await runTransaction(async (transaction) => {
+    const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: "keyShare" }), "Event not found");
+    if (event.status !== "PUBLISHED") throw new InvalidEventStateError(`Guests of a ${event.status} event can't be checked in`, { status: event.status });
     const ticket = await registrationRepository.findByEventAndCode(organizationId, eventId, code, { transaction, lock: true });
     if (!ticket) throw new NotFoundError("No ticket with this code at this event");
     if (ticket.status !== "CONFIRMED") throw new TicketNotAdmissibleError(undefined, { status: ticket.status });

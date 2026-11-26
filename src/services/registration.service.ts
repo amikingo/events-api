@@ -9,10 +9,13 @@ import {
   PersonInactiveError,
   RegistrationCancelledError,
   RegistrationClosedError,
+  TicketAlreadyUsedError,
   TicketNotIssuedError,
   TicketTypeInactiveError,
   TicketTypeRequiredError,
 } from "../errors/app-errors.js";
+import { toPaymentCaseDto, type PaymentCaseDto } from "../mappers/payment-case.mapper.js";
+import type { PaymentCaseRow } from "../models/payment-case.js";
 import {
   type ConfirmationDto,
   toMyTicketDto,
@@ -29,6 +32,7 @@ import type { SubmissionScope } from "../models/submission-key.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { messageOutboxRepository } from "../repositories/message-outbox.repository.js";
+import { orderPaymentRepository } from "../repositories/order-payment.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { personRepository } from "../repositories/person.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
@@ -49,6 +53,7 @@ import type {
   RegistrationTargetStatus,
 } from "../validators/registration.js";
 import { ensureFound, runTransaction } from "./helpers.js";
+import { paymentCaseService } from "./payment-case.service.js";
 import { ticketing } from "./ticketing.js";
 
 /**
@@ -502,17 +507,74 @@ async function changeRegistrationStatus(
       return toDto(organizationId, eventId, registrationId, transaction);
     }
 
-    if (event.status !== "PUBLISHED" && event.status !== "CLOSED") {
-      throw new InvalidEventStateError(`Registrations of a ${event.status} event can't be cancelled`, { status: event.status });
-    }
-    await registrationRepository.updateByEventAndId(
-      organizationId,
-      eventId,
-      registrationId,
-      { status: "CANCELLED", cancelled_at: new Date(), updated_by: actorId },
-      { transaction },
-    );
+    // Phase 8: cancelling is a return: a used ticket is refused, a paid one opens its refund case.
+    await applyReturn(event, registration, actorId, transaction);
     return toDto(organizationId, eventId, registrationId, transaction);
+  });
+}
+
+/**
+ * A confirmed ticket given back (Phase 8 step 4), shared by the return endpoint and the status route's CANCELLED.
+ * Runs under the caller's locks (event, then ticket type, then registration), so it and an admission at the door
+ * (which locks the registration) can't both succeed. A ticket admitted at the door is refused (ticket_already_used).
+ * The ticket becomes CANCELLED: one event place, one place of its type and one unit of the buyer's allowance come back
+ * (all three count CONFIRMED and HELD only). A paid ticket opens one TICKET_RETURN case, in this transaction, for its
+ * own stored price and currency (not today's catalog price); a free one finishes here. The order, its payment and its
+ * other tickets don't change.
+ */
+async function applyReturn(event: EventRow, registration: RegistrationRow, actorId: string | null, transaction: Transaction): Promise<PaymentCaseRow | null> {
+  const admission = await ticketAdmissionRepository.findByRegistration(event.organization_id, registration.id, { transaction });
+  if (admission) throw new TicketAlreadyUsedError(undefined, { checked_in_at: admission.admitted_at });
+  if (event.status !== "PUBLISHED" && event.status !== "CLOSED") {
+    throw new InvalidEventStateError(`Registrations of a ${event.status} event can't be cancelled`, { status: event.status });
+  }
+  await registrationRepository.updateByEventAndId(
+    event.organization_id,
+    event.id,
+    registration.id,
+    { status: "CANCELLED", cancelled_at: new Date(), updated_by: actorId },
+    { transaction },
+  );
+  if (isZeroAmount(registration.price_amount)) return null;
+  const payment = await orderPaymentRepository.findByOrder(event.organization_id, registration.order_id, { transaction });
+  return paymentCaseService.openForReturn(
+    {
+      organizationId: event.organization_id,
+      eventId: event.id,
+      orderId: registration.order_id,
+      orderPaymentId: payment?.id ?? null,
+      registrationId: registration.id,
+      amount: registration.price_amount,
+      currency: registration.currency,
+      actorId,
+    },
+    transaction,
+  );
+}
+
+export type ReturnOutcome = "RETURNED" | "ALREADY_RETURNED";
+export type ReturnResultDto = { outcome: ReturnOutcome; registration: RegistrationDto; refund_case: PaymentCaseDto | null };
+
+/**
+ * Staff approve the return of one confirmed, unused ticket from an order (Phase 8 step 4). Lock order as every place
+ * change: the event, the ticket type, then the registration. A repeat on a returned ticket gives the original result
+ * (ALREADY_RETURNED, with the same refund case: one case per ticket).
+ */
+async function returnRegistration(organizationId: string, eventId: string, registrationId: string, actorId: string | null): Promise<ReturnResultDto> {
+  return runTransaction(async (transaction) => {
+    const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
+    const current = ensureFound(await registrationRepository.findByEventAndId(organizationId, eventId, registrationId, { transaction }), "Registration not found");
+    await ticketTypeRepository.findByEventAndId(organizationId, eventId, current.ticket_type_id, { transaction, lock: true });
+    const registration = ensureFound(await registrationRepository.findByEventAndId(organizationId, eventId, registrationId, { transaction, lock: true }), "Registration not found");
+    if (registration.status === "HELD" || registration.status === "RELEASED") {
+      throw new TicketNotIssuedError(undefined, { registration_id: registration.id, status: registration.status });
+    }
+    if (registration.status === "CANCELLED") {
+      const existing = await paymentCaseService.findReturnCase(organizationId, registration.id, transaction);
+      return { outcome: "ALREADY_RETURNED", registration: await toDto(organizationId, eventId, registrationId, transaction), refund_case: existing ? toPaymentCaseDto(existing) : null };
+    }
+    const refund = await applyReturn(event, registration, actorId, transaction);
+    return { outcome: "RETURNED", registration: await toDto(organizationId, eventId, registrationId, transaction), refund_case: refund ? toPaymentCaseDto(refund) : null };
   });
 }
 
@@ -650,6 +712,7 @@ export const registrationService = {
   registerOnce,
   registerGuest,
   changeRegistrationStatus,
+  returnRegistration,
   changeRegistrationTicketType,
   listRegistrations,
   exportRegistrations,

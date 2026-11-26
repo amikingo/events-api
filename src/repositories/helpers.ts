@@ -7,8 +7,12 @@ import { sequelize } from "../db.js";
  */
 export type RepoOptions = {
   transaction?: Transaction | null;
-  /** SELECT ... FOR UPDATE. Only valid inside a transaction. */
-  lock?: boolean;
+  /**
+   * true: SELECT ... FOR UPDATE. "keyShare": SELECT ... FOR KEY SHARE, which only keeps the row from being locked
+   * FOR UPDATE meanwhile (taken first by paths that write rows pointing at it, to keep the lock order: Phase 8
+   * check-in). Only valid inside a transaction.
+   */
+  lock?: boolean | "keyShare";
 };
 
 export type WriteOptions = { transaction?: Transaction | null };
@@ -26,7 +30,8 @@ export function lockOptions(
   if (!options.transaction) {
     throw new Error("Repository lock requested without a transaction");
   }
-  return { lock: of ? { level: Transaction.LOCK.UPDATE, of } : Transaction.LOCK.UPDATE };
+  const level = options.lock === "keyShare" ? Transaction.LOCK.KEY_SHARE : Transaction.LOCK.UPDATE;
+  return { lock: of ? { level, of } : level };
 }
 
 /**

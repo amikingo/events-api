@@ -12,6 +12,7 @@ import {
   getRegistrationRequest,
   getRegistrationSummaryRequest,
   listRegistrationsRequest,
+  returnRegistrationRequest,
 } from "../../validators/registration.js";
 
 /**
@@ -61,6 +62,15 @@ registrationsRouter.get(
   validate(getRegistrationRequest),
   requirePermission({ moduleCode: MODULE_CODES.REGISTRATIONS, action: "view", scope: organizationScopeFromParams }),
   registrationController.getRegistration,
+);
+
+// Phase 8: return one confirmed, unused ticket (a paid one opens its refund case).
+registrationsRouter.post(
+  "/:registrationId/return",
+  requireStaffAuthentication,
+  validate(returnRegistrationRequest),
+  requirePermission({ moduleCode: MODULE_CODES.REGISTRATIONS, action: "update", scope: organizationScopeFromParams }),
+  registrationController.returnRegistration,
 );
 
 // Cancel (frees the place) or reactivate.

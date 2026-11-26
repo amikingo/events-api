@@ -84,6 +84,11 @@ async function openForReturn(input: ReturnCaseInput, transaction: Transaction): 
   return created ?? ensureFound(await paymentCaseRepository.findByReturn(input.organizationId, input.registrationId, { transaction }), "Payment case not found");
 }
 
+/** A ticket's return case, if it has one (read under the caller's locks). */
+async function findReturnCase(organizationId: string, registrationId: string, transaction: Transaction): Promise<PaymentCaseRow | null> {
+  return paymentCaseRepository.findByReturn(organizationId, registrationId, { transaction });
+}
+
 async function list(organizationId: string, query: PaymentCaseListQuery): Promise<{ rows: PaymentCaseDto[]; count: number }> {
   const { limit, offset } = buildPagination(query);
   const { rows, count } = await paymentCaseRepository.listByOrganization(organizationId, { status: query.status, kind: query.kind, eventId: query.event_id, limit, offset });
@@ -143,4 +148,4 @@ async function resolve(organizationId: string, caseId: string, input: PaymentCas
   return detail(organizationId, row);
 }
 
-export const paymentCaseService = { openForAttempt, openForReturn, list, get, resolve };
+export const paymentCaseService = { openForAttempt, openForReturn, findReturnCase, list, get, resolve };
