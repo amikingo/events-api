@@ -1,5 +1,5 @@
 import type { Transaction } from "sequelize";
-import { centralAuthClient, type CentralUser } from "../clients/central-auth.client.js";
+import { centralAuthClient, type CentralProfile, type CentralUser, type ProfilePatch } from "../clients/central-auth.client.js";
 import {
   AssignmentScopeConflictError,
   BranchInactiveError,
@@ -158,14 +158,55 @@ async function assign(
   });
 }
 
-/**
- * Changes a staff member's names in auth-cheche (Phase 2e), then returns the assignment with the fresh names. Names
- * only. The assignment must belong to this organization, so a tenant can never rename someone else's staff.
- */
-async function updateProfile(organizationId: string, assignmentId: string, input: StaffProfileUpdateInput): Promise<StaffAssignmentDto> {
+/** Phase 10: the profile fields an admin may see and edit (the assignment must belong to the organization). */
+export type EditableProfileDto = { firstname: string | null; middlename: string | null; lastname: string | null; mobile: string | null; email: string | null; sex: string | null; date_of_birth: string | null };
+
+function toEditableProfileDto(profile: CentralProfile | null): EditableProfileDto {
+  return {
+    firstname: profile?.firstname ?? null,
+    middlename: profile?.middlename ?? null,
+    lastname: profile?.lastname ?? null,
+    mobile: profile?.mobile ?? null,
+    email: profile?.email ?? null,
+    sex: profile?.sex ?? null,
+    date_of_birth: profile?.date_of_birth ?? null,
+  };
+}
+
+const profileText = (value: string | null | undefined): string => (value ?? "").trim();
+
+/** The fields that differ from what auth-cheche has now ("" or null clears an optional field), as bookings. */
+function changedProfileFields(current: CentralProfile | null, input: StaffProfileUpdateInput): ProfilePatch {
+  const patch: ProfilePatch = {};
+  for (const key of ["firstname", "middlename", "lastname", "sex", "date_of_birth"] as const) {
+    if (input[key] === undefined) continue;
+    const next = profileText(input[key]);
+    const before = profileText(current?.[key]);
+    if (key === "sex" ? next.toUpperCase() !== before.toUpperCase() : next !== before) patch[key] = next;
+  }
+  if (input.email !== undefined && profileText(input.email).toLowerCase() !== profileText(current?.email).toLowerCase()) patch.email = profileText(input.email);
+  return patch;
+}
+
+/** Phase 10: a staff member's editable profile (names, email, sex, date of birth), read from auth-cheche. */
+async function getProfile(organizationId: string, assignmentId: string): Promise<EditableProfileDto> {
   const assignment = ensureFound(await userRoleRepository.findByOrganizationAndId(organizationId, assignmentId), "Staff assignment not found");
-  await centralAuthClient.updateUserNames(assignment.user_id, input);
-  return get(organizationId, assignmentId);
+  return toEditableProfileDto(await centralAuthClient.getUserProfile(assignment.user_id));
+}
+
+/**
+ * Phase 10 (as bookings' "Edit details"): an admin with Staff Assignments update edits a staff member's names, email,
+ * sex and date of birth in auth-cheche. Only changed fields are sent (an unchanged name keeps its Amharic form). Never
+ * mobile, status, PIN or password. A refusal by auth-cheche is 409 central_auth_refused, never a 401.
+ */
+async function updateProfile(organizationId: string, assignmentId: string, input: StaffProfileUpdateInput): Promise<StaffAssignmentDto & { profile: EditableProfileDto; changed: boolean }> {
+  const assignment = ensureFound(await userRoleRepository.findByOrganizationAndId(organizationId, assignmentId), "Staff assignment not found");
+  const current = await centralAuthClient.getUserProfile(assignment.user_id);
+  const patch = changedProfileFields(current, input);
+  const changed = Object.keys(patch).length > 0;
+  if (changed) await centralAuthClient.updateUserProfile(assignment.user_id, patch);
+  const profile = changed ? await centralAuthClient.getUserProfile(assignment.user_id) : current;
+  return { ...(await get(organizationId, assignmentId)), profile: toEditableProfileDto(profile), changed };
 }
 
 /**
@@ -380,4 +421,4 @@ async function replaceOverrides(
   });
 }
 
-export const staffAssignmentService = { lookUp, list, get, assign, updateProfile, update, changeStatus, remove, listOverrides, replaceOverrides };
+export const staffAssignmentService = { lookUp, list, get, assign, getProfile, updateProfile, update, changeStatus, remove, listOverrides, replaceOverrides };

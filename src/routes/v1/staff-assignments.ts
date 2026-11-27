@@ -9,6 +9,7 @@ import {
   createStaffAssignmentRequest,
   deleteStaffAssignmentRequest,
   getStaffAssignmentRequest,
+  getStaffProfileRequest,
   listStaffAssignmentsRequest,
   listStaffOverridesRequest,
   lookUpStaffRequest,
@@ -72,7 +73,17 @@ staffAssignmentsRouter.patch(
   staffAssignmentController.changeStatus,
 );
 
-// Phase 2e: the person's names in auth-cheche (names only, never mobile, email, password or status).
+// Phase 10: the person's editable profile in auth-cheche (names, email, sex, date of birth).
+staffAssignmentsRouter.get(
+  "/staff-assignments/:assignmentId/profile",
+  requireStaffAuthentication,
+  validate(getStaffProfileRequest),
+  requirePermission({ moduleCode: MODULE_CODES.USER_ROLES, action: "view", scope: organizationScopeFromParams }),
+  staffAssignmentController.getProfile,
+);
+
+// Phase 10 (Phase 2e names, extended): names, email, sex and date of birth in auth-cheche, only what changed; never
+// mobile, status, PIN or password.
 staffAssignmentsRouter.patch(
   "/staff-assignments/:assignmentId/profile",
   requireStaffAuthentication,

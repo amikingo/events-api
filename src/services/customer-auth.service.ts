@@ -147,7 +147,29 @@ async function getCurrentCustomer(auth: CustomerAuthContext): Promise<CustomerPr
   return toCustomerProfileDto(auth.userId, await accountProfile(auth));
 }
 
+/**
+ * Phase 10: a signed-in guest edits their own names in auth-cheche (only changed fields; middlename "" clears it). The
+ * guest's access token is auth-cheche's own and still carries the old names: refresh the session for a token with the
+ * new ones. The reply is the profile as it is now.
+ */
+async function updateOwnNames(auth: CustomerAuthContext, input: { firstname: string; middlename?: string | null | undefined; lastname: string }): Promise<CustomerProfileDto> {
+  const current = await centralAuthClient.getUserProfile(auth.userId);
+  const text = (value: string | null | undefined) => (value ?? "").trim();
+  const patch: { firstname?: string; middlename?: string; lastname?: string } = {};
+  if (text(input.firstname) !== text(current?.firstname)) patch.firstname = text(input.firstname);
+  if (input.middlename !== undefined && text(input.middlename) !== text(current?.middlename)) patch.middlename = text(input.middlename);
+  if (text(input.lastname) !== text(current?.lastname)) patch.lastname = text(input.lastname);
+  if (Object.keys(patch).length > 0) await centralAuthClient.updateUserProfile(auth.userId, patch);
+  return toCustomerProfileDto(auth.userId, {
+    mobile: current?.mobile ?? auth.profile.mobile,
+    firstname: patch.firstname ?? current?.firstname ?? null,
+    middlename: patch.middlename === undefined ? (current?.middlename ?? null) : patch.middlename || null,
+    lastname: patch.lastname ?? current?.lastname ?? null,
+  });
+}
+
 export const customerAuthService = {
+  updateOwnNames,
   signUp,
   sendCode,
   confirmSignUp,

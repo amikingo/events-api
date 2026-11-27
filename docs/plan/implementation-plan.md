@@ -604,8 +604,8 @@ The plan follows the 27 November handoff.
 
 ### Phase 9 — Event changes after sales (27 November 2026)
 
-**Built; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test`
-(rows 101–106).** Migrations `20261209000000`–`000003`.
+**Done (27 November 2026).** `npm run check` passed; the project owner applied migrations `20261209000000`–`000003`,
+ran `TEST_DATABASE=1 npm test` (rows 101–106; rows 97, 98 and 100 given a past `doors_open_at`) and committed.
 
 **What it covers:**
 - **cancel** (`POST …/cancel`, and `PATCH …/status` `CANCELLED`): holds released, unused tickets cancelled, admitted
@@ -622,3 +622,29 @@ The plan follows the 27 November handoff.
 - real delivery of the two new SMS.
 
 Details in `docs/registrations.md` (Phase 9).
+
+### Phase 10 — Payment callback safety net and profile editing (27 November 2026)
+
+**Built; waiting on `npm run openapi`, `npm run check`, then `TEST_DATABASE=1 npm test` (rows 107–110; row 82
+updated). No migration.**
+
+**What it covers:**
+- **Cheche Pay addresses, as bookings:** `CHECHE_PAY_CALLBACK_URL` with `{organization_id}` and
+  `CHECHE_PAY_RETURN_URL` with `{tx_ref}` (plus `{reference}`). The older names still work with a warning, and
+  localhost and private addresses stay out of the initialize call.
+- **The safety net:** the payment worker asks merchant-verify before releasing a hold, and asks again for holds
+  released elsewhere or links still open after the hold, so a lost callback still ends in tickets or a refund case.
+- **Staff profiles, as bookings:** an admin with Staff Assignments update edits names, email, sex and date of birth
+  (`GET`/`PATCH …/staff-assignments/{id}/profile`). Only changed fields are sent, never mobile, status, PIN or
+  password, and a Central 401/403 is 409.
+- **Own account:** staff edit their own names (a new token carries them) and change their password (the old one is
+  checked first). Forgot password sends a code only to staff but always answers the same; reset uses the code.
+  Guests edit their own names.
+
+**Still open:**
+- confirm on the first real use that auth-cheche accepts the service token for `PUT /v1/users/{id}`, and the
+  password update and reset for these accounts;
+- the sandbox payment run (the real callback URL and the success-time field).
+
+Details in `docs/authentication.md` and `docs/registrations.md` (Phase 10). UI brief: `docs/ui-brief-phase-10.md`.
+

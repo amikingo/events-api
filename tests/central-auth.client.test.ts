@@ -9,6 +9,7 @@ import {
   CentralAuthRefusedError,
   CentralAuthUnavailableError,
   ConflictError,
+  InvalidCodeError,
   InvalidCredentialsError,
   MalformedCentralAuthResponseError,
 } from "../src/errors/app-errors.js";
@@ -325,4 +326,60 @@ test("editing names is a PUT with names only; a refused service token is 409 cen
 
   fakeFetch(403, JSON.stringify({ error: "owner verification required" }));
   await assert.rejects(centralAuthClient.updateUserNames("7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b", { firstname: "X" }), CentralAuthRefusedError);
+});
+
+// --- Profiles and passwords (Phase 10) -------------------------------------------------------------------------
+
+const USER_ID = "7d4b1f0e-2c3a-4e5f-8a9b-0c1d2e3f4a5b";
+
+test("a profile is read from specific_users with the service token, including email, sex and date of birth", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ data: { users: [{ id: USER_ID, mobile: "+251911223344", firstname: "Hana", lastname: "Bekele", email: "hana@example.et", sex: "FEMALE", date_of_birth: "1995-03-04" }] } }));
+  const profile = await centralAuthClient.getUserProfile(USER_ID);
+  assert.equal(calls[0]?.url, `${authConfig.centralAuthUrl}/v1/users/specific_users`);
+  assert.match((calls[0]?.init?.headers as Record<string, string>).Authorization ?? "", /^Bearer /);
+  assert.deepEqual(
+    { email: profile?.email, sex: profile?.sex, date_of_birth: profile?.date_of_birth, firstname: profile?.firstname },
+    { email: "hana@example.et", sex: "FEMALE", date_of_birth: "1995-03-04", firstname: "Hana" },
+  );
+  mock.restoreAll();
+
+  fakeFetch(200, JSON.stringify({ data: { users: [] } }));
+  assert.equal(await centralAuthClient.getUserProfile(USER_ID), null);
+});
+
+test("a profile edit is one PUT with the fields sent (null clears to \"\"); nothing to send makes no call", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ message: "updated" }));
+  await centralAuthClient.updateUserProfile(USER_ID, { email: null, sex: "MALE", date_of_birth: undefined });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, `${authConfig.centralAuthUrl}/v1/users/${USER_ID}`);
+  assert.equal(calls[0]?.init?.method, "PUT");
+  assert.deepEqual(JSON.parse(calls[0]?.init?.body as string), { email: "", sex: "MALE" });
+
+  await centralAuthClient.updateUserProfile(USER_ID, {});
+  assert.equal(calls.length, 1);
+});
+
+test("changing a password is a PUT with the person's own Central token, not the service token", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ message: "Password updated" }));
+  await centralAuthClient.updatePassword(USER_ID, "central-access", "old-secret", "new-secret-1");
+  assert.equal(calls[0]?.url, `${authConfig.centralAuthUrl}/v1/users/password/update/${USER_ID}`);
+  assert.equal(calls[0]?.init?.method, "PUT");
+  assert.equal((calls[0]?.init?.headers as Record<string, string>).Authorization, "Bearer central-access");
+  assert.deepEqual(JSON.parse(calls[0]?.init?.body as string), { old_password: "old-secret", new_password: "new-secret-1" });
+});
+
+test("a reset posts mobile, otp and new_password; a refused code (400, 401 or 404) is invalid_code; 5xx stays 503", async () => {
+  const calls = fakeFetch(200, JSON.stringify({ message: "Password reset" }));
+  await centralAuthClient.resetPassword({ mobile: "+251911223344", otp: "123456", newPassword: "new-secret-1" });
+  assert.equal(calls[0]?.url, `${authConfig.centralAuthUrl}/v1/users/reset-password`);
+  assert.deepEqual(JSON.parse(calls[0]?.init?.body as string), { mobile: "+251911223344", otp: "123456", new_password: "new-secret-1" });
+
+  for (const status of [400, 401, 404]) {
+    mock.restoreAll();
+    fakeFetch(status, JSON.stringify({ error: "Invalid OTP" }));
+    await assert.rejects(centralAuthClient.resetPassword({ mobile: "+251911223344", otp: "000000", newPassword: "new-secret-1" }), InvalidCodeError);
+  }
+  mock.restoreAll();
+  fakeFetch(502, JSON.stringify({ error: "down" }));
+  await assert.rejects(centralAuthClient.resetPassword({ mobile: "+251911223344", otp: "000000", newPassword: "new-secret-1" }), CentralAuthUnavailableError);
 });

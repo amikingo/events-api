@@ -154,17 +154,30 @@ test("the grantable modules list takes Roles › view or Staff Assignments › v
   assert.deepEqual(remove.mock.calls[0]?.arguments, [IDS.orgA, ASSIGNMENT, IDS.user]);
 });
 
-test("editing names needs Staff Assignments › update and takes names only; a new account's password must be 8 or more characters", async () => {
+test("editing a profile needs Staff Assignments › update and never takes mobile, status, PIN or password; a new account's password must be 8 or more characters", async () => {
   const permission = allowPermissions(true);
   const rename = mock.method(staffAssignmentService, "updateProfile", async () => ({ id: ASSIGNMENT }) as never);
   const assign = mock.method(staffAssignmentService, "assign", async () => ({ assignment: { id: ASSIGNMENT } as never, outcome: "CREATED" as const, accountCreated: true }));
   await withServer(app, async (baseUrl) => {
     const token = staffToken();
     const path = `/v1/organizations/${IDS.orgA}/staff-assignments/${ASSIGNMENT}/profile`;
-    for (const body of [{}, { mobile: "0911223344" }, { firstname: "Hana", email: "h@x.et" }, { password: "secret-123" }]) {
+    const refused = [
+      {},
+      { mobile: "0911223344" },
+      { password: "secret-123" },
+      { pin: "1234" },
+      { is_active: false },
+      { email: "not-an-email" },
+      { sex: "OTHER" },
+      { date_of_birth: "2999-01-01" },
+      { date_of_birth: "1995-02-30" },
+    ];
+    for (const body of refused) {
       assert.equal((await call(baseUrl, "PATCH", path, { token, body })).status, 400, JSON.stringify(body));
     }
     assert.equal((await call(baseUrl, "PATCH", path, { token, body: { firstname: "Hanna" } })).status, 200);
+    assert.equal((await call(baseUrl, "PATCH", path, { token, body: { email: "h@x.et", sex: "FEMALE", date_of_birth: "1995-03-04" } })).status, 200);
+    assert.equal((await call(baseUrl, "PATCH", path, { token, body: { email: "", sex: null, date_of_birth: "" } })).status, 200, "\"\" or null clears");
 
     const add = `/v1/organizations/${IDS.orgA}/staff-assignments`;
     const role_id = "55555555-5555-4555-8555-555555555552";
@@ -174,7 +187,7 @@ test("editing names needs Staff Assignments › update and takes names only; a n
     assert.deepEqual([created.status, created.body.data.account_created, created.body.message], [201, true, "Cheche account created. Staff assignment created"]);
     assert.ok(!JSON.stringify(created.body).includes("long-enough"), "the password is never returned");
   });
-  assert.equal(rename.mock.callCount(), 1);
+  assert.equal(rename.mock.callCount(), 3);
   assert.equal(assign.mock.callCount(), 1);
   const asked = permission.mock.calls.map((entry) => [(entry.arguments[0] as { moduleCode: string }).moduleCode, (entry.arguments[0] as { action: string }).action]);
   assert.deepEqual(asked[0], ["USER_ROLES", "update"]);
@@ -264,4 +277,17 @@ test("a denial because a module is switched off or an organization setting turns
     });
     mock.restoreAll();
   }
+});
+
+test("reading a staff member's editable profile needs Staff Assignments › view in the organization", async () => {
+  const permission = allowPermissions(true);
+  const read = mock.method(staffAssignmentService, "getProfile", async () => ({ firstname: "Hana", middlename: null, lastname: "Bekele", mobile: "+251911223344", email: null, sex: null, date_of_birth: null }));
+  await withServer(app, async (baseUrl) => {
+    const reply = await call(baseUrl, "GET", `/v1/organizations/${IDS.orgA}/staff-assignments/${ASSIGNMENT}/profile`, { token: staffToken() });
+    assert.equal(reply.status, 200);
+    assert.equal(reply.body.data.firstname, "Hana");
+  });
+  assert.deepEqual(read.mock.calls[0]?.arguments, [IDS.orgA, ASSIGNMENT]);
+  const asked = permission.mock.calls.map((entry) => [(entry.arguments[0] as { moduleCode: string }).moduleCode, (entry.arguments[0] as { action: string }).action]);
+  assert.deepEqual(asked, [["USER_ROLES", "view"]]);
 });

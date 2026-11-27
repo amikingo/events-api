@@ -11,6 +11,7 @@ import {
   customerResendSignUpCodeRequest,
   customerSendCodeRequest,
   customerSignUpRequest,
+  updateCustomerProfileRequest,
 } from "../validators/customer-auth.js";
 import { getCustomerAuth } from "./helpers.js";
 
@@ -74,7 +75,14 @@ async function getCurrentCustomer(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, await customerAuthService.getCurrentCustomer(getCustomerAuth(req)), "Current guest fetched");
 }
 
+/** Phase 10: the guest's own names; refresh the session for a token with the new names. */
+async function updateProfile(req: Request, res: Response): Promise<void> {
+  const { body } = getValidated(req, updateCustomerProfileRequest);
+  sendSuccess(res, 200, await customerAuthService.updateOwnNames(getCustomerAuth(req), body), "Your names were updated");
+}
+
 export const customerAuthController = {
+  updateProfile,
   signUp,
   confirmSignUp,
   resendSignUpCode,

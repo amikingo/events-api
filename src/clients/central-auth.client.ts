@@ -6,6 +6,7 @@ import {
   CentralAuthUnavailableError,
   CentralAuthRefusedError,
   ConflictError,
+  InvalidCodeError,
   InvalidCredentialsError,
   MalformedCentralAuthResponseError,
   NotFoundError,
@@ -94,6 +95,8 @@ async function call(
     body?: unknown;
     credentialsFlow?: boolean;
     asService?: boolean;
+    /** Phase 10: act as the user, with their own Central access token (e.g. changing their password). */
+    userToken?: string;
     /** A refused service token is 409 central_auth_refused (an edit auth-cheche said no to), not 503. */
     serviceRefusalIsConflict?: boolean;
   },
@@ -104,7 +107,7 @@ async function call(
       timeoutMs: authConfig.centralAuthTimeoutMs,
       method: init.method,
       body: init.body,
-      ...(init.asService ? { headers: { Authorization: `Bearer ${serviceToken()}` } } : {}),
+      ...(init.asService ? { headers: { Authorization: `Bearer ${serviceToken()}` } } : init.userToken ? { headers: { Authorization: `Bearer ${init.userToken}` } } : {}),
     });
 
     if (!response.ok) {
@@ -356,16 +359,90 @@ async function createVerifiedUser(input: NewStaffAccount): Promise<CentralUser |
 
 export type StaffNames = { firstname?: string | undefined; middlename?: string | null | undefined; lastname?: string | undefined };
 
+/** Phase 10: what staff may edit in a person's Cheche profile. Never mobile, status, PIN or password. */
+export type ProfilePatch = StaffNames & { email?: string | null | undefined; sex?: string | null | undefined; date_of_birth?: string | null | undefined };
+
+/** Phase 10: a person's editable profile as auth-cheche holds it ("" or null means not set). */
+export type CentralProfile = {
+  userId: string;
+  mobile: string | null;
+  firstname: string | null;
+  middlename: string | null;
+  lastname: string | null;
+  email: string | null;
+  sex: string | null;
+  date_of_birth: string | null;
+};
+
+const optionalText = (value: unknown): string | null => (typeof value === "string" && value.trim() !== "" ? value.trim() : null);
+
+/** One person's full editable profile (POST /v1/users/specific_users with the service token); null when unknown. */
+async function getUserProfile(userId: string): Promise<CentralProfile | null> {
+  const payload = await call("/v1/users/specific_users", { method: "POST", body: { user_ids: [userId] }, asService: true });
+  const list = field(payload, "users") ?? payload;
+  if (!Array.isArray(list)) throw new MalformedCentralAuthResponseError("Central Auth user list is invalid");
+  const raw = list.find((item) => {
+    const record = item as Record<string, unknown> | null;
+    return record !== null && typeof record === "object" && (record.id === userId || record.user_id === userId);
+  }) as Record<string, unknown> | undefined;
+  if (!raw) return null;
+  const user = toCentralUser(raw);
+  return {
+    ...user,
+    email: optionalText(raw.email),
+    sex: optionalText(raw.sex),
+    date_of_birth: optionalText(raw.date_of_birth ?? raw.dateOfBirth),
+  };
+}
+
+/**
+ * Phase 10: changes a person's profile fields in auth-cheche (PUT /v1/users/{id} with the service token): names, email,
+ * sex, date of birth, only those sent ("" clears an optional field). A refusal of the service token is 409
+ * central_auth_refused, never a 401.
+ */
+async function updateUserProfile(userId: string, patch: ProfilePatch): Promise<void> {
+  const body = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined).map(([key, value]) => [key, value ?? ""]));
+  if (Object.keys(body).length === 0) return;
+  await call(`/v1/users/${encodeURIComponent(userId)}`, { method: "PUT", asService: true, serviceRefusalIsConflict: true, body });
+}
+
+/**
+ * Phase 10: a signed-in person changes their own password (PUT /v1/users/password/update/{id}), with the Central
+ * session just opened by checking the old password.
+ */
+async function updatePassword(userId: string, accessToken: string, oldPassword: string, newPassword: string): Promise<void> {
+  await call(`/v1/users/password/update/${encodeURIComponent(userId)}`, {
+    method: "PUT",
+    userToken: accessToken,
+    body: { old_password: oldPassword, new_password: newPassword },
+  });
+}
+
+/** Phase 10: forgot password: a new password with the SMS code (POST /v1/users/reset-password). A refusal is invalid_code. */
+async function resetPassword(input: { mobile: string; otp: string; newPassword: string }): Promise<void> {
+  try {
+    await call("/v1/users/reset-password", { method: "POST", body: { mobile: input.mobile, otp: input.otp, new_password: input.newPassword } });
+  } catch (error) {
+    if (error instanceof ValidationAppError || error instanceof InvalidCredentialsError || error instanceof NotFoundError) {
+      throw new InvalidCodeError(undefined, undefined, { cause: error });
+    }
+    throw error;
+  }
+}
+
 /**
  * Changes a person's names in auth-cheche. **Names only:** never mobile, email, status, PIN or password (a Cheche
  * account is the same person in every Cheche app). A refusal of the service token is 409 central_auth_refused.
  */
 async function updateUserNames(userId: string, names: StaffNames): Promise<void> {
-  const body = Object.fromEntries(Object.entries(names).filter(([, value]) => value !== undefined));
-  await call(`/v1/users/${encodeURIComponent(userId)}`, { method: "PUT", asService: true, serviceRefusalIsConflict: true, body });
+  await updateUserProfile(userId, names);
 }
 
 export const centralAuthClient = {
+  getUserProfile,
+  updateUserProfile,
+  updatePassword,
+  resetPassword,
   passwordLogin,
   emailLogin,
   refreshAccessToken,

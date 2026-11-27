@@ -42,3 +42,11 @@ export const customerPasswordLoginRequest = { body: customerPasswordLoginSchema 
 export const customerRefreshRequest = {} satisfies RequestContract;
 export const customerLogoutRequest = {} satisfies RequestContract;
 export const currentCustomerRequest = {} satisfies RequestContract;
+
+/** Phase 10: a signed-in guest's own names; middlename "" or null clears it. */
+export const customerProfileUpdateSchema = z.strictObject({
+  firstname: z.string().trim().min(1).max(100),
+  middlename: z.string().trim().max(100).nullable().optional(),
+  lastname: z.string().trim().min(1).max(100),
+});
+export const updateCustomerProfileRequest = { body: customerProfileUpdateSchema } satisfies RequestContract;

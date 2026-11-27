@@ -367,9 +367,9 @@ itself, so it can't be faked. (Step 3 first used Cheche Pay's legacy API, with a
 2. **After the transaction commits, the server starts a payment attempt.**
    - It calls `POST {finance}/transactions/initialize` with the organizer's key, the amount, ETB, the buyer's phone
      and a fresh `tx_ref` (`<payment id>-<suffix>`; Cheche Pay refuses a reused one).
-   - It also sends `return_url` (`PAYMENT_RETURN_URL` + `/orders/{reference}`) and `callback_url`
-     (`PUBLIC_API_BASE_URL` + `/v1/payments/cheche/webhook/{organizationId}`). A localhost or private address is left
-     out, because Cheche Pay refuses the whole call.
+   - It also sends `return_url` (from `CHECHE_PAY_RETURN_URL`, see Phase 10) and `callback_url` (from
+     `CHECHE_PAY_CALLBACK_URL`). A localhost or private address is left out with a warning in the log, because Cheche
+     Pay refuses the whole call.
    - The reply carries `payment.checkout_url` and an `order_token`.
 3. **"Pay now"** (`POST /v1/public/orders/{reference}/payment`):
    - an unexpired checkout link is reused;
@@ -396,7 +396,8 @@ itself, so it can't be faked. (Step 3 first used Cheche Pay's legacy API, with a
    codes, the order becomes `CONFIRMED`, and one SMS lists the codes. The codes are on the order page as soon as the
    payment is confirmed, whether or not the SMS has gone.
 7. **Release:** an unpaid hold past its time releases the places (tickets `RELEASED`, order `EXPIRED`) and gives the
-   purchase allowance back. This happens inside every checkout and in the payment worker.
+   purchase allowance back. This happens inside every checkout and in the payment worker; since Phase 10 the worker
+   asks merchant-verify first (see "Phase 10: the payment safety net").
 8. **A late payment** (after its places were released) takes them again if there is still room and the buyer is
    within the limit. Otherwise the order becomes `REFUND_REQUIRED`, with its payment kept for follow-up. It never
    oversells, and refunds themselves are out of scope.
@@ -418,8 +419,9 @@ endpoint refuses them (409 `ticket_not_issued`), and a cancelled paid ticket can
 |---|---|
 | `CHECHE_PAY_FINANCE_BASE_URL` | none (paid sales off); Cheche Pay's v2 API base |
 | `CHECHE_PAY_CREDENTIALS_KEY` | none (paid sales off); 32 bytes as 64 hex characters or base64. Changing it makes saved keys unreadable. |
-| `PAYMENT_RETURN_URL` | none; the website's base address |
-| `PUBLIC_API_BASE_URL` | none; this API's public address, for Cheche Pay's callback |
+| `CHECHE_PAY_CALLBACK_URL` | none; Cheche Pay's callback, with `{organization_id}` or ending in `/webhook` (Phase 10) |
+| `CHECHE_PAY_RETURN_URL` | none; where the buyer comes back, with `{reference}` and/or `{tx_ref}` (Phase 10) |
+| `PAYMENT_RETURN_URL`, `PUBLIC_API_BASE_URL` | deprecated: still read when the two above are unset, with a startup warning |
 | `CHECHE_PAY_TIMEOUT_MS` | `45000` (Cheche Pay often takes 15–25 s under load) |
 | `PAYMENT_HOLD_MINUTES` | `15` |
 | `PAYMENT_WORKER_ENABLED` | `true` |
@@ -670,3 +672,41 @@ Deactivating a type stops new orders for it while other types keep selling.
 
 **Proof:** unit tests (cancel, the timing table, the door window, the reschedule rules, the capacity floor, both SMS
 texts) and matrix rows 101–106. Rows 97, 98 and 100 now open their doors in the past.
+
+## Phase 10: the payment safety net and Cheche Pay addresses (27 November 2026)
+
+Without a callback, a buyer who paid and closed the browser got nothing: the worker released the hold blindly and no
+case was opened. Phase 10 follows bookings for the addresses and asks Cheche Pay before releasing.
+
+**Addresses** (`src/config/payment.ts`):
+
+| Setting | Example | Becomes |
+|---|---|---|
+| `CHECHE_PAY_CALLBACK_URL` | `https://api.example/v1/payments/cheche/webhook/{organization_id}` | the organizer's id filled in |
+| | `https://api.example/v1/payments/cheche/webhook` | `/{organization_id}` added |
+| `CHECHE_PAY_RETURN_URL` | `https://events.example/orders/{reference}?tx_ref={tx_ref}` | both filled in |
+| | `https://events.example/payment-return` | `?reference=…&tx_ref=…` added |
+
+- A callback URL without `{organization_id}` or `/webhook`, or not http(s), stops startup.
+- The older `PUBLIC_API_BASE_URL` (+ `/v1/payments/cheche/webhook/{organization_id}`) and `PAYMENT_RETURN_URL`
+  (+ `/orders/{reference}`) still work when the new names are unset. Startup logs a deprecation warning, and a
+  warning when Cheche Pay is on but there is no callback address at all.
+- Localhost and private addresses are still left out of the initialize call, with a warning.
+- The Super Admin's Cheche Pay keys page shows the same callback address (`webhook_url`).
+
+**Every trigger is confirmed with merchant-verify:** the webhook, the buyer's return (`…/check`), and the worker.
+The body of a callback is never trusted.
+
+**The worker** (`paymentService.processDue`, every `PAYMENT_POLL_INTERVAL_MS`):
+1. For each unpaid hold past its time, it asks merchant-verify about the current attempt first. A payment that
+   succeeded is settled exactly as a webhook would (tickets, or a refund case under the Phase 9 timing rules); then
+   the hold is released if it's still unpaid. If Cheche Pay can't be reached, the hold is still released on time and
+   the attempt stays due.
+2. It asks once more about attempts whose hold was released without asking (inside a checkout or a cancellation,
+   which never call the network in their transaction), whose earlier ask failed, or whose checkout link outlived the
+   hold (asked again after the link expires). `orderPaymentRepository.listDueForCheck`.
+- Each ask is recorded in `last_verification.checked_at`, so an attempt isn't asked twice for the same reason.
+- It logs `{ expired, checked }` when either is above zero.
+
+**Proof:** unit tests in `tests/payment.service.test.ts` and `tests/payment-urls.test.ts`; integration row 110.
+

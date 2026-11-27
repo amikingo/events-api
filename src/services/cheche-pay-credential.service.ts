@@ -1,5 +1,5 @@
 import { chechePayClient, type KeyCheck } from "../clients/cheche-pay.client.js";
-import { paymentConfig } from "../config/payment.js";
+import { chechePayCallbackUrl, paymentConfig } from "../config/payment.js";
 import { NotFoundError, PaidSalesUnavailableError, ValidationAppError } from "../errors/app-errors.js";
 import type { KeyMode } from "../models/order-payment.js";
 import { organizationChechePayCredentialRepository } from "../repositories/organization-cheche-pay-credential.repository.js";
@@ -43,7 +43,7 @@ function serverConfigured(): boolean {
 }
 
 function webhookUrl(organizationId: string): string | null {
-  return paymentConfig.publicApiBaseUrl === null ? null : `${paymentConfig.publicApiBaseUrl}/v1/payments/cheche/webhook/${organizationId}`;
+  return chechePayCallbackUrl(organizationId);
 }
 
 function toDto(organizationId: string, row: Awaited<ReturnType<typeof organizationChechePayCredentialRepository.findByOrganization>>): ChechePayCredentialDto {

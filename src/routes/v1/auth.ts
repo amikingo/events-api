@@ -1,16 +1,21 @@
 import { Router } from "express";
 import { authController } from "../../controllers/auth.controller.js";
 import { customerAuthController } from "../../controllers/customer-auth.controller.js";
+import { staffAccountController } from "../../controllers/staff-account.controller.js";
 import { noStore, requireTrustedRefreshOrigin } from "../../middleware/auth-refresh-security.js";
 import { requireCustomerAuthentication, requireStaffAuthentication } from "../../middleware/authentication.js";
 import { authLoginLimiter, authRefreshLimiter, customerAuthLimiter, customerCodePerMobileLimiter } from "../../middleware/rate-limit.js";
 import { validate } from "../../middleware/validate.js";
 import {
+  changeStaffPasswordRequest,
   currentStaffSessionRequest,
+  staffForgotPasswordRequest,
   staffLoginRequest,
   staffLogoutRequest,
   staffRefreshRequest,
+  staffResetPasswordRequest,
   staffSwitchAssignmentRequest,
+  updateOwnStaffProfileRequest,
 } from "../../validators/auth.js";
 import {
   currentCustomerRequest,
@@ -22,6 +27,7 @@ import {
   customerResendSignUpCodeRequest,
   customerSendCodeRequest,
   customerSignUpRequest,
+  updateCustomerProfileRequest,
 } from "../../validators/customer-auth.js";
 
 /** Mounted at /v1/auth. */
@@ -49,6 +55,13 @@ authRouter.post(
 );
 
 authRouter.get("/staff/me", requireStaffAuthentication, validate(currentStaffSessionRequest), authController.getCurrentStaffSession);
+
+// Phase 10: a staff member's own account (as bookings_api). Names and passwords live in auth-cheche.
+authRouter.put("/staff/profile", requireStaffAuthentication, noStore, validate(updateOwnStaffProfileRequest), staffAccountController.updateOwnProfile);
+authRouter.put("/staff/password", authLoginLimiter, requireStaffAuthentication, noStore, validate(changeStaffPasswordRequest), staffAccountController.changePassword);
+// Forgot password: the same reply whether or not the mobile has staff access; limited per address and per mobile.
+authRouter.post("/staff/forgot-password", authLoginLimiter, customerCodePerMobileLimiter, noStore, validate(staffForgotPasswordRequest), staffAccountController.forgotPassword);
+authRouter.post("/staff/reset-password", authLoginLimiter, noStore, validate(staffResetPasswordRequest), staffAccountController.resetPassword);
 
 authRouter.post(
   "/staff/switch-assignment",
@@ -119,3 +132,5 @@ authRouter.post(
 );
 
 authRouter.get("/customer/me", requireCustomerAuthentication, validate(currentCustomerRequest), customerAuthController.getCurrentCustomer);
+// Phase 10: the guest's own names (refresh the session afterwards for a token with the new names).
+authRouter.put("/customer/profile", requireCustomerAuthentication, noStore, validate(updateCustomerProfileRequest), customerAuthController.updateProfile);

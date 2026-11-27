@@ -39,3 +39,19 @@ test("when registering, an account without any mobile is refused, and an unreach
   await assert.rejects(customerAuthService.accountMobile(identity(null), { required: true }), CentralAuthUnavailableError);
   assert.equal(await customerAuthService.accountMobile(identity(null), { required: false }), null, "a session still works without it");
 });
+
+// --- Own names (Phase 10) ----------------------------------------------------------------------------
+
+test("a guest changes their own names: only changed names go to auth-cheche, and the reply is the new profile", async () => {
+  const profile = { userId: GUEST_ID, mobile: "+251911223344", firstname: "Hana", middlename: "Alemu", lastname: "Bekele", email: null, sex: null, date_of_birth: null };
+  mock.method(centralAuthClient, "getUserProfile", async () => profile);
+  const update = mock.method(centralAuthClient, "updateUserProfile", async (_id: string, _patch: unknown) => undefined);
+  const auth = { kind: "customer" as const, token: "central-token", ...identity("+251911223344") };
+
+  const reply = await customerAuthService.updateOwnNames(auth, { firstname: "Hanna", middlename: "", lastname: "Bekele" });
+  assert.deepEqual(update.mock.calls[0]?.arguments, [GUEST_ID, { firstname: "Hanna", middlename: "" }]);
+  assert.deepEqual(reply, { id: GUEST_ID, mobile: "+251911223344", firstname: "Hanna", middlename: null, lastname: "Bekele" });
+
+  await customerAuthService.updateOwnNames(auth, { firstname: "Hana", lastname: "Bekele" });
+  assert.equal(update.mock.callCount(), 1, "nothing changed, nothing sent");
+});

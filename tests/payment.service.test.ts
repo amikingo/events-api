@@ -76,6 +76,7 @@ function arrange(
   );
   mock.method(orderPaymentRepository, "findByOrder", async () => ({ ...state.payment }));
   mock.method(orderPaymentRepository, "findById", async (id: string) => (id === state.payment.id ? { ...state.payment } : null));
+  const dueForCheck = mock.method(orderPaymentRepository, "listDueForCheck", async (): Promise<Array<{ id: string; organization_id: string; tx_ref: string }>> => []);
   mock.method(orderPaymentRepository, "updateById", async (_id: string, values: Partial<OrderPaymentRow>) => {
     Object.assign(state.payment, values);
   });
@@ -119,7 +120,7 @@ function arrange(
     if (!cases.has(input.txRef)) cases.set(input.txRef, { kind: input.kind, amount: input.amount, currency: input.currency, orderPaymentId: input.orderPaymentId });
     return {} as never;
   });
-  return { issue, verify, initialize, resolve, openCase, cases };
+  return { issue, verify, initialize, resolve, openCase, cases, dueForCheck };
 }
 
 afterEach(() => mock.restoreAll());
@@ -296,11 +297,35 @@ test("the buyer's check verifies the current attempt; an order with no attempt y
   assert.equal(none.verify.mock.callCount(), 0);
 });
 
-test("the worker releases unpaid holds past their time", async () => {
-  arrange({ order: { hold_expires_at: new Date(Date.now() - 60_000) } });
-  assert.deepEqual(await paymentService.processDue(new Date()), { expired: 1 });
+test("the worker asks Cheche Pay first, then releases an unpaid hold past its time", async () => {
+  const { verify } = arrange({ order: { hold_expires_at: new Date(Date.now() - 60_000) }, verified: { status: "PENDING" } });
+  assert.deepEqual(await paymentService.processDue(new Date()), { expired: 1, checked: 1 });
+  assert.equal(verify.mock.calls[0]?.arguments[1], TX_REF, "asked about the current attempt before releasing");
   assert.equal(state.order.status, "EXPIRED");
   assert.ok(state.tickets.every((ticket) => ticket.status === "RELEASED"));
+});
+
+test("Phase 10 safety net: a payment that succeeded but whose callback was lost is settled at the hold's end instead of released", async () => {
+  // Heard of only now, a minute after the hold ended, with no success time: sales open, so the availability check applies.
+  const { issue } = arrange({ order: { hold_expires_at: new Date(Date.now() - 60_000) } });
+  assert.deepEqual(await paymentService.processDue(new Date()), { expired: 0, checked: 1 });
+  assert.equal(state.order.status, "CONFIRMED");
+  assert.equal(issue.mock.callCount(), 3);
+});
+
+test("Phase 10 safety net: Cheche Pay unreachable still releases the hold on time; attempts released without asking are asked about later", async () => {
+  const down = arrange({ order: { hold_expires_at: new Date(Date.now() - 60_000) } });
+  down.verify.mock.mockImplementation(async () => {
+    throw new PaymentProviderUnavailableError("Cheche Pay verification failed (timed out)");
+  });
+  assert.deepEqual(await paymentService.processDue(new Date()), { expired: 1, checked: 0 }, "the seat is never blocked by an outage");
+  mock.restoreAll();
+
+  const later = arrange({ order: { status: "EXPIRED", hold_expires_at: new Date(Date.now() - 60_000) } });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  later.dueForCheck.mock.mockImplementation(async () => [{ id: PAYMENT_ID, organization_id: IDS.orgA, tx_ref: TX_REF }]);
+  assert.deepEqual(await paymentService.processDue(new Date()), { expired: 0, checked: 1 });
+  assert.equal(state.order.status, "CONFIRMED", "the lost payment still ends in tickets (or a refund case)");
 });
 
 // --- Phase 9: payment timing around a sales cutoff, a stopped ticket type and a cancelled event ----------------

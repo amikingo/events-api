@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
+import { paymentConfig } from "./config/payment.js";
 import { smsConfig } from "./config/sms.js";
 import { sequelize } from "./db.js";
 import { startOutboxWorker } from "./jobs/outbox-worker.js";
@@ -20,6 +21,8 @@ server.listen(env.PORT, () => {
 if (env.NODE_ENV === "production" && smsConfig.delivery === "log") {
   logger.warn("SMS_DELIVERY=log in production: confirmation SMS are only logged, never sent");
 }
+// Cheche Pay callback and return settings (Phase 7/10): say what's missing or deprecated.
+for (const warning of paymentConfig.warnings) logger.warn(warning);
 const outboxWorker = startOutboxWorker();
 const paymentWorker = startPaymentWorker();
 

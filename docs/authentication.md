@@ -27,6 +27,10 @@
 | `POST /v1/auth/staff/logout` | Clears both cookies first, then revokes the Central Auth session with `POST /v1/auth/logout` `{ refresh_token }` (no Bearer: staff hold only this API's token). Best effort: a Central failure is logged without token values and never blocks logout. `data.revoked` is `true` only when Central confirmed; `false` when it failed or no cookie was sent. Same rate limit, Origin check and `no-store` as refresh. |
 | `GET /v1/auth/staff/me` | Revalidates the assignment from the DB; returns user, assignment, assignments, flat `permissions`, nested `navigation`. Never calls Central Auth. |
 | `POST /v1/auth/staff/switch-assignment` `{ assignment_id }` | Re-mints the token for another active assignment. This is how a person with several roles changes what they may do: permissions are checked for the token's assignment only (see `docs/rbac-application-flow.md`). |
+| `PUT /v1/auth/staff/profile` `{ firstname, middlename?, lastname }` | Phase 10: your own names, in auth-cheche (`PUT /v1/users/{id}`, service token). Only changed names are sent; `middlename: ""` clears it. The reply carries `profile`, `changed`, and a new `access_token` + `expires_in` with the new names (same assignment, never past the old token's expiry): use it from now on. 409 `central_auth_refused`, 503 `central_auth_unavailable`. |
+| `PUT /v1/auth/staff/password` `{ old_password, new_password }` | Phase 10: the old password is checked by signing in to auth-cheche with your mobile; a wrong one is 400 `validation_error` with `issues[0].code = "wrong_password"` on `body.old_password` (not a lost session). Then `PUT /v1/users/password/update/{id}` with that fresh Central token. `new_password` 8–128 characters and different from the old one. Login rate limit. |
+| `POST /v1/auth/staff/forgot-password` `{ mobile }` | Phase 10, public: a code is sent (auth-cheche's resend OTP) only when the mobile has an active, usable staff assignment, but the reply is always `{ sent: true, message }`, for staff, guests, unknown mobiles and failures alike, so nobody can find out who is staff. Login rate limit plus 3 per mobile per 10 minutes. |
+| `POST /v1/auth/staff/reset-password` `{ mobile, otp, new_password }` | Phase 10, public: the mobile must still have staff access, then `POST /v1/users/reset-password`. A wrong or expired code, or a mobile without staff access, is 400 `invalid_code`. The person signs in with the new password afterwards. |
 
 ## Central Auth refusals
 
@@ -133,7 +137,7 @@ One shared secret (`APP_AUTH_TOKEN`) is a deliberate choice for now, matching bo
 
 ## Central Auth integrations for staff management (the "Planned" list; built where marked)
 
-None of these exist yet. When one is built, follow the rules below: they match bookings_api and each one
+Built where marked. For anything not built yet, follow the rules below: they match bookings_api and each one
 prevents a known failure. All of them go through `src/clients/central-auth.client.ts` and use the **service
 token** issued by Central Auth (never a token this API signs itself, see blueprint §17).
 
@@ -158,21 +162,33 @@ token** issued by Central Auth (never a token this API signs itself, see bluepri
   - `"1"` / `"true"` become booleans;
   - one field with an odd shape must not make the whole user disappear: fall back to `null` for that field.
 
-### Editing a staff member's details (built, Phase 2e: names only)
+### Editing a staff member's details (built: Phase 2e names, Phase 10 email, sex and date of birth)
 
-- `PUT /v1/users/{id}` with the service token, from `PATCH …/staff-assignments/{id}/profile`.
-  `centralAuthClient.updateUserNames`.
-- **Names only** (`firstname`, `middlename`, `lastname`), and only the ones that changed. Email, sex and date of birth
-  are left out for now. **Never** mobile, status, PIN or password.
+- `GET …/staff-assignments/{id}/profile` (Staff Assignments › view) reads `{ firstname, middlename, lastname, mobile,
+  email, sex, date_of_birth }` from `POST /v1/users/specific_users`.
+- `PATCH …/staff-assignments/{id}/profile` (Staff Assignments › update) sends `PUT /v1/users/{id}` with the service
+  token. `centralAuthClient.updateUserProfile`.
+- **Fields:** names, `email`, `sex` (`MALE` or `FEMALE`) and `date_of_birth` (`YYYY-MM-DD`, a real past date); `""` or
+  `null` clears an optional field. **Only changed fields** are sent (email and sex compared without case), so an
+  unchanged name keeps its Amharic form. **Never** mobile, status, PIN or password: a body with any of them is 400.
   *Why:* a Central Auth account is the same person in every Cheche app. Changing the mobile here would let
   someone take over the account everywhere through an OTP password reset.
 - A `401`/`403` from Central becomes `409 central_auth_refused`, not "your session expired": the staff member's own
   session is fine, Central refused the service call.
+- The assignment must belong to the organization in the path (404 otherwise).
 - **To check by hand:** auth-cheche's swagger says `PUT /users/{id}` needs "owner verification"; whether it accepts
   the service token for another person's account is confirmed on the first real use.
 
-### Forgot password
+### Own names, change password, forgot password (built, Phase 10)
 
-- `POST /v1/users/reset-password` with `{ mobile, otp, new_password }`.
-- Map "OTP expired" and "invalid OTP" to their own stable error codes (one `AppError` class each), so the screen
-  can tell the user what to do.
+As bookings' `updateStaffProfile`, `updateStaffPassword`, `requestStaffPasswordReset` and `resetStaffPassword`; see
+the endpoint table above.
+- Own names: changed fields only; the staff token carries names, so a new one is issued.
+- Change password: the old password is checked by signing in, then `PUT /v1/users/password/update/{id}` with the
+  person's own Central token from that sign-in (not the service token).
+- Forgot password: a code only to mobiles with an active staff assignment, the same reply always.
+- Reset: `POST /v1/users/reset-password` with `{ mobile, otp, new_password }`; a refusal (400, 401 or 404) is
+  400 `invalid_code`.
+- Guests change their names with `PUT /v1/auth/customer/profile` (their own Central token; refresh the session
+  afterwards for a token with the new names).
+- **To check by hand:** that auth-cheche accepts the password update and reset for accounts used through events-api.

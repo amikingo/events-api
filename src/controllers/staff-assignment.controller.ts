@@ -7,6 +7,7 @@ import {
   createStaffAssignmentRequest,
   deleteStaffAssignmentRequest,
   getStaffAssignmentRequest,
+  getStaffProfileRequest,
   listStaffAssignmentsRequest,
   listStaffOverridesRequest,
   lookUpStaffRequest,
@@ -58,9 +59,15 @@ async function update(req: Request, res: Response): Promise<void> {
 }
 
 /** Changes the person's names in auth-cheche (names only). */
+/** Phase 10: the staff member's editable profile (names, email, sex, date of birth). */
+async function getProfile(req: Request, res: Response): Promise<void> {
+  const { params } = getValidated(req, getStaffProfileRequest);
+  sendSuccess(res, 200, await staffAssignmentService.getProfile(params.organizationId, params.assignmentId), "Staff profile retrieved");
+}
+
 async function updateProfile(req: Request, res: Response): Promise<void> {
   const { params, body } = getValidated(req, updateStaffProfileRequest);
-  sendSuccess(res, 200, await staffAssignmentService.updateProfile(params.organizationId, params.assignmentId, body), "Staff names updated");
+  sendSuccess(res, 200, await staffAssignmentService.updateProfile(params.organizationId, params.assignmentId, body), "Staff profile updated");
 }
 
 /** 204: the assignment and its overrides are gone. */
@@ -92,4 +99,4 @@ async function changeStatus(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, assignment, "Staff assignment status updated");
 }
 
-export const staffAssignmentController = { lookUp, list, get, assign, updateProfile, update, changeStatus, remove, listOverrides, replaceOverrides };
+export const staffAssignmentController = { lookUp, list, get, assign, getProfile, updateProfile, update, changeStatus, remove, listOverrides, replaceOverrides };

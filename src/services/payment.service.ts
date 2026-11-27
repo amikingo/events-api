@@ -1,6 +1,6 @@
 import type { Transaction } from "sequelize";
 import { chechePayClient } from "../clients/cheche-pay.client.js";
-import { paymentConfig } from "../config/payment.js";
+import { chechePayCallbackUrl, chechePayReturnUrl, paymentConfig } from "../config/payment.js";
 import {
   CapacityReachedError,
   ConflictError,
@@ -261,14 +261,6 @@ async function anyTicketTypeInactive(order: TicketOrderRow, transaction: Transac
   return false;
 }
 
-function returnUrlFor(order: TicketOrderRow): string | null {
-  return paymentConfig.returnUrl === null ? null : `${paymentConfig.returnUrl}/orders/${order.reference}`;
-}
-
-function callbackUrlFor(organizationId: string): string | null {
-  return paymentConfig.publicApiBaseUrl === null ? null : `${paymentConfig.publicApiBaseUrl}/v1/payments/cheche/webhook/${organizationId}`;
-}
-
 /**
  * Sends the buyer to pay: an unexpired checkout link is reused; otherwise the last attempt is verified first (so a
  * buyer who already paid isn't charged twice), then a new attempt is initialized with a fresh tx_ref and the
@@ -290,8 +282,8 @@ async function startPayment(organizationId: string, orderId: string): Promise<Or
 
   const keys = await chechePayCredentialService.requireForSale(organizationId);
   const txRef = chechePayClient.newTxRef(payment.id);
-  const returnUrl = returnUrlFor(order);
-  const callbackUrl = callbackUrlFor(organizationId);
+  const returnUrl = chechePayReturnUrl(order.reference, txRef);
+  const callbackUrl = chechePayCallbackUrl(organizationId);
   const phoneNumber = order.buyer_mobile as string;
   // What is sent, for review; never the key.
   const request = { amount: payment.amount, tx_ref: txRef, currency: "ETB", phone_number: phoneNumber, return_url: returnUrl, callback_url: callbackUrl };
@@ -373,13 +365,37 @@ async function expireOrder(organizationId: string, orderId: string, now: Date): 
   });
 }
 
-/** One tick of the payment worker: unpaid holds past their time give their places back. */
-async function processDue(now: Date = new Date()): Promise<{ expired: number }> {
+/** Asks Cheche Pay about one attempt (merchant-verify) and applies the answer; a failure is logged and retried later. */
+async function checkAttempt(organizationId: string, txRef: string): Promise<boolean> {
+  try {
+    await settle(txRef, { expectedOrganizationId: organizationId });
+    return true;
+  } catch (error) {
+    logger.warn({ organizationId, err: error instanceof Error ? { name: error.name, message: error.message } : error }, "Couldn't ask Cheche Pay about a payment attempt yet; will try again");
+    return false;
+  }
+}
+
+/**
+ * One tick of the payment worker (the safety net for a lost callback, Phase 10):
+ * 1. unpaid holds past their time: Cheche Pay is asked about the current attempt first, so a payment that succeeded is
+ *    settled (tickets, or a refund case) instead of being released blindly; then the hold is released if still unpaid.
+ *    If Cheche Pay can't be reached, the hold is still released on time and the attempt stays due for step 2;
+ * 2. attempts of holds released without asking (by a checkout or a cancellation, which never call the network inside
+ *    their transaction), or whose checkout link outlived the hold, are asked about once more.
+ */
+async function processDue(now: Date = new Date()): Promise<{ expired: number; checked: number }> {
   let expired = 0;
+  let checked = 0;
   for (const order of await ticketOrderRepository.listExpiredPending(now, paymentConfig.worker.batchSize)) {
+    const payment = await orderPaymentRepository.findByOrder(order.organization_id, order.id);
+    if (payment?.status === "INITIATED" && payment.tx_ref !== null && (await checkAttempt(order.organization_id, payment.tx_ref))) checked += 1;
     if (await expireOrder(order.organization_id, order.id, now)) expired += 1;
   }
-  return { expired };
+  for (const due of await orderPaymentRepository.listDueForCheck(now, paymentConfig.worker.batchSize)) {
+    if (await checkAttempt(due.organization_id, due.tx_ref)) checked += 1;
+  }
+  return { expired, checked };
 }
 
 export const paymentService = {

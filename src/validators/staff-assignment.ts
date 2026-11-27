@@ -29,13 +29,28 @@ export const staffAssignmentCreateSchema = z.strictObject({
 });
 
 /** Phase 2e: a staff member's names in auth-cheche. Names only: never mobile, email, password or status. */
+/** A real past date, YYYY-MM-DD, from 1900 on (as bookings). */
+function isPastDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value && Number(match[1]) >= 1900 && date.getTime() <= Date.now();
+}
+
+/**
+ * Phase 10 (as bookings' staff "Edit details"): names, email, sex and date of birth. "" or null clears an optional
+ * field. Never mobile, status, PIN or password: a Cheche account is the same person in every Cheche app.
+ */
 export const staffProfileUpdateSchema = z
   .strictObject({
     firstname: nameSchema.optional(),
     middlename: z.string().trim().max(100).nullable().optional(),
     lastname: nameSchema.optional(),
+    email: z.union([z.email("Enter a valid email address").trim().max(200), z.literal("")]).nullable().optional(),
+    sex: z.union([z.enum(["MALE", "FEMALE"]), z.literal("")]).nullable().optional(),
+    date_of_birth: z.union([z.string().trim().refine(isPastDate, "A real past date (YYYY-MM-DD)"), z.literal("")]).nullable().optional(),
   })
-  .refine((value) => Object.values(value).some((field) => field !== undefined), { message: "Provide at least one name to change" });
+  .refine((value) => Object.values(value).some((field) => field !== undefined), { message: "Provide at least one field to change" });
 
 /** null branch_id makes the assignment organization-wide again. */
 export const staffAssignmentUpdateSchema = z
@@ -111,3 +126,5 @@ export const listStaffOverridesRequest = { params: staffAssignmentParamsSchema }
 export const replaceStaffOverridesRequest = { params: staffAssignmentParamsSchema, body: staffOverridesReplaceSchema } satisfies RequestContract;
 
 export const updateStaffProfileRequest = { params: staffAssignmentParamsSchema, body: staffProfileUpdateSchema } satisfies RequestContract;
+
+export const getStaffProfileRequest = { params: staffAssignmentParamsSchema } satisfies RequestContract;

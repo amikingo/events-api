@@ -80,8 +80,12 @@ const EnvSchema = z.object({
   // - CHECHE_PAY_FINANCE_BASE_URL: Cheche Pay's v2 API base (from Cheche Pay).
   // - CHECHE_PAY_CREDENTIALS_KEY: 32 bytes (64 hex characters or base64) that encrypt the stored keys. Generate with
   //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))". Changing it makes saved keys unreadable.
-  // - PAYMENT_RETURN_URL: the website's base address; Cheche Pay sends the buyer back to {base}/orders/{reference}.
-  // - PUBLIC_API_BASE_URL: this API's public address, for Cheche Pay's callback ({base}/v1/payments/cheche/webhook/{id}).
+  // - CHECHE_PAY_CALLBACK_URL (as bookings): where Cheche Pay calls us, with {organization_id}, e.g.
+  //   https://api.example/v1/payments/cheche/webhook/{organization_id}, or ending in /webhook (the id is added).
+  // - CHECHE_PAY_RETURN_URL (as bookings): where Cheche Pay sends the buyer back, with {tx_ref} and/or {reference}
+  //   (our order page needs the reference), e.g. https://events.example/orders/{reference}?tx_ref={tx_ref}; without
+  //   placeholders, ?reference=…&tx_ref=… is added.
+  // - PAYMENT_RETURN_URL and PUBLIC_API_BASE_URL: the older names, still read when the new ones are unset (deprecated).
   // Held places are released after PAYMENT_HOLD_MINUTES.
   CHECHE_PAY_FINANCE_BASE_URL: z.url().optional(),
   CHECHE_PAY_CREDENTIALS_KEY: z
@@ -92,6 +96,13 @@ const EnvSchema = z.object({
       "must be 32 bytes: 64 hex characters or base64",
     )
     .optional(),
+  CHECHE_PAY_CALLBACK_URL: z
+    .string()
+    .trim()
+    .refine((value) => /^https?:\/\//i.test(value), "must be an http(s) address")
+    .refine((value) => value.includes("{organization_id}") || /\/webhook\/?$/.test(value), "must contain {organization_id} or end in /webhook")
+    .optional(),
+  CHECHE_PAY_RETURN_URL: z.string().trim().refine((value) => /^https?:\/\//i.test(value), "must be an http(s) address").optional(),
   PAYMENT_RETURN_URL: z.url().optional(),
   PUBLIC_API_BASE_URL: z.url().optional(),
   CHECHE_PAY_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(45_000),

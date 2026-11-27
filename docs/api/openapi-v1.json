@@ -138,6 +138,154 @@
         }
       }
     },
+    "/v1/auth/staff/profile": {
+      "put": {
+        "summary": "Phase 10: change your own names (firstname, middlename, lastname) in your Cheche account. The reply carries access_token and expires_in: a staff token with the new names (same assignment and expiry) to use from now on",
+        "description": "Only changed names are sent. Errors: 400 validation_error, 409 central_auth_refused, 503 central_auth_unavailable.",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffOwnProfileRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/staff/password": {
+      "put": {
+        "summary": "Phase 10: change your own password: { old_password, new_password } (8 to 128 characters, different from the current one). The current password is checked with Cheche accounts first",
+        "description": "Errors: 400 validation_error (issues[].code wrong_password on body.old_password), 429 rate_limited, 503 central_auth_unavailable.",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffPasswordChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/staff/forgot-password": {
+      "post": {
+        "summary": "Phase 10: forgot password: a code is sent by SMS only when the mobile has an active staff assignment, but the reply is always the same { sent: true, message }",
+        "description": "Limited per address and per mobile (429 rate_limited).",
+        "tags": [
+          "Auth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffForgotPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/staff/reset-password": {
+      "post": {
+        "summary": "Phase 10: set a new password with the SMS code: { mobile, otp, new_password }. Then sign in with it",
+        "description": "Errors: 400 invalid_code (a wrong or expired code, or a mobile without staff access), 400 validation_error, 429 rate_limited.",
+        "tags": [
+          "Auth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffResetPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/auth/staff/switch-assignment": {
       "post": {
         "summary": "Re-issue the staff token for another active assignment",
@@ -453,6 +601,45 @@
             "customerBearer": []
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/customer/profile": {
+      "put": {
+        "summary": "Phase 10: change your own names (firstname, middlename, lastname) in your Cheche account; the reply is your profile. Refresh the session afterwards for a token with the new names",
+        "description": "Only changed names are sent. Errors: 400 validation_error, 409 central_auth_refused, 503 central_auth_unavailable.",
+        "tags": [
+          "Guest accounts"
+        ],
+        "security": [
+          {
+            "customerBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerProfileUpdateRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
@@ -3097,8 +3284,8 @@
     },
     "/v1/organizations/{organizationId}/staff-assignments/{assignmentId}/profile": {
       "patch": {
-        "summary": "Change a staff member's names in their Cheche account (names only: never mobile, email, password or status)",
-        "description": "Errors: 409 central_auth_refused (Cheche accounts refused the change); 404 unknown assignment; 503 central_auth_unavailable.",
+        "summary": "Edit a staff member's details in their Cheche account: names, email, sex (MALE or FEMALE) and date of birth (YYYY-MM-DD); \"\" or null clears an optional field. Only changed fields are sent; never mobile, status, PIN or password",
+        "description": "Phase 10 (as bookings' staff Edit details). Reply: the assignment plus profile { firstname, middlename, lastname, mobile, email, sex, date_of_birth } and changed. Errors: 400 validation_error; 409 central_auth_refused (Cheche accounts refused the change; never a 401); 404 unknown assignment; 503 central_auth_unavailable.",
         "tags": [
           "Access control"
         ],
@@ -3139,6 +3326,54 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Phase 10: a staff member's editable details from their Cheche account: { firstname, middlename, lastname, mobile, email, sex, date_of_birth } (needs Staff Assignments view)",
+        "tags": [
+          "Access control"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "assignmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success envelope: { success: true, data, meta?, message? }"
@@ -6363,6 +6598,91 @@
         },
         "additionalProperties": false
       },
+      "StaffOwnProfileRequest": {
+        "type": "object",
+        "properties": {
+          "firstname": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "middlename": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 100
+          },
+          "lastname": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "firstname",
+          "lastname"
+        ],
+        "additionalProperties": false
+      },
+      "StaffPasswordChangeRequest": {
+        "type": "object",
+        "properties": {
+          "old_password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "new_password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "old_password",
+          "new_password"
+        ],
+        "additionalProperties": false
+      },
+      "StaffForgotPasswordRequest": {
+        "type": "object",
+        "properties": {
+          "mobile": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 20
+          }
+        },
+        "required": [
+          "mobile"
+        ],
+        "additionalProperties": false
+      },
+      "StaffResetPasswordRequest": {
+        "type": "object",
+        "properties": {
+          "mobile": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 20
+          },
+          "otp": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 12
+          },
+          "new_password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "mobile",
+          "otp",
+          "new_password"
+        ],
+        "additionalProperties": false
+      },
       "StaffSwitchAssignmentRequest": {
         "type": "object",
         "properties": {
@@ -6486,6 +6806,31 @@
         "required": [
           "mobile",
           "password"
+        ],
+        "additionalProperties": false
+      },
+      "CustomerProfileUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "firstname": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "middlename": {
+            "nullable": true,
+            "type": "string",
+            "maxLength": 100
+          },
+          "lastname": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "firstname",
+          "lastname"
         ],
         "additionalProperties": false
       },
@@ -7576,6 +7921,55 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "email": {
+            "nullable": true,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "format": "email",
+                "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              }
+            ]
+          },
+          "sex": {
+            "nullable": true,
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "MALE",
+                  "FEMALE"
+                ]
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              }
+            ]
+          },
+          "date_of_birth": {
+            "nullable": true,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              }
+            ]
           }
         },
         "additionalProperties": false

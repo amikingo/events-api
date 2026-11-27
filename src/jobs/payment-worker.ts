@@ -19,7 +19,7 @@ export function startPaymentWorker(): { stop: () => Promise<void> } {
     running = paymentService
       .processDue()
       .then((summary) => {
-        if (summary.expired > 0) logger.info(summary, "Payment worker");
+        if (summary.expired > 0 || summary.checked > 0) logger.info(summary, "Payment worker");
       })
       .catch((error: unknown) => {
         logger.error({ err: error instanceof Error ? { name: error.name, message: error.message } : error }, "Payment worker failed");

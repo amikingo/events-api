@@ -341,11 +341,46 @@ test("a created account the reply doesn't name is looked up again; still missing
   await assert.rejects(staffAssignmentService.assign(IDS.orgA, { mobile: "+251911234567", role_id: VIEWER.id }, IDS.user), CentralAccountNotFoundError);
 });
 
-test("editing names sends the names for this organization's assignment and returns it with the fresh names", async () => {
+test("editing a profile sends only the changed fields for this organization's assignment, and returns the fresh profile", async () => {
   const fakes = arrange();
-  const rename = mock.method(centralAuthClient, "updateUserNames", async (_id: string, _names: unknown) => undefined);
-  const updated = await staffAssignmentService.updateProfile(IDS.orgA, "assignment-1", { firstname: "Hanna", middlename: undefined, lastname: undefined });
-  assert.deepEqual(rename.mock.calls[0]?.arguments, [PERSON_ID, { firstname: "Hanna", middlename: undefined, lastname: undefined }]);
+  const before = { userId: PERSON_ID, mobile: PERSON.mobile, firstname: "Hana", middlename: null, lastname: "Bekele", email: "Hana@Example.et", sex: "female", date_of_birth: "1995-03-04" };
+  const after = { ...before, firstname: "Hanna", date_of_birth: null };
+  let reads = 0;
+  mock.method(centralAuthClient, "getUserProfile", async () => (reads++ === 0 ? before : after));
+  const update = mock.method(centralAuthClient, "updateUserProfile", async (_id: string, _patch: unknown) => undefined);
+
+  const updated = await staffAssignmentService.updateProfile(IDS.orgA, "assignment-1", {
+    firstname: "Hanna",
+    lastname: "Bekele",
+    email: "hana@example.et",
+    sex: "FEMALE",
+    date_of_birth: "",
+  });
+
+  assert.deepEqual(update.mock.calls[0]?.arguments, [PERSON_ID, { firstname: "Hanna", date_of_birth: "" }], "email and sex differ only in case, so they aren't sent");
   assert.deepEqual(fakes.current.mock.calls[0]?.arguments.slice(0, 2), [IDS.orgA, "assignment-1"], "scoped to the organization");
-  assert.equal(updated.profile?.firstname, "Hana", "read back from auth-cheche");
+  assert.equal(updated.changed, true);
+  assert.equal(updated.profile.firstname, "Hanna", "read back from auth-cheche");
+  assert.equal(updated.profile.date_of_birth, null);
+});
+
+test("editing a profile with nothing changed sends nothing; another organization's assignment is 404 before auth-cheche is asked", async () => {
+  arrange();
+  const profile = { userId: PERSON_ID, mobile: PERSON.mobile, firstname: "Hana", middlename: null, lastname: "Bekele", email: null, sex: null, date_of_birth: null };
+  const read = mock.method(centralAuthClient, "getUserProfile", async () => profile);
+  const update = mock.method(centralAuthClient, "updateUserProfile", async () => undefined);
+  const same = await staffAssignmentService.updateProfile(IDS.orgA, "assignment-1", { firstname: "Hana", lastname: "Bekele", email: null, sex: "" });
+  assert.equal(same.changed, false);
+  assert.equal(update.mock.callCount(), 0);
+  assert.equal(read.mock.callCount(), 1, "no second read when nothing changed");
+  assert.deepEqual(await staffAssignmentService.getProfile(IDS.orgA, "assignment-1"), {
+    firstname: "Hana", middlename: null, lastname: "Bekele", mobile: PERSON.mobile, email: null, sex: null, date_of_birth: null,
+  });
+  mock.restoreAll();
+
+  arrange({ current: null });
+  const untouched = mock.method(centralAuthClient, "getUserProfile", async () => profile);
+  await assert.rejects(staffAssignmentService.updateProfile(IDS.orgB, "assignment-1", { firstname: "X" }), NotFoundError);
+  await assert.rejects(staffAssignmentService.getProfile(IDS.orgB, "assignment-1"), NotFoundError);
+  assert.equal(untouched.mock.callCount(), 0);
 });

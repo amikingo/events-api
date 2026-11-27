@@ -1,4 +1,5 @@
-import type { CreationAttributes } from "sequelize";
+import { QueryTypes, type CreationAttributes } from "sequelize";
+import { sequelize } from "../db.js";
 import { OrderPayment } from "../models/index.js";
 import type { OrderPaymentRow } from "../models/order-payment.js";
 import { toPlain } from "../utils/sequelize.js";
@@ -44,6 +45,28 @@ async function findById(id: string, options: RepoOptions = {}): Promise<OrderPay
   return toPlain<OrderPaymentRow>(row);
 }
 
+/**
+ * Phase 10 (the payment worker's safety net): unconfirmed attempts of orders whose hold was released, that Cheche Pay
+ * hasn't been asked about since the hold ended, or since the attempt's checkout link expired (when that came later).
+ * Oldest hold first. A failed check (Cheche Pay unreachable) leaves the attempt due for the next tick.
+ */
+async function listDueForCheck(now: Date, limit: number): Promise<Array<{ id: string; organization_id: string; tx_ref: string }>> {
+  return sequelize.query<{ id: string; organization_id: string; tx_ref: string }>(
+    `SELECT p."id", p."organization_id", p."tx_ref"
+       FROM "order_payment" p
+       JOIN "ticket_order" o ON o."id" = p."order_id" AND o."organization_id" = p."organization_id"
+      WHERE p."status" = 'INITIATED' AND p."tx_ref" IS NOT NULL AND o."status" = 'EXPIRED'
+        AND (
+          COALESCE((p."last_verification"->>'checked_at')::timestamptz, 'epoch') < o."hold_expires_at"
+          OR (p."checkout_expires_at" IS NOT NULL AND p."checkout_expires_at" <= :now
+              AND COALESCE((p."last_verification"->>'checked_at')::timestamptz, 'epoch') < p."checkout_expires_at")
+        )
+      ORDER BY o."hold_expires_at" ASC
+      LIMIT :limit`,
+    { replacements: { now, limit }, type: QueryTypes.SELECT },
+  );
+}
+
 export type PaymentUpdateValues = Partial<
   Pick<
     OrderPaymentRow,
@@ -68,4 +91,4 @@ async function updateById(id: string, values: PaymentUpdateValues, options: Writ
   await OrderPayment.update({ ...values, ...lastError }, { where: { id }, ...txOptions(options) });
 }
 
-export const orderPaymentRepository = { create, findByOrder, findById, updateById };
+export const orderPaymentRepository = { create, findByOrder, findById, listDueForCheck, updateById };

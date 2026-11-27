@@ -7,6 +7,7 @@ import { CUSTOMER_REFRESH_COOKIE } from "../src/config/app.js";
 import { authConfig } from "../src/config/auth.js";
 import { ConflictError, InvalidCredentialsError, NotFoundError, ValidationAppError } from "../src/errors/app-errors.js";
 import { authRefreshLimiter, customerAuthLimiter, customerCodePerMobileLimiter } from "../src/middleware/rate-limit.js";
+import { customerAuthService } from "../src/services/customer-auth.service.js";
 import { registrationService } from "../src/services/registration.service.js";
 import { centralAccessToken, IDS, staffToken } from "./helpers/fixtures.js";
 import { call, withServer } from "./helpers/http.js";
@@ -193,4 +194,15 @@ test("guest and staff tokens never cross: a guest token can't reach staff routes
   });
   assert.deepEqual(tickets.mock.calls[0]?.arguments, [GUEST_ID], "who is asking comes only from the token");
   assert.ok(centralAccessToken(), "fixtures still sign Central tokens");
+});
+
+test("a guest edits their own names with their own token; a staff token can't, and only names are taken", async () => {
+  const update = mock.method(customerAuthService, "updateOwnNames", async () => ({ id: GUEST_ID, mobile: MOBILE, firstname: "Hanna", middlename: null, lastname: "Bekele" }));
+  await withServer(app, async (baseUrl) => {
+    assert.equal((await call(baseUrl, "PUT", "/v1/auth/customer/profile", { token: staffToken(), body: { firstname: "Hanna", lastname: "Bekele" } })).status, 401);
+    assert.equal((await call(baseUrl, "PUT", "/v1/auth/customer/profile", { token: guestToken(), body: { firstname: "Hanna", lastname: "Bekele", mobile: "0911000000" } })).status, 400);
+    const ok = await call(baseUrl, "PUT", "/v1/auth/customer/profile", { token: guestToken(), body: { firstname: "Hanna", lastname: "Bekele" } });
+    assert.deepEqual([ok.status, ok.body.data.firstname], [200, "Hanna"]);
+  });
+  assert.equal(update.mock.callCount(), 1);
 });

@@ -13,8 +13,15 @@ import { authConfig } from "../../src/config/auth.js";
 import { filesConfig } from "../../src/config/files.js";
 import { PRIVACY_NOTICE_VERSION } from "../../src/config/privacy.js";
 import { sequelize } from "../../src/db.js";
-import { CentralAuthUnavailableError, ConflictError, InvalidBranchStateError, StaffAssignmentNotFoundError } from "../../src/errors/app-errors.js";
-import { authRefreshLimiter, customerAuthLimiter, customerCodePerMobileLimiter, publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
+import {
+  CentralAuthRefusedError,
+  CentralAuthUnavailableError,
+  ConflictError,
+  InvalidBranchStateError,
+  InvalidCredentialsError,
+  StaffAssignmentNotFoundError,
+} from "../../src/errors/app-errors.js";
+import { authLoginLimiter, authRefreshLimiter, customerAuthLimiter, customerCodePerMobileLimiter, publicRegistrationLimiter } from "../../src/middleware/rate-limit.js";
 import { up as backfillDefaultRoles } from "../../src/migrations/20261127000100-backfill-default-roles.js";
 import { up as grantGuestExportToOwners } from "../../src/migrations/20261129000000-grant-guest-export-to-owners.js";
 import { up as grantAllActionsToOwnerRoles } from "../../src/migrations/20261202000000-grant-all-actions-to-owner-roles.js";
@@ -2032,7 +2039,8 @@ test("row 82: adding staff creates a Cheche account when the mobile has none; an
     accounts.set(input.mobile, { userId: NEW_ACCOUNT_ID, firstname: input.firstname });
     return { userId: NEW_ACCOUNT_ID, mobile: input.mobile, firstname: input.firstname, middlename: null, lastname: "Staff" };
   });
-  const rename = mock.method(centralAuthClient, "updateUserNames", async (_id: string, _names: unknown) => undefined);
+  const rename = mock.method(centralAuthClient, "updateUserProfile", async (_id: string, _patch: unknown) => undefined);
+  mock.method(centralAuthClient, "getUserProfile", async (userId: string) => ({ userId, mobile: null, firstname: "Liya", middlename: null, lastname: "Staff", email: null, sex: null, date_of_birth: null }));
   mock.method(centralAuthClient, "getUsersByIds", async (ids: readonly string[]) =>
     ids.map((userId) => ({ userId, mobile: null, firstname: "Name", middlename: null, lastname: "Of Staff" })),
   );
@@ -3290,6 +3298,177 @@ test("row 106: stopping VIP keeps other types selling; a held VIP + 2 GA order p
     assert.deepEqual([refused.body.data.order_status, refused.body.data.review_reason], ["REFUND_REQUIRED", "PAID_AFTER_DEADLINE"]);
     assert.equal((await staffTicketsOf(event.path, late.body.data.reference)).filter((ticket) => ticket.status === "CONFIRMED").length, 0);
     assert.equal(await PaymentCase.count({ where: { tx_ref: lateRef } }), 1);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+// --- Phase 10: staff profiles and passwords (auth-cheche stubbed); the payment safety net (Cheche Pay stubbed) -------
+
+const PROFILES = new Map<string, { userId: string; mobile: string | null; firstname: string | null; middlename: string | null; lastname: string | null; email: string | null; sex: string | null; date_of_birth: string | null }>();
+
+/** auth-cheche's profiles as a map: reads come from it and edits change it, as the real service would. */
+function stubProfiles() {
+  PROFILES.clear();
+  const read = mock.method(centralAuthClient, "getUserProfile", async (userId: string) => PROFILES.get(userId) ?? null);
+  const update = mock.method(centralAuthClient, "updateUserProfile", async (userId: string, patch: Record<string, string | null | undefined>) => {
+    const current = PROFILES.get(userId);
+    assert.ok(current, "an unknown account");
+    const sent = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined).map(([key, value]) => [key, value === "" ? null : value]));
+    PROFILES.set(userId, { ...current, ...sent });
+  });
+  return { read, update };
+}
+
+test("row 107: an admin edits a staff member's names, email, sex and date of birth: only changed fields reach auth-cheche; never mobile, status, PIN or password; a refusal is 409; another organization can't", { skip }, async () => {
+  const { update } = stubProfiles();
+  mock.method(centralAuthClient, "getUsersByIds", async (ids: readonly string[]) => ids.map((userId) => ({ userId, mobile: null, firstname: "Name", middlename: null, lastname: "Of Staff" })));
+  try {
+    const viewerId = PEOPLE.SELAM_VIEWER;
+    PROFILES.set(viewerId, { userId: viewerId, mobile: "+251933000107", firstname: "Meron", middlename: null, lastname: "Tadesse", email: "Meron@Example.et", sex: "FEMALE", date_of_birth: "1994-05-06" });
+    const path = `${staffBase()}/staff-assignments/${await assignmentIdOf(PEOPLE.SELAM_VIEWER)}/profile`;
+
+    const read = await as("SELAM_OWNER", "GET", path);
+    assert.deepEqual([read.status, read.body.data.email, read.body.data.sex], [200, "Meron@Example.et", "FEMALE"]);
+
+    const edited = await as("SELAM_OWNER", "PATCH", path, { firstname: "Meron", middlename: "Alemu", email: "meron@example.et", sex: "FEMALE", date_of_birth: "" });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.deepEqual(update.mock.calls[0]?.arguments, [viewerId, { middlename: "Alemu", date_of_birth: "" }], "the same first name, email (any case) and sex aren't sent");
+    assert.deepEqual([edited.body.data.changed, edited.body.data.profile.middlename, edited.body.data.profile.date_of_birth], [true, "Alemu", null]);
+
+    const unchanged = await as("SELAM_OWNER", "PATCH", path, { firstname: "Meron" });
+    assert.deepEqual([unchanged.status, unchanged.body.data.changed, update.mock.callCount()], [200, false, 1], "nothing changed, nothing sent");
+
+    for (const body of [{ mobile: "0933000999" }, { is_active: false }, { pin: "1234" }, { password: "new-secret-1" }, { sex: "OTHER" }]) {
+      assert.equal((await as("SELAM_OWNER", "PATCH", path, body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await as("SELAM_VIEWER", "PATCH", path, { firstname: "X" })).status, 403, "needs Staff Assignments › update");
+    // Horn is switched off by an earlier row, so another active organizer (Abay, as in row 82) checks the boundary.
+    const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
+    assert.ok(abay);
+    const fromAbay = await asToken(await tokenFor(ABAY_OWNER_ID), "PATCH", path.replace(fixture.selamId, abay.id), { firstname: "X" });
+    assert.equal(fromAbay.status, 404, "another organization's assignment isn't found there");
+
+    update.mock.mockImplementation(async () => {
+      throw new CentralAuthRefusedError();
+    });
+    const refused = await as("SELAM_OWNER", "PATCH", path, { email: "other@example.et" });
+    assert.deepEqual([refused.status, refused.body.error.code], [409, "central_auth_refused"], "auth-cheche saying no is a conflict, never a 401");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 108: a staff member changes their own names and gets a token that carries them; changing the password checks the old one first", { skip }, async () => {
+  authLoginLimiter.resetKey("127.0.0.1");
+  stubProfiles();
+  try {
+    const ownerId = PEOPLE.SELAM_OWNER;
+    const [assignment] = await userRoleRepository.listActiveAssignmentsByUser(ownerId);
+    assert.ok(assignment);
+    const mobile = "+251933000108";
+    const token = authTokenService.signAppStaffToken({ userId: ownerId, assignment, profile: { mobile, firstname: "Selam", middlename: null, lastname: "Owner" } }).token;
+    PROFILES.set(ownerId, { userId: ownerId, mobile, firstname: "Selam", middlename: null, lastname: "Owner", email: null, sex: null, date_of_birth: null });
+
+    const renamed = await asToken(token, "PUT", "/v1/auth/staff/profile", { firstname: "Selamawit", lastname: "Owner" });
+    assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+    assert.equal(PROFILES.get(ownerId)?.firstname, "Selamawit");
+    const me = await asToken(renamed.body.data.access_token, "GET", "/v1/auth/staff/me");
+    assert.deepEqual([me.status, me.body.data.user.firstname, me.body.data.assignment?.id ?? assignment.id], [200, "Selamawit", assignment.id], "the new token: same assignment, new names");
+
+    const login = mock.method(centralAuthClient, "passwordLogin", async (input: { mobile: string; password: string }) => {
+      if (input.password !== "old-secret") throw new InvalidCredentialsError();
+      return { accessToken: "central-access-108", refreshToken: "central-refresh-108", refreshExpiresIn: null };
+    });
+    const changed = mock.method(centralAuthClient, "updatePassword", async (..._args: unknown[]) => undefined);
+    const wrong = await asToken(token, "PUT", "/v1/auth/staff/password", { old_password: "not-it", new_password: "new-secret-1" });
+    assert.deepEqual([wrong.status, wrong.body.error.details?.issues?.[0]?.code], [400, "wrong_password"]);
+    assert.equal(changed.mock.callCount(), 0);
+    const ok = await asToken(token, "PUT", "/v1/auth/staff/password", { old_password: "old-secret", new_password: "new-secret-1" });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.deepEqual(login.mock.calls.at(-1)?.arguments[0], { mobile, password: "old-secret" });
+    assert.deepEqual(changed.mock.calls[0]?.arguments, [ownerId, "central-access-108", "old-secret", "new-secret-1"]);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 109: forgot password sends a code only to a mobile with an active staff assignment but always answers the same; the reset refuses a mobile without staff access", { skip }, async () => {
+  authLoginLimiter.resetKey("127.0.0.1");
+  const STAFF_MOBILE = "+251933000109";
+  const GUEST_MOBILE = "+251933000110";
+  const NOBODY_MOBILE = "+251933000111";
+  for (const mobile of [STAFF_MOBILE, GUEST_MOBILE, NOBODY_MOBILE]) customerCodePerMobileLimiter.resetKey(`mobile:${mobile}`);
+  const accounts = new Map([[STAFF_MOBILE, PEOPLE.SELAM_VIEWER], [GUEST_MOBILE, randomUUID()]]);
+  mock.method(centralAuthClient, "findUserByMobile", async (mobile: string) => {
+    const userId = accounts.get(mobile);
+    return userId ? { userId, mobile, firstname: "A", middlename: null, lastname: "B" } : null;
+  });
+  const send = mock.method(centralAuthClient, "sendCode", async (_mobile: string) => undefined);
+  const reset = mock.method(centralAuthClient, "resetPassword", async (_input: unknown) => undefined);
+  try {
+    const post = (path: string, body: unknown) => withServer(app, (baseUrl) => call(baseUrl, "POST", path, { body }));
+    const replies = [];
+    for (const mobile of ["0933000109", "0933000110", "0933000111"]) {
+      const reply = await post("/v1/auth/staff/forgot-password", { mobile });
+      assert.equal(reply.status, 200);
+      replies.push(reply.body);
+    }
+    assert.deepEqual(replies[1], replies[0], "a guest gets the staff reply");
+    assert.deepEqual(replies[2], replies[0], "so does an unknown mobile");
+    assert.deepEqual(send.mock.calls.map((entry) => entry.arguments[0]), [STAFF_MOBILE], "the code goes to staff only");
+
+    const refused = await post("/v1/auth/staff/reset-password", { mobile: "0933000110", otp: "123456", new_password: "new-secret-1" });
+    assert.deepEqual([refused.status, refused.body.error.code, reset.mock.callCount()], [400, "invalid_code", 0]);
+    const done = await post("/v1/auth/staff/reset-password", { mobile: "0933000109", otp: "123456", new_password: "new-secret-1" });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    assert.deepEqual(reset.mock.calls[0]?.arguments[0], { mobile: STAFF_MOBILE, otp: "123456", newPassword: "new-secret-1" });
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 110: the payment safety net: checkout gives Cheche Pay the callback and return addresses; at the hold's end the worker asks first, so a lost callback still issues tickets; an unreachable Cheche Pay still releases on time and is asked again later", { skip }, async () => {
+  resetPublicLimit();
+  const { initialize, verify } = stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pilot Safety Net", registration_mode: "QUICK" });
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "300" })).status, 200);
+    const buy = (mobile: string) => postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], mobile), randomUUID());
+    const lost = await buy("0913100101");
+    const unpaid = await buy("0913100102");
+    const offline = await buy("0913100103");
+    for (const reply of [lost, unpaid, offline]) assert.equal(reply.status, 201, JSON.stringify(reply.body));
+
+    const started = initialize.mock.calls.at(-1)?.arguments[0] as { callbackUrl: string | null; returnUrl: string | null };
+    assert.equal(started.callbackUrl, `https://api.events.example.test/v1/payments/cheche/webhook/${fixture.selamId}`);
+    assert.equal(started.returnUrl, `https://events.example.test/orders/${offline.body.data.reference}`);
+
+    const lostRef = await txRefOf(lost.body.data.reference);
+    const offlineRef = await txRefOf(offline.body.data.reference);
+    ledger.set(lostRef, { status: "SUCCEEDED", amount: "300.00", succeededAt: new Date(Date.now() - 5 * 60_000) });
+    let reachable = false;
+    verify.mock.mockImplementation(async (_key: string, txRef: string) => {
+      if (txRef === offlineRef && !reachable) throw new Error("Cheche Pay unreachable");
+      const seen = ledger.get(txRef);
+      return seen ? { status: seen.status, amount: seen.amount, currency: "ETB", isFinal: true, transactionId: "cp-1", succeededAt: seen.succeededAt ?? null, raw: {} } : null;
+    });
+    await TicketOrder.update({ hold_expires_at: new Date(Date.now() - 60_000) }, { where: { reference: [lost.body.data.reference, unpaid.body.data.reference, offline.body.data.reference] } });
+    // The worker works in batches; other rows may leave due orders, so it runs until ours are done.
+    for (let tick = 0; tick < 3; tick += 1) await paymentService.processDue(new Date());
+
+    const statusOf = async (reference: string) => (await TicketOrder.findOne({ where: { reference }, raw: true }))?.status;
+    assert.equal(await statusOf(lost.body.data.reference), "CONFIRMED", "paid on time, callback lost: tickets anyway");
+    assert.equal(await Registration.count({ where: { order_id: (await TicketOrder.findOne({ where: { reference: lost.body.data.reference }, raw: true }))?.id, status: "CONFIRMED" } }), 1);
+    assert.equal(await statusOf(unpaid.body.data.reference), "EXPIRED", "unpaid: released after asking");
+    assert.equal(await statusOf(offline.body.data.reference), "EXPIRED", "Cheche Pay unreachable: still released on time");
+
+    reachable = true;
+    ledger.set(offlineRef, { status: "SUCCEEDED", amount: "300.00", succeededAt: new Date(Date.now() - 2 * 60_000) });
+    for (let tick = 0; tick < 3; tick += 1) await paymentService.processDue(new Date());
+    const settled = await OrderPayment.findOne({ where: { tx_ref: offlineRef }, raw: true });
+    assert.equal(settled?.status, "PAID", "asked again once reachable: the payment is applied (tickets if the place is free, otherwise a refund case)");
+    assert.ok(["CONFIRMED", "REFUND_REQUIRED"].includes((await statusOf(offline.body.data.reference)) as string));
   } finally {
     mock.restoreAll();
   }
