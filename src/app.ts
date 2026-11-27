@@ -17,7 +17,7 @@ const corsOptions: CorsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "Idempotency-Key", "X-Request-Id"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "Idempotency-Key", "X-Request-Id", "X-Order-Token"],
   exposedHeaders: ["X-Request-Id"],
   optionsSuccessStatus: 204,
   maxAge: 600,
