@@ -2,6 +2,7 @@ import { AppModule } from "./module.js";
 import { Branch } from "./branch.js";
 import { CustomerAccount } from "./customer-account.js";
 import { AppEvent } from "./event.js";
+import { EventTicketDesign } from "./event-ticket-design.js";
 import { initAssociations } from "./init-associations.js";
 import { MessageOutbox } from "./message-outbox.js";
 import { Organization } from "./organization.js";
@@ -54,6 +55,7 @@ export {
   AppModule,
   Branch,
   CustomerAccount,
+  EventTicketDesign,
   MessageOutbox,
   OrderPayment,
   Organization,

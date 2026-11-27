@@ -4,11 +4,12 @@ import { filesConfig } from "../config/files.js";
 import { PayloadTooLargeError, ValidationAppError } from "../errors/app-errors.js";
 
 /**
- * Parses a cover upload: multipart/form-data with exactly one file in the field "file" and nothing else. Memory
+ * Parses an image upload (event covers and ticket design pictures): multipart/form-data with exactly one file in the
+ * field "file" and nothing else. Memory
  * storage only, so nothing touches the disk until the service has checked the file. Runs after authentication and
  * permission checks, so an unauthorized caller can never make the server buffer a file.
  */
-const parseCover = multer({
+const parseImage = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: filesConfig.coverMaxBytes, files: 1, fields: 0, parts: 1 },
 }).single("file");
@@ -20,8 +21,8 @@ const UPLOAD_PROBLEMS: Record<string, string> = {
   LIMIT_UNEXPECTED_FILE: "Send the image in the field 'file'",
 };
 
-export const coverImageUpload: RequestHandler = (req, res, next) => {
-  parseCover(req, res, (error: unknown) => {
+export const singleImageUpload: RequestHandler = (req, res, next) => {
+  parseImage(req, res, (error: unknown) => {
     if (!error) {
       next();
       return;

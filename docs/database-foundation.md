@@ -272,3 +272,16 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
 - `message_outbox` (`20261209000002`): the kinds `EVENT_CANCELLED` and `EVENT_RESCHEDULED`.
 - `payment_case` (`20261209000003`): the kind `EVENT_CANCELLATION`, keyed by the paying `tx_ref` like the other
   payment kinds.
+
+### Ticket designs
+- `event_ticket_design` (new, `20261211000000`): how an event's tickets look, at most one per event.
+  - **columns:** `organization_id`, `event_id`, `design`, `color`, `note`, `show_price`, `show_venue`, `show_guest`,
+    `qr_x`, `qr_y`, `qr_size`, `logo_file_id`, `picture_file_id`, `artwork_file_id`, audit columns;
+  - **keys:** `uq_event_ticket_design_organization_id_id`, `uq_event_ticket_design_organization_event`; tenant composite
+    FKs `fk_event_ticket_design_event` (cascade) and `fk_event_ticket_design_{logo,picture,artwork}_file` (restrict);
+  - **checks:** `ck_event_ticket_design_design`, `_color`, `_qr_place`, `_qr_size`, and `_custom_artwork` (a `custom`
+    design has artwork).
+- `file` (same migration): `ck_file_purpose` also allows `EVENT_TICKET_LOGO`, `EVENT_TICKET_PICTURE` and
+  `EVENT_TICKET_ARTWORK`; `ck_file_event_ticket_entity` makes each name its event. `down()` fails while such rows
+  exist.
+- See `docs/ticket-designs.md`.

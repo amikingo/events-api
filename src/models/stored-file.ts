@@ -1,7 +1,7 @@
 import { DataTypes, Model, type CreationOptional, type InferAttributes, type InferCreationAttributes } from "sequelize";
 import { sequelize } from "../db.js";
 
-export const FILE_PURPOSES = ["EVENT_COVER"] as const;
+export const FILE_PURPOSES = ["EVENT_COVER", "EVENT_TICKET_LOGO", "EVENT_TICKET_PICTURE", "EVENT_TICKET_ARTWORK"] as const;
 export type FilePurpose = (typeof FILE_PURPOSES)[number];
 export type FileEntityType = "EVENT";
 
@@ -14,7 +14,7 @@ export class StoredFile extends Model<InferAttributes<StoredFile>, InferCreation
   declare id: CreationOptional<string>;
   declare organization_id: string;
   declare purpose: FilePurpose;
-  /** What the file belongs to (for EVENT_COVER: the event). */
+  /** What the file belongs to (for EVENT_COVER and the EVENT_TICKET_ purposes: the event). */
   declare entity_type: FileEntityType | null;
   declare entity_id: string | null;
   declare storage_provider: CreationOptional<"local">;

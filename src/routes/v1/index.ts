@@ -21,6 +21,7 @@ import { registrationsRouter } from "./registrations.js";
 import { organizationRoleTemplatesRouter, roleTemplatesRouter } from "./role-templates.js";
 import { rolesRouter } from "./roles.js";
 import { staffAssignmentsRouter } from "./staff-assignments.js";
+import { ticketDesignRouter } from "./ticket-design.js";
 import { ticketTypesRouter } from "./ticket-types.js";
 import { venuesRouter } from "./venues.js";
 
@@ -34,6 +35,7 @@ router.use("/organizations/:organizationId/customer-accounts", customerAccountsR
 router.use("/organizations/:organizationId/venues", venuesRouter);
 router.use("/organizations/:organizationId/events", eventsRouter);
 router.use("/organizations/:organizationId/events/:eventId/ticket-types", ticketTypesRouter);
+router.use("/organizations/:organizationId/events/:eventId/ticket-design", ticketDesignRouter);
 router.use("/organizations/:organizationId/events/:eventId/registrations", registrationsRouter);
 router.use("/organizations/:organizationId/events/:eventId/check-ins", checkInsRouter); // Phase 8: the door
 router.use("/organizations/:organizationId/events/:eventId/orders", ordersRouter);
