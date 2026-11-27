@@ -103,11 +103,12 @@ async function updateTicketType(
     if (patch.code !== undefined) await assertCodeFree(organizationId, eventId, patch.code, transaction, ticketTypeId);
     assertFitsEventCapacity(patch.capacity, event);
     if (patch.capacity !== undefined && patch.capacity !== null) {
-      const confirmed = await registrationRepository.countConfirmedByTicketType(organizationId, eventId, ticketTypeId, { transaction });
-      if (confirmed > patch.capacity) {
+      // Phase 9: confirmed tickets (admitted ones once) plus unexpired holds of this type; the event is locked.
+      const { confirmed, held } = await registrationRepository.countSecured(organizationId, eventId, new Date(), ticketTypeId, { transaction });
+      if (confirmed + held > patch.capacity) {
         throw new CapacityBelowRegistrationsError(
-          `This ticket type's limit can't be lower than its confirmed registrations (${confirmed}). Cancel registrations first.`,
-          { field: "capacity", confirmed },
+          `This ticket type's limit can't be lower than its confirmed tickets and active holds (${confirmed + held}). Cancel tickets or wait for holds to end first.`,
+          { field: "capacity", confirmed, held, minimum: confirmed + held },
         );
       }
     }

@@ -12,6 +12,8 @@ import { customerAccountRepository } from "../src/repositories/customer-account.
 import { eventRepository } from "../src/repositories/event.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
+import { ticketAdmissionRepository } from "../src/repositories/ticket-admission.repository.js";
+import { ticketOrderRepository } from "../src/repositories/ticket-order.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { venueRepository } from "../src/repositories/venue.repository.js";
 import { eventService } from "../src/services/event.service.js";
@@ -117,6 +119,13 @@ test("a client of another organization or an inactive venue is refused before an
 function arrangeStatus(current: ReturnType<typeof eventRow>, activeTicketTypes = 1) {
   mock.method(eventRepository, "findByOrganizationAndId", async () => current);
   mock.method(ticketTypeRepository, "countActiveByEvent", async () => activeTicketTypes);
+  // Phase 9: cancelling goes through eventChangeService.cancel; an event with nothing sold has nothing to settle.
+  mock.method(ticketAdmissionRepository, "countByEvent", async () => 0);
+  mock.method(ticketOrderRepository, "listPendingByEvent", async () => []);
+  mock.method(registrationRepository, "listConfirmedWithAdmission", async () => []);
+  mock.method(registrationRepository, "cancelByIds", async () => 0);
+  mock.method(ticketOrderRepository, "listByEventAndIds", async () => []);
+  mock.method(organizationRepository, "findById", async () => organizationRow());
   return mock.method(eventRepository, "updateByOrganizationAndId", async () => eventRow({ status: "PUBLISHED" }));
 }
 
@@ -145,7 +154,8 @@ test("published_at is set only by the first publication and kept when the event 
     const update = arrangeStatus(eventRow({ status: "PUBLISHED", published_at: firstPublished }));
     await eventService.changeEventStatus(IDS.orgA, IDS.event, target, IDS.user);
     const [, , values] = update.mock.calls[0]?.arguments ?? [];
-    assert.deepEqual(values, { status: target, updated_by: IDS.user }, `${target} does not touch published_at`);
+    assert.equal(values?.status, target);
+    assert.ok(values && !("published_at" in values), `${target} does not touch published_at`);
     mock.restoreAll();
     mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
   }
@@ -183,12 +193,13 @@ test("allowed transitions: DRAFT→PUBLISHED|CANCELLED, PUBLISHED→CLOSED|CANCE
 
 function arrangeUpdate(
   current: ReturnType<typeof eventRow>,
-  options: { activeTicketTypes?: number; largestTicketLimit?: number | null; confirmed?: number } = {},
+  options: { activeTicketTypes?: number; largestTicketLimit?: number | null; confirmed?: number; held?: number; admissions?: number } = {},
 ) {
   mock.method(eventRepository, "findByOrganizationAndId", async () => current);
   mock.method(ticketTypeRepository, "countActiveByEvent", async () => options.activeTicketTypes ?? 1);
   mock.method(ticketTypeRepository, "maxCapacityByEvent", async () => options.largestTicketLimit ?? null);
-  mock.method(registrationRepository, "countConfirmedByEvent", async () => options.confirmed ?? 0);
+  mock.method(registrationRepository, "countSecured", async () => ({ confirmed: options.confirmed ?? 0, held: options.held ?? 0 }));
+  mock.method(ticketAdmissionRepository, "countByEvent", async () => options.admissions ?? 0);
   return mock.method(eventRepository, "updateByOrganizationAndId", async () => current);
 }
 
@@ -257,4 +268,14 @@ test("the event capacity can't drop below its confirmed registrations", async ()
   await eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: 120 }, IDS.user);
   await eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: null }, IDS.user);
   assert.equal(update.mock.callCount(), 2, "exactly the confirmed count fits, and no limit always fits");
+});
+
+test("Phase 9: the capacity floor is confirmed tickets plus unexpired holds: with 80 confirmed and 15 held, 90 is refused and 95 fits", async () => {
+  const update = arrangeUpdate(eventRow({ capacity: 500 }), { confirmed: 80, held: 15 });
+  await assert.rejects(
+    eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: 90 }, IDS.user),
+    (error: unknown) => error instanceof CapacityBelowRegistrationsError && JSON.stringify(error.details) === JSON.stringify({ field: "capacity", confirmed: 80, held: 15, minimum: 95 }),
+  );
+  await eventService.updateEvent(IDS.orgA, IDS.event, { ...NOT_SENT, capacity: 95 }, IDS.user);
+  assert.equal(update.mock.callCount(), 1);
 });

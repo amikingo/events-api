@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
 import type { Transaction } from "sequelize";
-import { IdempotencyKeyReusedError, InvalidEventStateError, NotFoundError, TicketNotAdmissibleError } from "../src/errors/app-errors.js";
+import { IdempotencyKeyReusedError, InvalidEventStateError, NotFoundError, OutsideAdmissionWindowError, TicketNotAdmissibleError } from "../src/errors/app-errors.js";
 import type { RegistrationRow } from "../src/models/registration.js";
 import type { TicketAdmissionRow } from "../src/models/ticket-admission.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
@@ -39,7 +39,8 @@ function arrange(options: { ticket?: Partial<RegistrationRow> | null; event?: Pa
   mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
   mock.method(eventRepository, "findByOrganizationAndId", async (_o: string, _e: string, repo?: { lock?: boolean | "keyShare" }) => {
     if (repo?.lock) state.locks.push(`event:${String(repo.lock)}`);
-    return eventRow({ status: "PUBLISHED", ...options.event });
+    // Phase 9: doors opened an hour ago (before the 2027 start), so the admission window is open now.
+    return eventRow({ status: "PUBLISHED", doors_open_at: new Date(Date.now() - 3_600_000), ...options.event });
   });
   mock.method(registrationRepository, "findByEventAndCode", async (_o: string, _e: string, code: string, repo?: { lock?: boolean }) => {
     if (repo?.lock) state.locks.push(`registration:${code}`);
@@ -124,4 +125,24 @@ test("a unique-key race the lock couldn't serialize is decided by reading again"
   const result = await checkInService.admit(input());
   assert.equal(result.result, "ADMITTED", "the other request with this key admitted this ticket: the same result");
   assert.equal(create.mock.callCount(), 1);
+});
+
+test("Phase 9: admission is open from the door time (doors_open_at, or starts_at) up to, not including, ends_at", async () => {
+  const hour = 3_600_000;
+  const now = Date.now();
+  for (const [event, open] of [
+    [{ doors_open_at: new Date(now + hour) }, false],
+    [{ doors_open_at: null, starts_at: new Date(now + hour), ends_at: new Date(now + 3 * hour) }, false],
+    [{ doors_open_at: null, starts_at: new Date(now - hour), ends_at: new Date(now + hour) }, true],
+    [{ doors_open_at: new Date(now - 3 * hour), starts_at: new Date(now - 2 * hour), ends_at: new Date(now - 1) }, false],
+  ] as const) {
+    const { create } = arrange({ event });
+    if (open) {
+      assert.equal((await checkInService.admit(input())).result, "ADMITTED");
+    } else {
+      await assert.rejects(checkInService.admit(input()), (error: unknown) => error instanceof OutsideAdmissionWindowError && "ends_at" in (error.details as object));
+      assert.equal(create.mock.callCount(), 0);
+    }
+    mock.restoreAll();
+  }
 });

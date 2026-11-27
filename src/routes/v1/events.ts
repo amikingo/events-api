@@ -6,11 +6,13 @@ import { coverImageUpload } from "../../middleware/upload.js";
 import { validate } from "../../middleware/validate.js";
 import { MODULE_CODES } from "../../utils/module-codes.js";
 import {
+  cancelEventRequest,
   changeEventStatusRequest,
   createEventRequest,
   getEventRequest,
   listEventsRequest,
   removeEventCoverRequest,
+  rescheduleEventRequest,
   setEventCoverRequest,
   updateEventRequest,
 } from "../../validators/event.js";
@@ -52,6 +54,24 @@ eventsRouter.patch(
   validate(updateEventRequest),
   requirePermission({ moduleCode: MODULE_CODES.EVENTS, action: "update", scope: organizationScopeFromParams }),
   eventController.updateEvent,
+);
+
+// Phase 9: cancel the whole event, also after the first admission (PATCH …/status CANCELLED uses the same rules).
+eventsRouter.post(
+  "/:eventId/cancel",
+  requireStaffAuthentication,
+  validate(cancelEventRequest),
+  requirePermission({ moduleCode: MODULE_CODES.EVENTS, action: "update", scope: organizationScopeFromParams }),
+  eventController.cancelEvent,
+);
+
+// Phase 9: move the event before its first admission (PATCH …/{eventId} date edits use the same rules).
+eventsRouter.post(
+  "/:eventId/reschedule",
+  requireStaffAuthentication,
+  validate(rescheduleEventRequest),
+  requirePermission({ moduleCode: MODULE_CODES.EVENTS, action: "update", scope: organizationScopeFromParams }),
+  eventController.rescheduleEvent,
 );
 
 // Publish, close or cancel.

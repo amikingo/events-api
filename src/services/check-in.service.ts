@@ -1,4 +1,4 @@
-import { IdempotencyKeyReusedError, InvalidEventStateError, NotFoundError, TicketNotAdmissibleError } from "../errors/app-errors.js";
+import { IdempotencyKeyReusedError, InvalidEventStateError, NotFoundError, OutsideAdmissionWindowError, TicketNotAdmissibleError } from "../errors/app-errors.js";
 import type { TicketAdmissionRow } from "../models/ticket-admission.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
@@ -17,6 +17,8 @@ import { ensureFound, runTransaction } from "./helpers.js";
  *   foreign key): taken last, it would wait on a return holding the event while that return waits on this
  *   registration (a deadlock). Key-share locks don't block each other, so gates never wait on one another; a return or
  *   a checkout (event FOR UPDATE) simply goes before or after.
+ * - Phase 9: only inside the admission window, from doors_open_at (or starts_at) up to, not including, ends_at
+ *   (409 outside_admission_window). One admission per ticket covers the whole event, even a multi-day one.
  * Looking a ticket up or showing its QR never writes anything.
  */
 
@@ -70,6 +72,13 @@ async function attempt(input: CheckInInput): Promise<CheckInDto | { raced: true 
   const outcome = await runTransaction(async (transaction) => {
     const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: "keyShare" }), "Event not found");
     if (event.status !== "PUBLISHED") throw new InvalidEventStateError(`Guests of a ${event.status} event can't be checked in`, { status: event.status });
+    // Phase 9: the admission window, from the door time (doors_open_at, or starts_at) up to, not including, ends_at.
+    // Sales cutoff, sold-out inventory and inactive ticket types don't matter at the door.
+    const doorsOpenAt = event.doors_open_at ?? event.starts_at;
+    const now = new Date();
+    if (doorsOpenAt === null || event.ends_at === null || now < doorsOpenAt || now >= event.ends_at) {
+      throw new OutsideAdmissionWindowError(undefined, { doors_open_at: doorsOpenAt, ends_at: event.ends_at });
+    }
     const ticket = await registrationRepository.findByEventAndCode(organizationId, eventId, code, { transaction, lock: true });
     if (!ticket) throw new NotFoundError("No ticket with this code at this event");
     if (ticket.status !== "CONFIRMED") throw new TicketNotAdmissibleError(undefined, { status: ticket.status });

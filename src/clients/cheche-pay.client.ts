@@ -24,6 +24,12 @@ export type VerifiedPayment = {
   currency: string | null;
   isFinal: boolean | null;
   transactionId: string | null;
+  /**
+   * Phase 9: when the payment succeeded, if merchant-verify says (paid_at, completed_at or succeeded_at); null when it
+   * doesn't. Cheche Pay doesn't document such a field, so null is expected until the sandbox shows otherwise: callers
+   * fall back to manual review when the deadline matters.
+   */
+  succeededAt: Date | null;
   raw: unknown;
 };
 
@@ -170,8 +176,20 @@ async function verify(secretKey: string, txRef: string): Promise<VerifiedPayment
     currency: text(data.currency)?.toUpperCase() ?? null,
     isFinal: typeof data.is_final === "boolean" ? data.is_final : null,
     transactionId: text(data.transaction_id),
+    succeededAt: firstDate(data, ["paid_at", "completed_at", "succeeded_at"]),
     raw: body,
   };
+}
+
+/** The first of these fields that holds a valid date or timestamp, or null. */
+function firstDate(data: Json, fields: readonly string[]): Date | null {
+  for (const field of fields) {
+    const value = text(data[field]);
+    if (value === null) continue;
+    const date = new Date(/^\d+$/.test(value) ? Number(value) * (value.length <= 10 ? 1000 : 1) : value);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return null;
 }
 
 async function checkKey(secretKey: string): Promise<KeyCheck> {

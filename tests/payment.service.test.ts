@@ -41,7 +41,16 @@ type State = { order: TicketOrderRow; payment: OrderPaymentRow; tickets: Registr
 let state: State;
 
 function arrange(
-  overrides: { order?: Partial<TicketOrderRow>; payment?: Partial<OrderPaymentRow>; capacity?: number | null; otherTaken?: number; keys?: ChechePayKeys | null; verified?: Partial<VerifiedPayment> | null } = {},
+  overrides: {
+    order?: Partial<TicketOrderRow>;
+    payment?: Partial<OrderPaymentRow>;
+    capacity?: number | null;
+    otherTaken?: number;
+    keys?: ChechePayKeys | null;
+    verified?: Partial<VerifiedPayment> | null;
+    event?: Parameters<typeof eventRow>[0];
+    typeActive?: boolean;
+  } = {},
 ) {
   state = {
     order: orderRow({ id: "order-1", reference: "ABCDE23456", status: "PENDING_PAYMENT", total_amount: "2000.00", buyer_mobile: "+251911234567", hold_expires_at: new Date(Date.now() + 10 * 60_000), ...overrides.order }),
@@ -53,7 +62,7 @@ function arrange(
   };
   const taken = () => state.otherTaken + state.tickets.filter((ticket) => ticket.status === "CONFIRMED" || ticket.status === "HELD").length;
   mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
-  mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED", name: "Jazz Night", capacity: state.capacity }));
+  mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED", name: "Jazz Night", capacity: state.capacity, ...overrides.event }));
   mock.method(organizationRepository, "findById", async () => organizationRow({ name: "Selam Events" }));
   mock.method(ticketOrderRepository, "findByOrganizationAndId", async () => ({ ...state.order }));
   mock.method(ticketOrderRepository, "updateById", async (_o: string, _id: string, values: Partial<TicketOrderRow>) => {
@@ -82,7 +91,7 @@ function arrange(
   mock.method(registrationRepository, "countConfirmedByEvent", async () => taken());
   mock.method(registrationRepository, "countConfirmedByTicketType", async () => taken());
   mock.method(registrationRepository, "countConfirmedByBuyerMobile", async () => 0);
-  mock.method(ticketTypeRepository, "findByEventAndId", async () => ticketTypeRow({ price: "500.00" }));
+  mock.method(ticketTypeRepository, "findByEventAndId", async () => ticketTypeRow({ price: "500.00", is_active: overrides.typeActive ?? true }));
   mock.method(messageOutboxRepository, "create", async (values: Partial<MessageOutboxRow>) => {
     state.messages.push(values);
     return {} as never;
@@ -95,7 +104,7 @@ function arrange(
   });
   const verifiedAnswer = overrides.verified === undefined ? { status: "SUCCEEDED", amount: "2000", currency: "ETB" } : overrides.verified;
   const verify = mock.method(chechePayClient, "verify", async (): Promise<VerifiedPayment | null> =>
-    verifiedAnswer === null ? null : { status: null, amount: null, currency: null, isFinal: true, transactionId: "cp-tx-1", raw: {}, ...verifiedAnswer },
+    verifiedAnswer === null ? null : { status: null, amount: null, currency: null, isFinal: true, transactionId: "cp-tx-1", succeededAt: null, raw: {}, ...verifiedAnswer },
   );
   const initialize = mock.method(chechePayClient, "initialize", async (input: InitializeInput) => ({
     checkoutUrl: `https://checkout.cheche.example/c/${input.txRef}`,
@@ -292,4 +301,82 @@ test("the worker releases unpaid holds past their time", async () => {
   assert.deepEqual(await paymentService.processDue(new Date()), { expired: 1 });
   assert.equal(state.order.status, "EXPIRED");
   assert.ok(state.tickets.every((ticket) => ticket.status === "RELEASED"));
+});
+
+// --- Phase 9: payment timing around a sales cutoff, a stopped ticket type and a cancelled event ----------------
+
+const MIN = 60_000;
+const at = (offsetMinutes: number) => new Date(Date.now() + offsetMinutes * MIN);
+
+test("cancellation comes first: a payment for a cancelled event takes no seats and opens one refund case", async () => {
+  const { issue, cases } = arrange({ event: { status: "CANCELLED" }, order: { status: "EXPIRED" } });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  const result = await paymentService.settle(TX_REF);
+  assert.deepEqual([result.order_status, result.review_reason, state.payment.status], ["REFUND_REQUIRED", "EVENT_CANCELLED", "PAID"]);
+  assert.equal(cases.get(TX_REF)?.kind, "REFUND_REQUIRED");
+  assert.equal(issue.mock.callCount(), 0);
+});
+
+test("Hana: sales closed at 18:00, hold to 18:10; a payment that succeeded at 18:04 but is heard of at 18:12 completes the order", async () => {
+  // Now is 18:12: the cutoff was 12 minutes ago, the hold ended 2 minutes ago and was released when we locked the order.
+  const succeededAt = at(-8);
+  const { issue } = arrange({
+    event: { registration_closes_at: at(-12) },
+    order: { status: "EXPIRED", hold_expires_at: at(-2) },
+    verified: { status: "SUCCEEDED", amount: "2000", currency: "ETB", succeededAt },
+  });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  const result = await paymentService.settle(TX_REF);
+  assert.deepEqual([result.order_status, result.review_reason], ["CONFIRMED", null]);
+  assert.equal(issue.mock.callCount(), 3);
+  assert.equal(state.payment.succeeded_at, succeededAt, "the success time is kept");
+});
+
+test("a payment that succeeded after both the hold and the cutoff opens one full-order refund case even with seats free", async () => {
+  const { issue, cases } = arrange({
+    event: { registration_closes_at: at(-12) },
+    order: { status: "EXPIRED", hold_expires_at: at(-2) },
+    verified: { status: "SUCCEEDED", amount: "2000", currency: "ETB", succeededAt: at(-1) },
+  });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  const result = await paymentService.settle(TX_REF);
+  assert.deepEqual([result.order_status, result.review_reason], ["REFUND_REQUIRED", "PAID_AFTER_DEADLINE"]);
+  assert.deepEqual([cases.size, cases.get(TX_REF)?.amount], [1, "2000.00"]);
+  assert.equal(issue.mock.callCount(), 0);
+});
+
+test("a late payment while sales are open keeps the existing availability check", async () => {
+  arrange({ order: { status: "EXPIRED", hold_expires_at: at(-5) }, verified: { status: "SUCCEEDED", amount: "2000", currency: "ETB", succeededAt: at(-1) } });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  assert.equal((await paymentService.settle(TX_REF)).order_status, "CONFIRMED");
+});
+
+test("a stopped ticket type: on time completes at the original price; after the hold ends it's one full-order refund case", async () => {
+  const onTime = arrange({ typeActive: false, order: { status: "EXPIRED", hold_expires_at: at(-2) }, verified: { status: "SUCCEEDED", amount: "2000", currency: "ETB", succeededAt: at(-3) } });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  assert.equal((await paymentService.settle(TX_REF)).order_status, "CONFIRMED");
+  assert.equal(onTime.issue.mock.callCount(), 3, "all three, VIP included");
+  mock.restoreAll();
+
+  const late = arrange({ typeActive: false, order: { status: "EXPIRED", hold_expires_at: at(-2) }, verified: { status: "SUCCEEDED", amount: "2000", currency: "ETB", succeededAt: at(-1) } });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  const result = await paymentService.settle(TX_REF);
+  assert.deepEqual([result.order_status, result.review_reason, late.issue.mock.callCount()], ["REFUND_REQUIRED", "PAID_AFTER_DEADLINE", 0]);
+});
+
+test("without a success time: before the hold ends it's on time; after it, with sales closed, it goes to manual review", async () => {
+  const held = arrange({ event: { registration_closes_at: at(-12) }, order: { hold_expires_at: at(5) } });
+  assert.equal((await paymentService.settle(TX_REF)).order_status, "CONFIRMED", "heard of before the hold ended: surely on time");
+  assert.equal(held.issue.mock.callCount(), 3);
+  mock.restoreAll();
+
+  const unknown = arrange({ event: { registration_closes_at: at(-12) }, order: { status: "EXPIRED", hold_expires_at: at(-2) } });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  const result = await paymentService.settle(TX_REF);
+  assert.deepEqual([result.order_status, result.review_reason, unknown.cases.get(TX_REF)?.kind], ["REFUND_REQUIRED", "PAYMENT_TIME_UNKNOWN", "REFUND_REQUIRED"]);
+  mock.restoreAll();
+
+  arrange({ order: { status: "EXPIRED", hold_expires_at: at(-2) } });
+  for (const ticket of state.tickets) ticket.status = "RELEASED";
+  assert.equal((await paymentService.settle(TX_REF)).order_status, "CONFIRMED", "sales open and every type active: the same either way");
 });

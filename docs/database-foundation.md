@@ -262,3 +262,13 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
     `order_payment` (it has no `(organization_id, id)` key; the order's composite FK keeps the tenant boundary).
 - Backfill (`20261208000005`): cases for orders already `REFUND_REQUIRED`, payments already `MISMATCH`, and
   `PAID_TWICE` notes.
+
+### Phase 9 (event changes after sales)
+- `event` (`20261209000000`):
+  - new columns: `doors_open_at`, `cancelled_at`, `cancelled_by`, `refund_admitted_tickets`;
+  - checks: `ck_event_doors_before_end`, and `ck_event_cancelled_at_status` (set exactly when `CANCELLED`; existing
+    cancelled events were backfilled with `updated_at`).
+- `order_payment` (`20261209000001`): `succeeded_at`, the success time merchant-verify reports, when it does.
+- `message_outbox` (`20261209000002`): the kinds `EVENT_CANCELLED` and `EVENT_RESCHEDULED`.
+- `payment_case` (`20261209000003`): the kind `EVENT_CANCELLATION`, keyed by the paying `tx_ref` like the other
+  payment kinds.

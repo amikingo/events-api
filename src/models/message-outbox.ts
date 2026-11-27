@@ -1,7 +1,7 @@
 import { DataTypes, Model, type CreationOptional, type InferAttributes, type InferCreationAttributes } from "sequelize";
 import { sequelize } from "../db.js";
 
-export type MessageKind = "REGISTRATION_CONFIRMATION" | "ORDER_CONFIRMATION";
+export type MessageKind = "REGISTRATION_CONFIRMATION" | "ORDER_CONFIRMATION" | "EVENT_CANCELLED" | "EVENT_RESCHEDULED";
 export type MessageChannel = "SMS";
 export const MESSAGE_STATUSES = ["PENDING", "SENT", "FAILED", "SKIPPED"] as const;
 export type MessageStatus = (typeof MESSAGE_STATUSES)[number];
@@ -32,6 +32,30 @@ export type OrderConfirmationPayload = {
 };
 
 /**
+ * Phase 9: the event was cancelled. One SMS per affected order: `refund_amount` (a two-place string, "0.00" for none)
+ * is what is due on its unused paid tickets, plus used ones only when the organizer approved that.
+ */
+export type EventCancelledPayload = {
+  organization_name: string;
+  event_name: string;
+  starts_at: string | null;
+  timezone: string;
+  refund_amount: string;
+  currency: string;
+};
+
+/** Phase 9: the event moved. One SMS per order with issued tickets; `doors_open_at` only when it differs from the start. */
+export type EventRescheduledPayload = {
+  organization_name: string;
+  event_name: string;
+  starts_at: string;
+  doors_open_at: string | null;
+  timezone: string;
+};
+
+export type MessagePayload = RegistrationConfirmationPayload | OrderConfirmationPayload | EventCancelledPayload | EventRescheduledPayload;
+
+/**
  * A message queued in the same transaction as the change it reports (spec rule 5) and delivered after commit by the
  * outbox worker, which may retry it without touching the registration. Not one of the eight business tables.
  */
@@ -44,7 +68,7 @@ export class MessageOutbox extends Model<InferAttributes<MessageOutbox>, InferCr
   declare kind: MessageKind;
   declare channel: MessageChannel;
   declare recipient: string;
-  declare payload: RegistrationConfirmationPayload | OrderConfirmationPayload;
+  declare payload: MessagePayload;
   declare status: CreationOptional<MessageStatus>;
   declare attempts: CreationOptional<number>;
   declare next_attempt_at: CreationOptional<Date>;

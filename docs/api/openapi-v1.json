@@ -1803,7 +1803,8 @@
         }
       },
       "patch": {
-        "summary": "Update an event (PATCH semantics; the slug is frozen after the first publication; set registration_closes_at to stop sign-ups early)",
+        "summary": "Update an event (PATCH semantics; the slug is frozen after the first publication; set registration_closes_at to stop sign-ups early while the gate stays open)",
+        "description": "Phase 9: doors_open_at (when admission starts; null means at starts_at; before ends_at). A previously published event's schedule follows the reschedule rules (as POST …/reschedule): starts_at and ends_at together (400 issues[].code schedule_pair_required), an explicit doors_open_at sent again (doors_open_at_reconfirm), and no admission yet (409 event_has_admissions); an actual move queues one SMS per order with issued tickets. Lowering capacity can't go below confirmed tickets plus unexpired holds (409 capacity_below_registrations: details.confirmed, held, minimum).",
         "tags": [
           "Events"
         ],
@@ -1861,9 +1862,132 @@
         }
       }
     },
+    "/v1/organizations/{organizationId}/events/{eventId}/reschedule": {
+      "post": {
+        "summary": "Phase 9: move the event before its first admission: { starts_at, ends_at, doors_open_at? } saved together. Tickets, codes, prices, payments and holds stay; explicit sales dates stay unless edited. One SMS per order with issued tickets for an actual move (the same values again send nothing)",
+        "description": "Errors: 400 validation_error (doors_open_at_reconfirm when the event has its own door time and it wasn't sent; invalid_order), 404, 409 event_has_admissions (details.admissions), 409 invalid_event_state (CLOSED or CANCELLED).",
+        "tags": [
+          "Events"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventRescheduleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/events/{eventId}/cancel": {
+      "post": {
+        "summary": "Phase 9: cancel the whole event, also after the first admission. Sales, issuing and admission stop; unpaid holds are released; unused tickets are cancelled (codes invalid, places and allowance back once); admitted tickets keep their admission; each paid order gets one EVENT_CANCELLATION payment case for what is due; one SMS per affected order",
+        "description": "refund_admitted_tickets (boolean) is required when guests were already admitted: whether used paid tickets are refunded too; it's stored on the event. Refunds are moved by the organizer and recorded under Payments. Repeating the cancellation changes nothing. A payment arriving afterwards becomes a REFUND_REQUIRED case and issues nothing. Errors: 400 validation_error (issues[].code refund_decision_required), 404, 409 invalid_event_state (CLOSED).",
+        "tags": [
+          "Events"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventCancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success envelope: { success: true, data, meta?, message? }"
+          },
+          "default": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/organizations/{organizationId}/events/{eventId}/status": {
       "patch": {
         "summary": "Publish, close or cancel an event (DRAFT→PUBLISHED|CANCELLED, PUBLISHED→CLOSED|CANCELLED)",
+        "description": "Phase 9: CANCELLED follows the same rules as POST …/cancel (send refund_admitted_tickets when guests were already admitted).",
         "tags": [
           "Events"
         ],
@@ -2152,6 +2276,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}": {
       "patch": {
         "summary": "Update a ticket type (PATCH semantics)",
+        "description": "Phase 9: its capacity can't go below its confirmed tickets plus unexpired holds (409 capacity_below_registrations: details.confirmed, held, minimum). Deactivating it (PATCH …/status) stops new orders for it; its issued tickets stay usable and returnable, and held orders may still complete by their deadline.",
         "tags": [
           "Ticket types"
         ],
@@ -5365,7 +5490,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/check-ins": {
       "post": {
         "summary": "Phase 8: admit a ticket at the door by its code (a scanned QR, whose payload is the ticket's 8-character code, or a typed code). Online and single entry: 200 with result ADMITTED, or ALREADY_CHECKED_IN with the original time and staff",
-        "description": "Idempotency-Key required: the same request again returns its original result. Only a CONFIRMED ticket of this organization and event is admitted, once for the whole event; check-in keeps the registration and its place. Reply: { result, checked_in_at, checked_in_by, ticket { id, code, ticket_type { code, name }, holder { first_name, last_name } | null, order { reference } } }. Errors: 400 validation_error (a malformed code or key), 404 not_found (no such code at this event, including another event's or organization's), 409 ticket_not_admissible (details.status HELD, RELEASED or CANCELLED), 409 invalid_event_state (the event isn't PUBLISHED), 409 idempotency_key_reused (the key already admitted another ticket).",
+        "description": "Idempotency-Key required: the same request again returns its original result. Only a CONFIRMED ticket of this organization and event is admitted, once for the whole event; check-in keeps the registration and its place. Reply: { result, checked_in_at, checked_in_by, ticket { id, code, ticket_type { code, name }, holder { first_name, last_name } | null, order { reference } } }. Errors: 400 validation_error (a malformed code or key), 404 not_found (no such code at this event, including another event's or organization's), 409 ticket_not_admissible (details.status HELD, RELEASED or CANCELLED), 409 invalid_event_state (the event isn't PUBLISHED), 409 outside_admission_window (Phase 9: before doors_open_at, or starts_at when unset, or from ends_at on; details.doors_open_at, ends_at), 409 idempotency_key_reused (the key already admitted another ticket).",
         "tags": [
           "Registrations"
         ],
@@ -6785,6 +6910,12 @@
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
+          "doors_open_at": {
+            "nullable": true,
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
           "timezone": {
             "type": "string",
             "minLength": 1,
@@ -6949,6 +7080,12 @@
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
+          "doors_open_at": {
+            "nullable": true,
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
           "timezone": {
             "type": "string",
             "minLength": 1,
@@ -7079,6 +7216,41 @@
         },
         "additionalProperties": false
       },
+      "EventRescheduleRequest": {
+        "type": "object",
+        "properties": {
+          "starts_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "ends_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "doors_open_at": {
+            "nullable": true,
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "required": [
+          "starts_at",
+          "ends_at"
+        ],
+        "additionalProperties": false
+      },
+      "EventCancelRequest": {
+        "type": "object",
+        "properties": {
+          "refund_admitted_tickets": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "EventStatusChangeRequest": {
         "type": "object",
         "properties": {
@@ -7089,6 +7261,9 @@
               "CLOSED",
               "CANCELLED"
             ]
+          },
+          "refund_admitted_tickets": {
+            "type": "boolean"
           }
         },
         "required": [

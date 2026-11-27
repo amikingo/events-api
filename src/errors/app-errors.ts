@@ -348,6 +348,23 @@ export class TicketAlreadyUsedError extends AppError {
   }
 }
 
+/**
+ * Phase 9: admission is only open from the event's door time (doors_open_at, or starts_at) up to, not including,
+ * ends_at (`details.doors_open_at`, `details.ends_at`).
+ */
+export class OutsideAdmissionWindowError extends AppError {
+  constructor(message = "Admission isn't open now", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "outside_admission_window", details, cause: options?.cause });
+  }
+}
+
+/** Phase 9: the event has admitted guests (`details.admissions`), so its schedule can no longer move. */
+export class EventHasAdmissionsError extends AppError {
+  constructor(message = "Guests were already admitted, so the schedule can't change", details?: unknown, options?: ErrorOptions) {
+    super(message, { statusCode: 409, code: "event_has_admissions", details, cause: options?.cause });
+  }
+}
+
 /** No place left: `details.scope` is EVENT (the event's capacity) or TICKET_TYPE (the ticket type's own limit). */
 export class CapacityReachedError extends AppError {
   constructor(message = "No places are left", details?: unknown, options?: ErrorOptions) {

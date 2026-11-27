@@ -12,6 +12,8 @@ import {
   PurchaseLimitReachedError,
   ValidationAppError,
 } from "../errors/app-errors.js";
+import { registrationClosedReason } from "../mappers/event.mapper.js";
+import type { EventRow } from "../models/event.js";
 import type { OrderPaymentRow } from "../models/order-payment.js";
 import type { TicketOrderRow } from "../models/ticket-order.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
@@ -51,14 +53,14 @@ import { ticketing } from "./ticketing.js";
 const SUCCEEDED = "SUCCEEDED";
 
 /** The order and its payment, both locked, under the event lock (the lock order every place change uses). */
-async function lockOrder(organizationId: string, orderId: string, transaction: Transaction): Promise<{ order: TicketOrderRow; payment: OrderPaymentRow }> {
+async function lockOrder(organizationId: string, orderId: string, transaction: Transaction): Promise<{ order: TicketOrderRow; payment: OrderPaymentRow; event: EventRow }> {
   const found = ensureFound(await ticketOrderRepository.findByOrganizationAndId(organizationId, orderId, { transaction }), "Order not found");
   const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, found.event_id, { transaction, lock: true }), "Event not found");
   // A lapsed hold (this order's or another's) is released first, so what follows decides on the real state.
   await ticketing.releaseExpiredHolds(event, new Date(), transaction);
   const order = ensureFound(await ticketOrderRepository.findByOrganizationAndId(organizationId, orderId, { transaction, lock: true }), "Order not found");
   const payment = ensureFound(await orderPaymentRepository.findByOrder(organizationId, orderId, { transaction, lock: true }), "Payment not found");
-  return { order, payment };
+  return { order, payment, event };
 }
 
 /** Issues the order's held (or released) tickets: each gets its code; one SMS lists them. */
@@ -106,7 +108,13 @@ export type SettleResult = {
   duplicate: boolean;
   /** Not ours (another integration on the same Cheche Pay business, or not a payment event): nothing read. */
   ignored: boolean;
-  review_reason: "AMOUNT_MISMATCH" | "PAID_AFTER_RELEASE" | "PAID_TWICE" | null;
+  /**
+   * Why staff must look at it: AMOUNT_MISMATCH, PAID_TWICE, PAID_AFTER_RELEASE (no room was left), and since Phase 9
+   * EVENT_CANCELLED (paid after the event was cancelled), PAID_AFTER_DEADLINE (succeeded after its hold while sales
+   * were closed or a ticket type was stopped) and PAYMENT_TIME_UNKNOWN (merchant-verify gave no success time and the
+   * deadline mattered: manual review).
+   */
+  review_reason: "AMOUNT_MISMATCH" | "PAID_AFTER_RELEASE" | "PAID_TWICE" | "EVENT_CANCELLED" | "PAID_AFTER_DEADLINE" | "PAYMENT_TIME_UNKNOWN" | null;
   /** What merchant-verify said (SUCCEEDED, PENDING, FAILED…); null when Cheche Pay doesn't know the tx_ref. */
   provider_status: string | null;
   order_status: TicketOrderRow["status"] | null;
@@ -150,7 +158,7 @@ async function settle(txRef: string, options: { expectedOrganizationId?: string 
   const amount = verifiedAmount(verified.amount);
 
   return runTransaction(async (transaction) => {
-    const { order, payment } = await lockOrder(found.organization_id, found.order_id, transaction);
+    const { order, payment, event } = await lockOrder(found.organization_id, found.order_id, transaction);
     const result = (processed: boolean, duplicate: boolean, review: SettleResult["review_reason"], status: TicketOrderRow["status"]): SettleResult => ({
       acknowledged: true,
       processed,
@@ -191,20 +199,66 @@ async function settle(txRef: string, options: { expectedOrganizationId?: string 
       return result(false, false, "PAID_TWICE", order.status);
     }
 
-    await orderPaymentRepository.updateById(payment.id, { status: "PAID", paid_tx_ref: txRef, verified_at: new Date(), last_error: null }, { transaction });
+    const now = new Date();
+    const succeededAt = verified.succeededAt ?? null;
+    await orderPaymentRepository.updateById(payment.id, { status: "PAID", paid_tx_ref: txRef, verified_at: now, succeeded_at: succeededAt, last_error: null }, { transaction });
+    const refundWholeOrder = async (review: NonNullable<SettleResult["review_reason"]>, why: string): Promise<SettleResult> => {
+      await ticketOrderRepository.updateById(order.organization_id, order.id, { status: "REFUND_REQUIRED" }, { transaction });
+      await openCase("REFUND_REQUIRED", payment.amount);
+      logger.warn({ orderId: order.id, paymentId: payment.id, review }, why);
+      return result(true, false, review, "REFUND_REQUIRED");
+    };
+    const issueIfRoom = async (): Promise<SettleResult> => {
+      if (await placesStillFree(order, transaction)) {
+        await issueTickets(order, transaction);
+        return result(true, false, null, "CONFIRMED");
+      }
+      return refundWholeOrder("PAID_AFTER_RELEASE", "Paid after its places were released and no room is left: refund required");
+    };
+
+    // Phase 9: a cancelled event never takes seats or issues tickets, whatever the timing.
+    if (event.status === "CANCELLED") return refundWholeOrder("EVENT_CANCELLED", "Paid after the event was cancelled: refund required");
+    // Still held: the payment came in time (it can't have succeeded after now, and now is before the hold's end).
     if (order.status === "PENDING_PAYMENT") {
       await issueTickets(order, transaction);
       return result(true, false, null, "CONFIRMED");
     }
-    if (order.status === "EXPIRED" && (await placesStillFree(order, transaction))) {
-      await issueTickets(order, transaction);
-      return result(true, false, null, "CONFIRMED");
+    if (order.status !== "EXPIRED") return refundWholeOrder("PAID_AFTER_RELEASE", "Paid for an order that can't be completed: refund required");
+
+    // The hold was released before we heard. Which side of the hold's end did the payment fall on?
+    const timing = paymentTiming(succeededAt, order.hold_expires_at, now);
+    if (timing === "ON_TIME") return issueIfRoom(); // at its original prices, even if sales closed or a type stopped since
+    const decidedAt = timing === "LATE" && succeededAt !== null ? succeededAt : now;
+    const salesClosed = registrationClosedReason(event, decidedAt) !== null;
+    if (salesClosed || (await anyTicketTypeInactive(order, transaction))) {
+      return timing === "LATE"
+        ? refundWholeOrder("PAID_AFTER_DEADLINE", "Paid after its hold while sales were closed or a ticket type was stopped: refund required")
+        : refundWholeOrder("PAYMENT_TIME_UNKNOWN", "Paid after its hold was released; merchant-verify gave no success time and sales are closed: manual review");
     }
-    await ticketOrderRepository.updateById(order.organization_id, order.id, { status: "REFUND_REQUIRED" }, { transaction });
-    await openCase("REFUND_REQUIRED", payment.amount);
-    logger.warn({ orderId: order.id, paymentId: payment.id }, "Paid after its places were released and no room is left: refund required");
-    return result(true, false, "PAID_AFTER_RELEASE", "REFUND_REQUIRED");
+    // Sales still open and every type active: the same outcome on either side of the deadline.
+    return issueIfRoom();
   });
+}
+
+/**
+ * Phase 9: which side of the hold's end a payment fell on. With merchant-verify's success time it's exact; without it,
+ * a payment we hear about before the hold ends was surely on time (it can't have succeeded later than now); otherwise
+ * it's unknown.
+ */
+function paymentTiming(succeededAt: Date | null, holdExpiresAt: Date | null, now: Date): "ON_TIME" | "LATE" | "UNKNOWN" {
+  if (holdExpiresAt === null) return "UNKNOWN";
+  if (succeededAt !== null) return succeededAt <= holdExpiresAt ? "ON_TIME" : "LATE";
+  return now <= holdExpiresAt ? "ON_TIME" : "UNKNOWN";
+}
+
+/** Phase 9: whether any ticket type of the order has been stopped (deactivated) since it was ordered. */
+async function anyTicketTypeInactive(order: TicketOrderRow, transaction: Transaction): Promise<boolean> {
+  const tickets = await registrationRepository.listByOrder(order.organization_id, order.event_id, order.id, { transaction });
+  for (const id of new Set(tickets.map((ticket) => ticket.ticket_type_id))) {
+    const ticketType = await ticketTypeRepository.findByEventAndId(order.organization_id, order.event_id, id, { transaction });
+    if (!ticketType?.is_active) return true;
+  }
+  return false;
 }
 
 function returnUrlFor(order: TicketOrderRow): string | null {

@@ -48,6 +48,13 @@ export class AppEvent extends Model<InferAttributes<AppEvent>, InferCreationAttr
   declare purchase_limit_per_mobile: number | null;
   /** Server-managed: set once when first published, kept after closing or cancelling. Public links need it. */
   declare published_at: CreationOptional<Date | null>;
+  /** Phase 9: when admission starts; null means at starts_at. Admission ends at ends_at. */
+  declare doors_open_at: CreationOptional<Date | null>;
+  /** Phase 9: when and by whom the event was cancelled (set exactly when CANCELLED). */
+  declare cancelled_at: CreationOptional<Date | null>;
+  declare cancelled_by: CreationOptional<string | null>;
+  /** Phase 9: when cancelled after admissions, whether used paid tickets are refunded too (null: nothing to decide). */
+  declare refund_admitted_tickets: CreationOptional<boolean | null>;
   declare created_at: CreationOptional<Date>;
   declare updated_at: CreationOptional<Date>;
   declare created_by: string | null;
@@ -80,6 +87,10 @@ AppEvent.init(
     holder_fields: { type: DataTypes.JSONB, allowNull: false, defaultValue: DEFAULT_HOLDER_FIELDS },
     purchase_limit_per_mobile: { type: DataTypes.INTEGER, allowNull: true },
     published_at: { type: DataTypes.DATE, allowNull: true },
+    doors_open_at: { type: DataTypes.DATE, allowNull: true },
+    cancelled_at: { type: DataTypes.DATE, allowNull: true },
+    cancelled_by: { type: DataTypes.UUID, allowNull: true },
+    refund_admitted_tickets: { type: DataTypes.BOOLEAN, allowNull: true },
     created_at: DataTypes.DATE,
     updated_at: DataTypes.DATE,
     created_by: { type: DataTypes.UUID, allowNull: true },

@@ -31,6 +31,8 @@ export class OrderPayment extends Model<InferAttributes<OrderPayment>, InferCrea
   declare key_mode: CreationOptional<KeyMode | null>;
   declare paid_tx_ref: CreationOptional<string | null>;
   declare verified_at: CreationOptional<Date | null>;
+  /** Phase 9: when the payment succeeded, as merchant-verify reports it (null when it doesn't say). */
+  declare succeeded_at: CreationOptional<Date | null>;
   declare request_object: CreationOptional<Record<string, unknown> | null>;
   declare response_object: unknown;
   declare last_verification: CreationOptional<Record<string, unknown> | null>;
@@ -56,6 +58,7 @@ OrderPayment.init(
     key_mode: { type: DataTypes.STRING(10), allowNull: true },
     paid_tx_ref: { type: DataTypes.STRING(255), allowNull: true },
     verified_at: { type: DataTypes.DATE, allowNull: true },
+    succeeded_at: { type: DataTypes.DATE, allowNull: true },
     request_object: { type: DataTypes.JSONB, allowNull: true },
     response_object: { type: DataTypes.JSONB, allowNull: true },
     last_verification: { type: DataTypes.JSONB, allowNull: true },

@@ -2564,7 +2564,7 @@ test("row 92: cancelling a ticket frees its place and allowance; the guest list 
  * Cheche Pay as the tests see it: initialize returns a checkout URL per tx_ref; merchant-verify answers from `ledger`
  * (tx_ref → status and amount), so a test decides what Cheche Pay "saw" before the webhook arrives.
  */
-const ledger = new Map<string, { status: string; amount: string }>();
+const ledger = new Map<string, { status: string; amount: string; succeededAt?: Date }>();
 
 function stubChechePay() {
   ledger.clear();
@@ -2577,7 +2577,7 @@ function stubChechePay() {
   }));
   const verify = mock.method(chechePayClient, "verify", async (_key: string, txRef: string) => {
     const seen = ledger.get(txRef);
-    return seen ? { status: seen.status, amount: seen.amount, currency: "ETB", isFinal: true, transactionId: "cp-1", raw: {} } : null;
+    return seen ? { status: seen.status, amount: seen.amount, currency: "ETB", isFinal: true, transactionId: "cp-1", succeededAt: seen.succeededAt ?? null, raw: {} } : null;
   });
   return { initialize, verify };
 }
@@ -2821,9 +2821,12 @@ async function gateScan(person: Person, eventPath: string, code: string, key: st
 
 const doorFixture = { eventPath: "", publicPath: "", codes: [] as string[] };
 
+/** Phase 9: the gate admits only from the door time; the test events start in 2027, so their doors opened an hour ago. */
+const doorsOpenedAnHourAgo = () => new Date(Date.now() - 3_600_000).toISOString();
+
 test("row 97: each ticket's QR payload is exactly its code on the order page, My Tickets and the staff order; two gates racing admit it once; the winning request retried gets its original result; the other ticket of the order is admitted on its own", { skip }, async () => {
   resetPublicLimit();
-  const event = await publishedCheckoutEvent({ name: "Pilot Gala", registration_mode: "QUICK" });
+  const event = await publishedCheckoutEvent({ name: "Pilot Gala", registration_mode: "QUICK", doors_open_at: doorsOpenedAnHourAgo() });
   Object.assign(doorFixture, { eventPath: event.path, publicPath: event.publicPath });
   const bought = await guestPost(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }]), { key: randomUUID(), token: guestAccessToken("SARA") });
   assert.equal(bought.status, 201, JSON.stringify(bought.body));
@@ -2868,7 +2871,7 @@ test("row 97: each ticket's QR payload is exactly its code on the order page, My
 
 test("row 98: at the door a cancelled ticket is refused, a held ticket has no code to present, another event's code is not found; another organization's Owner and a Viewer can't admit", { skip }, async () => {
   resetPublicLimit();
-  const event = await publishedCheckoutEvent({ name: "Pilot Matinee", registration_mode: "QUICK" });
+  const event = await publishedCheckoutEvent({ name: "Pilot Matinee", registration_mode: "QUICK", doors_open_at: doorsOpenedAnHourAgo() });
   const free = await as("SELAM_OWNER", "POST", `${event.path}/orders`, { buyer_mobile: "0913400001", items: [{ ticket_type_id: event.types.GA, quantity: 1 }] });
   const ticket = free.body.data.tickets[0] as { id: string; code: string };
   assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/registrations/${ticket.id}/status`, { status: "CANCELLED" })).status, 200);
@@ -3009,7 +3012,7 @@ test("row 100: returning the unused VIP of a paid order after its price changed 
   resetPublicLimit();
   stubChechePay();
   try {
-    const event = await publishedCheckoutEvent({ name: "Pilot Gala Dinner", registration_mode: "QUICK", purchase_limit_per_mobile: 3 }, [
+    const event = await publishedCheckoutEvent({ name: "Pilot Gala Dinner", registration_mode: "QUICK", purchase_limit_per_mobile: 3, doors_open_at: doorsOpenedAnHourAgo() }, [
       { code: "VIP", name: "VIP", price: "1000" },
       { code: "KIDS", name: "Kids", price: "0" },
     ]);
@@ -3087,6 +3090,206 @@ test("row 100: returning the unused VIP of a paid order after its price changed 
 
     assert.equal((await as("HORN_OWNER", "POST", `${event.path}/registrations/${singleTicket?.id}/return`)).status, 403, "another organization");
     assert.equal((await as("SELAM_VIEWER", "POST", `${event.path}/registrations/${gas[0]?.id}/return`)).status, 403, "view-only");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+// --- Phase 9: event changes after sales ---------------------------------------------------------------------------
+
+test("row 101: cancelling an event after its first admission releases holds once, cancels unused tickets, keeps the used one, opens one refund case per paid order, texts every affected buyer once; a later payment only opens a refund case; a repeat changes nothing", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pilot Festival", registration_mode: "QUICK", doors_open_at: doorsOpenedAnHourAgo() }, [{ code: "KIDS", name: "Kids", price: "0" }]);
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    const orders = `${event.publicPath}/orders`;
+    const pay = async (reference: string, amount: string) => {
+      const txRef = await txRefOf(reference);
+      ledger.set(txRef, { status: "SUCCEEDED", amount });
+      assert.equal((await signedWebhook(txRef)).body.data.order_status, "CONFIRMED");
+    };
+    const paid = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 2 }], "0913700001"), randomUUID());
+    await pay(paid.body.data.reference, "1000.00");
+    const mixed = await postWithKey(orders, orderForm([{ ticket_type_code: "KIDS", quantity: 1 }, { ticket_type_code: "GA", quantity: 1 }], "0913700002"), randomUUID());
+    await pay(mixed.body.data.reference, "500.00");
+    const free = await postWithKey(orders, orderForm([{ ticket_type_code: "KIDS", quantity: 1 }], "0913700003"), randomUUID());
+    assert.equal(free.status, 201);
+    const held = await postWithKey(orders, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913700004"), randomUUID());
+    assert.equal(held.body.data.status, "PENDING_PAYMENT");
+    const paidTickets = await staffTicketsOf(event.path, paid.body.data.reference);
+    assert.equal((await gateScan("SELAM_OWNER", event.path, paidTickets[0]?.code as string, randomUUID())).body.data.result, "ADMITTED");
+
+    const undecided = await as("SELAM_OWNER", "POST", `${event.path}/cancel`, {});
+    assert.deepEqual([undecided.status, undecided.body.error.details.issues[0].code], [400, "refund_decision_required"]);
+    const cancelled = await as("SELAM_OWNER", "POST", `${event.path}/cancel`, { refund_admitted_tickets: false });
+    assert.deepEqual([cancelled.status, cancelled.body.data.status, cancelled.body.data.refund_admitted_tickets], [200, "CANCELLED", false]);
+
+    const statusOf = async (reference: string) => (await staffTicketsOf(event.path, reference)).map((ticket) => ticket.status).sort();
+    assert.deepEqual(await statusOf(paid.body.data.reference), ["CANCELLED", "CONFIRMED"], "the used ticket keeps its admission");
+    assert.deepEqual(await statusOf(mixed.body.data.reference), ["CANCELLED", "CANCELLED"]);
+    assert.deepEqual(await statusOf(free.body.data.reference), ["CANCELLED"]);
+    assert.equal((await TicketOrder.findOne({ where: { reference: held.body.data.reference }, raw: true }))?.status, "EXPIRED", "the hold is released");
+    const orderIdOf = async (reference: string): Promise<string> => {
+      const row = await TicketOrder.findOne({ where: { reference }, raw: true });
+      assert.ok(row);
+      return row.id;
+    };
+    const cases = await PaymentCase.findAll({ where: { event_id: event.id, kind: "EVENT_CANCELLATION" }, raw: true });
+    assert.deepEqual(
+      cases.map((row) => [row.order_id, row.amount]).sort(),
+      [
+        [await orderIdOf(paid.body.data.reference), "500.00"],
+        [await orderIdOf(mixed.body.data.reference), "500.00"],
+      ].sort(),
+      "the unused paid tickets at their price; the free ticket adds nothing; the free order has none",
+    );
+    assert.equal(await MessageOutbox.count({ where: { kind: "EVENT_CANCELLED", order_id: [await orderIdOf(paid.body.data.reference), await orderIdOf(mixed.body.data.reference), await orderIdOf(free.body.data.reference), await orderIdOf(held.body.data.reference)] } }), 4);
+    assert.equal((await as("SELAM_OWNER", "GET", `${event.path}/registrations/summary`)).body.data.confirmed, 1);
+    assert.equal((await gateScan("SELAM_OWNER", event.path, paidTickets[1]?.code as string, randomUUID())).body.error.code, "invalid_event_state", "no more admissions");
+    assert.equal((await publicGet(event.publicPath)).body.data.display_status, "CANCELLED", "the direct link says Cancelled");
+
+    assert.equal((await as("SELAM_OWNER", "POST", `${event.path}/cancel`, { refund_admitted_tickets: true })).status, 200);
+    assert.equal(await PaymentCase.count({ where: { event_id: event.id, kind: "EVENT_CANCELLATION" } }), 2, "a repeat creates no second obligation");
+    assert.equal(await MessageOutbox.count({ where: { kind: "EVENT_CANCELLED", order_id: await orderIdOf(paid.body.data.reference) } }), 1);
+
+    const lateRef = await txRefOf(held.body.data.reference);
+    ledger.set(lateRef, { status: "SUCCEEDED", amount: "500.00" });
+    const late = await signedWebhook(lateRef);
+    assert.deepEqual([late.body.data.order_status, late.body.data.review_reason], ["REFUND_REQUIRED", "EVENT_CANCELLED"]);
+    assert.equal(await PaymentCase.count({ where: { tx_ref: lateRef, kind: "REFUND_REQUIRED" } }), 1);
+    assert.deepEqual(await statusOf(held.body.data.reference), ["RELEASED"], "no seat, no ticket");
+
+    const draft = await as("SELAM_OWNER", "POST", `/v1/organizations/${fixture.selamId}/events`, { name: "Never Shown" });
+    assert.equal((await as("SELAM_OWNER", "POST", `/v1/organizations/${fixture.selamId}/events/${draft.body.data.id}/cancel`, {})).body.data.status, "CANCELLED");
+    assert.equal((await publicGet(`/v1/public/organizations/selam-events/events/${draft.body.data.slug}`)).status, 404, "a cancelled draft stays private");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 102: sales closed at 18:00 with Hana's hold to 18:10: a payment at 18:04 heard of at 18:12 completes; a payment at 18:12 opens one full-order refund case even with seats free", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pilot Sunset", registration_mode: "QUICK" });
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    const hana = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }], "0913800001"), randomUUID());
+    const other = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913800002"), randomUUID());
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+    // "Now" is 18:12: the cutoff was 12 minutes ago and both holds ended 2 minutes ago.
+    assert.equal((await as("SELAM_OWNER", "PATCH", event.path, { registration_closes_at: minutesAgo(12).toISOString() })).status, 200);
+    await TicketOrder.update({ hold_expires_at: minutesAgo(2) }, { where: { reference: [hana.body.data.reference, other.body.data.reference] } });
+
+    const hanaRef = await txRefOf(hana.body.data.reference);
+    ledger.set(hanaRef, { status: "SUCCEEDED", amount: "1000.00", succeededAt: minutesAgo(8) });
+    assert.equal((await signedWebhook(hanaRef)).body.data.order_status, "CONFIRMED", "18:04: on time, at the original price");
+    assert.ok((await OrderPayment.findOne({ where: { tx_ref: hanaRef }, raw: true }))?.succeeded_at, "the success time is kept");
+
+    const otherRef = await txRefOf(other.body.data.reference);
+    ledger.set(otherRef, { status: "SUCCEEDED", amount: "500.00", succeededAt: new Date() });
+    const late = await signedWebhook(otherRef);
+    assert.deepEqual([late.body.data.order_status, late.body.data.review_reason], ["REFUND_REQUIRED", "PAID_AFTER_DEADLINE"]);
+    const lateCases = await PaymentCase.findAll({ where: { tx_ref: otherRef }, raw: true });
+    assert.deepEqual(lateCases.map((row) => [row.kind, row.amount]), [["REFUND_REQUIRED", "500.00"]], "one full-order case, though seats were free");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 103: the door opens at doors_open_at (or starts_at) and stays open whatever the sales cutoff or a stopped ticket type", { skip }, async () => {
+  resetPublicLimit();
+  const event = await publishedCheckoutEvent({ name: "Pilot Expo", registration_mode: "QUICK", doors_open_at: new Date(Date.now() + 3_600_000).toISOString() }, [{ code: "VIP", name: "VIP", price: "0" }]);
+  const order = await as("SELAM_OWNER", "POST", `${event.path}/orders`, { buyer_mobile: "0913900001", items: [{ ticket_type_id: event.types.GA, quantity: 1 }, { ticket_type_id: event.types.VIP, quantity: 1 }] });
+  const [first, second] = order.body.data.tickets as Array<{ code: string; ticket_type: { code: string } }>;
+  const early = await gateScan("SELAM_OWNER", event.path, first?.code as string, randomUUID());
+  assert.deepEqual([early.status, early.body.error.code], [409, "outside_admission_window"]);
+
+  assert.equal((await as("SELAM_OWNER", "PATCH", event.path, { doors_open_at: doorsOpenedAnHourAgo() })).status, 200, "the door time moves (no admission yet)");
+  assert.equal((await as("SELAM_OWNER", "PATCH", event.path, { registration_closes_at: new Date(Date.now() - 60_000).toISOString() })).status, 200, "sales closed");
+  const vip = order.body.data.tickets.find((ticket: { ticket_type: { code: string } }) => ticket.ticket_type.code === "VIP") as { code: string };
+  assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.VIP}/status`, { is_active: false })).status, 200, "VIP stopped");
+  assert.equal((await gateScan("SELAM_OWNER", event.path, vip.code, randomUUID())).body.data.result, "ADMITTED", "issued VIP tickets still get in");
+  const other = first?.code === vip.code ? second : first;
+  assert.equal((await gateScan("SELAM_OWNER", event.path, other?.code as string, randomUUID())).body.data.result, "ADMITTED", "after the cutoff too");
+});
+
+test("row 104: a reschedule before the first admission keeps the tickets, codes and an explicit cutoff, texts each order once, sends nothing on a retry, and is refused after a scan", { skip }, async () => {
+  resetPublicLimit();
+  const friday = { starts_at: "2027-08-06T15:00:00+03:00", ends_at: "2027-08-06T22:00:00+03:00" };
+  const sunday = { starts_at: "2027-08-08T15:00:00+03:00", ends_at: "2027-08-08T22:00:00+03:00" };
+  const event = await publishedCheckoutEvent({ name: "Pilot Recital Two", registration_mode: "QUICK", ...friday, registration_closes_at: "2027-08-06T12:00:00+03:00" });
+  const order = await as("SELAM_OWNER", "POST", `${event.path}/orders`, { buyer_mobile: "0913900002", items: [{ ticket_type_id: event.types.GA, quantity: 2 }] });
+  const codes = order.body.data.tickets.map((ticket: { code: string }) => ticket.code).sort();
+
+  assert.deepEqual((await as("SELAM_OWNER", "PATCH", event.path, { ends_at: "2027-08-07T22:00:00+03:00" })).body.error.details.issues[0].code, "schedule_pair_required", "the schedule moves as a whole");
+  const moved = await as("SELAM_OWNER", "POST", `${event.path}/reschedule`, sunday);
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(new Date(moved.body.data.registration_closes_at).toISOString(), new Date("2027-08-06T12:00:00+03:00").toISOString(), "the explicit Friday cutoff stays");
+  assert.equal(await MessageOutbox.count({ where: { kind: "EVENT_RESCHEDULED", order_id: order.body.data.id } }), 1);
+  assert.equal((await as("SELAM_OWNER", "POST", `${event.path}/reschedule`, sunday)).status, 200);
+  assert.equal(await MessageOutbox.count({ where: { kind: "EVENT_RESCHEDULED", order_id: order.body.data.id } }), 1, "the same change again sends nothing");
+  const after = await as("SELAM_OWNER", "GET", `${event.path}/orders/${order.body.data.id}`);
+  assert.deepEqual(after.body.data.tickets.map((ticket: { code: string }) => ticket.code).sort(), codes, "the same codes");
+
+  const withDoors = await publishedCheckoutEvent({ name: "Pilot Gate Test", registration_mode: "QUICK", doors_open_at: doorsOpenedAnHourAgo() });
+  assert.equal((await as("SELAM_OWNER", "POST", `${withDoors.path}/reschedule`, sunday)).body.error.details.issues[0].code, "doors_open_at_reconfirm");
+  const ticket = (await as("SELAM_OWNER", "POST", `${withDoors.path}/orders`, { buyer_mobile: "0913900003", items: [{ ticket_type_id: withDoors.types.GA, quantity: 1 }] })).body.data.tickets[0] as { code: string };
+  assert.equal((await gateScan("SELAM_OWNER", withDoors.path, ticket.code, randomUUID())).body.data.result, "ADMITTED");
+  const tooLate = await as("SELAM_OWNER", "POST", `${withDoors.path}/reschedule`, { ...sunday, doors_open_at: null });
+  assert.deepEqual([tooLate.status, tooLate.body.error.code], [409, "event_has_admissions"]);
+});
+
+test("row 105: capacity can't drop below confirmed tickets plus active holds (80 + 15): 90 is refused, 95 fits; the same at ticket-type level", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pilot Hall", registration_mode: "QUICK", capacity: 200 }, [{ code: "VIP", name: "VIP", price: "100" }]);
+    for (let index = 0; index < 4; index += 1) {
+      const issued = await as("SELAM_OWNER", "POST", `${event.path}/orders`, { buyer_mobile: `09139100${10 + index}`, items: [{ ticket_type_id: event.types.GA, quantity: 20 }] });
+      assert.equal(issued.status, 201, JSON.stringify(issued.body));
+    }
+    const holds = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "VIP", quantity: 15 }], "0913910099"), randomUUID());
+    assert.equal(holds.body.data.status, "PENDING_PAYMENT");
+    const refused = await as("SELAM_OWNER", "PATCH", event.path, { capacity: 90 });
+    assert.deepEqual([refused.status, refused.body.error.details], [409, { field: "capacity", confirmed: 80, held: 15, minimum: 95 }]);
+    assert.equal((await as("SELAM_OWNER", "PATCH", event.path, { capacity: 95 })).status, 200);
+    const vip = await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.VIP}`, { capacity: 10 });
+    assert.deepEqual([vip.status, vip.body.error.details.minimum], [409, 15], "the held VIP places count at type level too");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 106: stopping VIP keeps other types selling; a held VIP + 2 GA order paid on time gets all three; paid after its hold it gets none and one refund case", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pilot Ball", registration_mode: "QUICK", doors_open_at: doorsOpenedAnHourAgo() }, [{ code: "VIP", name: "VIP", price: "1000" }]);
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    const items = [{ ticket_type_code: "VIP", quantity: 1 }, { ticket_type_code: "GA", quantity: 2 }];
+    const onTime = await postWithKey(`${event.publicPath}/orders`, orderForm(items, "0913920001"), randomUUID());
+    const late = await postWithKey(`${event.publicPath}/orders`, orderForm(items, "0913920002"), randomUUID());
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.VIP}/status`, { is_active: false })).status, 200);
+    const vipNow = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "VIP", quantity: 1 }], "0913920003"), randomUUID());
+    assert.ok(vipNow.status >= 400, "no new VIP orders");
+    assert.equal((await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913920004"), randomUUID())).body.data.status, "PENDING_PAYMENT", "GA still sells");
+
+    const onTimeRef = await txRefOf(onTime.body.data.reference);
+    ledger.set(onTimeRef, { status: "SUCCEEDED", amount: "2000.00", succeededAt: new Date() });
+    assert.equal((await signedWebhook(onTimeRef)).body.data.order_status, "CONFIRMED");
+    const issued = await staffTicketsOf(event.path, onTime.body.data.reference);
+    assert.deepEqual(issued.map((ticket) => ticket.status), ["CONFIRMED", "CONFIRMED", "CONFIRMED"], "all three at the original prices");
+    const vipTicket = issued.find((ticket) => ticket.ticket_type.code === "VIP");
+    assert.equal((await gateScan("SELAM_OWNER", event.path, vipTicket?.code as string, randomUUID())).body.data.result, "ADMITTED", "the stopped type's ticket still gets in");
+
+    await TicketOrder.update({ hold_expires_at: new Date(Date.now() - 120_000) }, { where: { reference: late.body.data.reference } });
+    const lateRef = await txRefOf(late.body.data.reference);
+    ledger.set(lateRef, { status: "SUCCEEDED", amount: "2000.00", succeededAt: new Date(Date.now() - 60_000) });
+    const refused = await signedWebhook(lateRef);
+    assert.deepEqual([refused.body.data.order_status, refused.body.data.review_reason], ["REFUND_REQUIRED", "PAID_AFTER_DEADLINE"]);
+    assert.equal((await staffTicketsOf(event.path, late.body.data.reference)).filter((ticket) => ticket.status === "CONFIRMED").length, 0);
+    assert.equal(await PaymentCase.count({ where: { tx_ref: lateRef } }), 1);
   } finally {
     mock.restoreAll();
   }

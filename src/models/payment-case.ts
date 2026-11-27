@@ -3,9 +3,10 @@ import { sequelize } from "../db.js";
 
 /**
  * REFUND_REQUIRED (paid after the places were released, none left), PAID_TWICE (a second attempt also succeeded),
- * AMOUNT_MISMATCH (Cheche Pay verified another amount), TICKET_RETURN (a paid ticket returned, Phase 8 step 4).
+ * AMOUNT_MISMATCH (Cheche Pay verified another amount), TICKET_RETURN (a paid ticket returned, Phase 8 step 4),
+ * EVENT_CANCELLATION (the refund due on one paid order when its event is cancelled, Phase 9; keyed by its charge).
  */
-export const PAYMENT_CASE_KINDS = ["REFUND_REQUIRED", "PAID_TWICE", "AMOUNT_MISMATCH", "TICKET_RETURN"] as const;
+export const PAYMENT_CASE_KINDS = ["REFUND_REQUIRED", "PAID_TWICE", "AMOUNT_MISMATCH", "TICKET_RETURN", "EVENT_CANCELLATION"] as const;
 export type PaymentCaseKind = (typeof PAYMENT_CASE_KINDS)[number];
 
 export const PAYMENT_CASE_STATUSES = ["OPEN", "RESOLVED"] as const;

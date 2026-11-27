@@ -595,9 +595,30 @@ The plan follows the 27 November handoff.
 - **Cases:** `paymentService.settle` opens one case per payment attempt for `REFUND_REQUIRED`, `PAID_TWICE` and `AMOUNT_MISMATCH`.
 - **Endpoints:** staff with Payments list, read and resolve cases (`REFUNDED` with the merchant reference, or `CLOSED_WITHOUT_REFUND` with a note). Resolving never changes tickets or orders.
 
-**Step 4 (partial returns): built; waiting on `npm run openapi`, `npm run check`, then `TEST_DATABASE=1 npm test` (row 100). No migration.**
+**Step 4 (partial returns): done (27 November 2026).** `npm run check` passed; the project owner ran `TEST_DATABASE=1 npm test` (row 100, which found and confirmed the fix for a check-in/return deadlock) and committed. No migration.
 - `POST …/registrations/{id}/return` (Guests › update) returns one confirmed, unused ticket. It frees one event place, one place of its type and one unit of the buyer's allowance.
 - A paid ticket opens one `TICKET_RETURN` case for its stored price in the same transaction.
 - A repeat gives the original result.
 - The status route's `CANCELLED` shares the same logic.
 - Under the locks, a ticket used at the door is refused, so a return and a check-in can't both succeed.
+
+### Phase 9 — Event changes after sales (27 November 2026)
+
+**Built; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test`
+(rows 101–106).** Migrations `20261209000000`–`000003`.
+
+**What it covers:**
+- **cancel** (`POST …/cancel`, and `PATCH …/status` `CANCELLED`): holds released, unused tickets cancelled, admitted
+  ones kept, one `EVENT_CANCELLATION` case per paid charge, one SMS per affected order;
+- **payment timing:** around a sales cutoff and stopped ticket types, by the success time merchant-verify gives, with
+  manual review when it doesn't;
+- **the door window:** `doors_open_at` up to `ends_at`;
+- **reschedule** (`POST …/reschedule`, and published date edits) before the first admission, with one SMS per order;
+- **the capacity floor:** confirmed tickets plus unexpired holds;
+- **stopped ticket types:** issued tickets stay usable.
+
+**Still open:**
+- whether merchant-verify returns a success time (the sandbox run);
+- real delivery of the two new SMS.
+
+Details in `docs/registrations.md` (Phase 9).

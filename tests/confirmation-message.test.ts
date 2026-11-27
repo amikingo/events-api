@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { confirmationText, messageText, orderConfirmationText } from "../src/utils/confirmation-message.js";
+import { confirmationText, eventCancelledText, eventRescheduledText, messageText, orderConfirmationText } from "../src/utils/confirmation-message.js";
 import { ethiopianClockText, ethiopianDateText, gregorianToJDN, jdnToEthiopian, jdnToGregorian } from "../src/utils/ethiopian-calendar.js";
 
 /** The Ethiopian calendar and clock, and the confirmation SMS text (Ethiopian first, then Gregorian 12-hour). */
@@ -81,4 +81,22 @@ test("the order confirmation lists the codes in the same style; a long order say
   assert.match(orderConfirmationText({ ...order, ticket_count: 12, part: 2, parts: 2 }), /^Selam Events \(2\/2\): Your 12 tickets/);
   assert.equal(messageText("ORDER_CONFIRMATION", order), orderConfirmationText(order));
   assert.equal(messageText("REGISTRATION_CONFIRMATION", PAYLOAD), confirmationText(PAYLOAD));
+});
+
+test("Phase 9: the cancellation SMS names the refund due, or asks not to pay when nothing is due", () => {
+  const base = { organization_name: "Selam Events", event_name: "Jazz Night", starts_at: "2027-03-12T06:00:00.000Z", timezone: "Africa/Addis_Ababa", currency: "ETB" };
+  const refunded = eventCancelledText({ ...base, refund_amount: "1000.00" });
+  assert.match(refunded, /^Selam Events: Jazz Night, .*\(Mar 12, 2027, 9:00 AM\), is cancelled\. A refund of 1000\.00 ETB is due to you; the organizer will send it\.$/);
+  assert.match(eventCancelledText({ ...base, refund_amount: "0.00" }), /is cancelled\. Please don't pay for it\.$/);
+  assert.equal(messageText("EVENT_CANCELLED", { ...base, refund_amount: "0.00" }), eventCancelledText({ ...base, refund_amount: "0.00" }));
+});
+
+test("Phase 9: the reschedule SMS gives the new start (Ethiopian first, 12-hour Gregorian), and the door time only when it differs", () => {
+  const base = { organization_name: "Selam Events", event_name: "Jazz Night", starts_at: "2027-03-14T15:00:00.000Z", timezone: "Africa/Addis_Ababa" };
+  const plain = eventRescheduledText({ ...base, doors_open_at: null });
+  assert.match(plain, /^Selam Events: Jazz Night has moved to .*\(Mar 14, 2027, 6:00 PM\)\. Your tickets stay valid\. Can't attend\? Ask the organizer to return unused tickets\.$/);
+  assert.doesNotMatch(plain, /Doors/);
+  assert.match(eventRescheduledText({ ...base, doors_open_at: "2027-03-14T14:00:00.000Z" }), /Doors open .*\(5:00 PM\)\./, "the same day: only the clock");
+  assert.match(eventRescheduledText({ ...base, doors_open_at: "2027-03-13T14:00:00.000Z" }), /Doors open .*\(Mar 13, 2027, 5:00 PM\)\./, "another day: the whole date");
+  assert.doesNotMatch(plain, /1[3-9]:\d\d|2[0-3]:\d\d/, "never a 24-hour clock");
 });

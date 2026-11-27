@@ -93,6 +93,19 @@ async function listExpiredPendingByEvent(organizationId: string, eventId: string
   return toPlainList<TicketOrderRow>(rows);
 }
 
+/** Phase 9: every order of the event still waiting for payment, whatever its hold (cancelling the event releases them all). */
+async function listPendingByEvent(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<TicketOrderRow[]> {
+  const rows = await TicketOrder.findAll({ where: { organization_id: organizationId, event_id: eventId, status: "PENDING_PAYMENT" }, attributes: [...attributes], ...txOptions(options) });
+  return toPlainList<TicketOrderRow>(rows);
+}
+
+/** Phase 9: several orders of one event by id (the buyers an event change is told about). */
+async function listByEventAndIds(organizationId: string, eventId: string, orderIds: readonly string[], options: RepoOptions = {}): Promise<TicketOrderRow[]> {
+  if (orderIds.length === 0) return [];
+  const rows = await TicketOrder.findAll({ where: { organization_id: organizationId, event_id: eventId, id: [...orderIds] }, attributes: [...attributes], ...txOptions(options) });
+  return toPlainList<TicketOrderRow>(rows);
+}
+
 /** Phase 7 step 3: pending orders past their hold, oldest first, across organizations (the payment worker). */
 async function listExpiredPending(now: Date, limit: number, options: RepoOptions = {}): Promise<TicketOrderRow[]> {
   const rows = await TicketOrder.findAll({
@@ -108,14 +121,4 @@ async function listExpiredPending(now: Date, limit: number, options: RepoOptions
   return toPlainList<TicketOrderRow>(rows);
 }
 
-export const ticketOrderRepository = {
-  create,
-  findByEventAndId,
-  findByReference,
-  findByOrganizationAndId,
-  referenceExists,
-  listByEvent,
-  updateById,
-  listExpiredPendingByEvent,
-  listExpiredPending,
-};
+export const ticketOrderRepository = { create, findByEventAndId, findByReference, findByOrganizationAndId, referenceExists, listByEvent, updateById, listExpiredPendingByEvent, listExpiredPending, listPendingByEvent, listByEventAndIds };

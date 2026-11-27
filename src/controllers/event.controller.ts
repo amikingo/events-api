@@ -5,11 +5,13 @@ import { eventCoverService } from "../services/event-cover.service.js";
 import { eventService } from "../services/event.service.js";
 import { sendList, sendSuccess } from "../utils/http.js";
 import {
+  cancelEventRequest,
   changeEventStatusRequest,
   createEventRequest,
   getEventRequest,
   listEventsRequest,
   removeEventCoverRequest,
+  rescheduleEventRequest,
   setEventCoverRequest,
   updateEventRequest,
 } from "../validators/event.js";
@@ -41,8 +43,20 @@ async function updateEvent(req: Request, res: Response): Promise<void> {
 
 async function changeEventStatus(req: Request, res: Response): Promise<void> {
   const { params, body } = getValidated(req, changeEventStatusRequest);
-  const event = await eventService.changeEventStatus(params.organizationId, params.eventId, body.status, getActorId(req));
+  const event = await eventService.changeEventStatus(params.organizationId, params.eventId, body.status, getActorId(req), body.refund_admitted_tickets);
   sendSuccess(res, 200, event, "Event status updated");
+}
+
+/** Phase 9: cancel the whole event (unused tickets cancelled, holds released, refunds recorded, buyers told). */
+async function cancelEvent(req: Request, res: Response): Promise<void> {
+  const { params, body } = getValidated(req, cancelEventRequest);
+  sendSuccess(res, 200, await eventService.cancelEvent(params.organizationId, params.eventId, body, getActorId(req)), "Event cancelled");
+}
+
+/** Phase 9: move the event before its first admission (tickets and codes stay valid; buyers told). */
+async function rescheduleEvent(req: Request, res: Response): Promise<void> {
+  const { params, body } = getValidated(req, rescheduleEventRequest);
+  sendSuccess(res, 200, await eventService.rescheduleEvent(params.organizationId, params.eventId, body, getActorId(req)), "Event rescheduled");
 }
 
 async function setEventCover(req: Request, res: Response): Promise<void> {
@@ -67,4 +81,4 @@ async function removeEventCover(req: Request, res: Response): Promise<void> {
   sendSuccess(res, 200, event, "Event cover removed");
 }
 
-export const eventController = { createEvent, listEvents, getEvent, updateEvent, changeEventStatus, setEventCover, removeEventCover };
+export const eventController = { createEvent, listEvents, getEvent, updateEvent, changeEventStatus, cancelEvent, rescheduleEvent, setEventCover, removeEventCover };

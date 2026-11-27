@@ -175,6 +175,60 @@ async function countConfirmedByBuyerMobile(organizationId: string, eventId: stri
   });
 }
 
+/**
+ * Phase 9: places a capacity can't drop below: CONFIRMED tickets (admitted ones counted once) plus HELD tickets whose
+ * order's hold hasn't expired. Cancelled tickets, released ones and lapsed holds don't count. `ticketTypeId` narrows
+ * it to one ticket type.
+ */
+async function countSecured(organizationId: string, eventId: string, now: Date, ticketTypeId: string | null, options: RepoOptions = {}): Promise<{ confirmed: number; held: number }> {
+  const scope = { organization_id: organizationId, event_id: eventId, ...(ticketTypeId ? { ticket_type_id: ticketTypeId } : {}) };
+  const confirmed = await Registration.count({ where: { ...scope, status: "CONFIRMED" }, ...txOptions(options) });
+  const held = await Registration.count({
+    where: { ...scope, status: "HELD" },
+    include: [{ model: TicketOrder, as: "order", required: true, attributes: [], where: { status: "PENDING_PAYMENT", hold_expires_at: { [Op.gt]: now } } }],
+    ...txOptions(options),
+  });
+  return { confirmed, held };
+}
+
+/** Phase 9: a ticket of the event as cancelling the event sees it: its order, price and whether it was admitted. */
+export type CancellableTicket = Pick<RegistrationRow, "id" | "order_id" | "status" | "price_amount" | "currency"> & { admitted: boolean };
+
+/** Phase 9: the event's CONFIRMED tickets, each with whether it was admitted (read under the event lock). */
+async function listConfirmedWithAdmission(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<CancellableTicket[]> {
+  const rows = (await Registration.findAll({
+    where: { organization_id: organizationId, event_id: eventId, status: "CONFIRMED" },
+    attributes: ["id", "order_id", "status", "price_amount", "currency"],
+    include: [{ model: TicketAdmission, as: "admission", required: false, attributes: ["id"] }],
+    ...txOptions(options),
+  })) as unknown as Array<{ get: (options: { plain: true }) => Pick<RegistrationRow, "id" | "order_id" | "status" | "price_amount" | "currency"> & { admission: { id: string } | null } }>;
+  return rows.map((row) => {
+    const plain = row.get({ plain: true });
+    return { id: plain.id, order_id: plain.order_id, status: plain.status, price_amount: plain.price_amount, currency: plain.currency, admitted: plain.admission !== null };
+  });
+}
+
+/** Phase 9: cancels the given CONFIRMED tickets of the event at once (cancelling the event); returns how many changed. */
+async function cancelByIds(organizationId: string, eventId: string, ids: readonly string[], actorId: string | null, options: WriteOptions = {}): Promise<number> {
+  if (ids.length === 0) return 0;
+  const [count] = await Registration.update(
+    { status: "CANCELLED", cancelled_at: new Date(), updated_by: actorId },
+    { where: { organization_id: organizationId, event_id: eventId, id: [...ids], status: "CONFIRMED" }, ...txOptions(options) },
+  );
+  return count;
+}
+
+/** Phase 9: the orders of the event that hold at least one CONFIRMED ticket (the buyers told about a reschedule). */
+async function listOrderIdsWithConfirmed(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<string[]> {
+  const rows = (await Registration.findAll({
+    where: { organization_id: organizationId, event_id: eventId, status: "CONFIRMED" },
+    attributes: [[fn("DISTINCT", col("order_id")), "order_id"]],
+    raw: true,
+    ...txOptions(options),
+  })) as unknown as Array<{ order_id: string }>;
+  return rows.map((row) => row.order_id);
+}
+
 /** Confirmed places per ticket type of the event (ticket types without any are absent). */
 async function countConfirmedPerTicketType(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<Map<string, number>> {
   const rows = (await Registration.findAll({
@@ -371,6 +425,10 @@ export const registrationRepository = {
   countConfirmedByTicketType,
   countConfirmedPerTicketType,
   countConfirmedByBuyerMobile,
+  countSecured,
+  listConfirmedWithAdmission,
+  cancelByIds,
+  listOrderIdsWithConfirmed,
   findByEventAndCode,
   listByEvent,
   listAllByEvent,

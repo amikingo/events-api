@@ -18,6 +18,7 @@ const attributes = [
   "key_mode",
   "paid_tx_ref",
   "verified_at",
+  "succeeded_at",
   "request_object",
   "response_object",
   "last_verification",
@@ -54,6 +55,7 @@ export type PaymentUpdateValues = Partial<
     | "key_mode"
     | "paid_tx_ref"
     | "verified_at"
+    | "succeeded_at"
     | "request_object"
     | "response_object"
     | "last_verification"

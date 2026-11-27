@@ -130,6 +130,10 @@ export function eventRow(overrides: Partial<EventRow> = {}): EventRow {
     holder_fields: { name: "REQUIRED", mobile: "REQUIRED", email: "OPTIONAL", affiliation: "OPTIONAL", country: "OPTIONAL" },
     purchase_limit_per_mobile: null,
     published_at: null,
+    doors_open_at: null,
+    cancelled_at: null,
+    cancelled_by: null,
+    refund_admitted_tickets: null,
     ...audit,
     ...overrides,
   };
@@ -331,6 +335,7 @@ export function orderPaymentRow(overrides: Partial<OrderPaymentRow> = {}): Order
     key_mode: "test",
     paid_tx_ref: null,
     verified_at: null,
+    succeeded_at: null,
     request_object: null,
     response_object: null,
     last_verification: null,

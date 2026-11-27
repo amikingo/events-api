@@ -38,6 +38,11 @@ async function findByRegistration(organizationId: string, registrationId: string
   return toPlain<TicketAdmissionRow>(row);
 }
 
+/** Phase 9: how many tickets of the event were admitted (a reschedule needs zero). */
+async function countByEvent(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<number> {
+  return TicketAdmission.count({ where: { organization_id: organizationId, event_id: eventId }, ...txOptions(options) });
+}
+
 /** Admissions per ticket type of the event (ticket types without any are absent): the attendance count. */
 async function countPerTicketType(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<Map<string, number>> {
   const rows = (await TicketAdmission.findAll({
@@ -51,4 +56,4 @@ async function countPerTicketType(organizationId: string, eventId: string, optio
   return new Map(rows.map((row) => [row.ticket_type_id, Number(row.admitted)]));
 }
 
-export const ticketAdmissionRepository = { create, createUnlessTaken, findByKey, findByRegistration, countPerTicketType };
+export const ticketAdmissionRepository = { create, createUnlessTaken, countByEvent, findByKey, findByRegistration, countPerTicketType };

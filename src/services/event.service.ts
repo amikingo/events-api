@@ -22,7 +22,8 @@ import { DEFAULT_HOLDER_FIELDS } from "../utils/holder-fields.js";
 import { pickDefined } from "../utils/patch.js";
 import { firstFreeSlug, SLUG_MAX_LENGTH, slugify } from "../utils/slug.js";
 import { isValidTimeZone } from "../utils/time-zone.js";
-import type { EventCreateInput, EventListQuery, EventTargetStatus, EventUpdateInput } from "../validators/event.js";
+import type { EventCancelInput, EventCreateInput, EventListQuery, EventRescheduleInput, EventTargetStatus, EventUpdateInput } from "../validators/event.js";
+import { eventChangeService } from "./event-change.service.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 
 /**
@@ -53,6 +54,7 @@ const EDITABLE_FIELDS = [
   "description",
   "starts_at",
   "ends_at",
+  "doors_open_at",
   "timezone",
   "capacity",
   "registration_opens_at",
@@ -69,7 +71,7 @@ const EDITABLE_FIELDS = [
 ] as const;
 
 type Links = Partial<Pick<EventRow, "branch_id" | "customer_account_id" | "venue_id" | "cover_file_id">>;
-type Schedule = Pick<EventRow, "starts_at" | "ends_at" | "registration_opens_at" | "registration_closes_at">;
+type Schedule = Pick<EventRow, "starts_at" | "ends_at" | "registration_opens_at" | "registration_closes_at"> & { doors_open_at?: Date | null };
 
 function invalidField(field: string, message: string, code: string): ValidationAppError {
   return new ValidationAppError("Request validation failed", { issues: [{ path: `body.${field}`, message, code }] });
@@ -106,6 +108,9 @@ function assertScheduleOrder(schedule: Schedule): void {
   }
   if (schedule.registration_opens_at && schedule.registration_closes_at && schedule.registration_opens_at >= schedule.registration_closes_at) {
     throw invalidField("registration_closes_at", "registration_closes_at must be after registration_opens_at", "invalid_order");
+  }
+  if (schedule.doors_open_at && schedule.ends_at && schedule.doors_open_at >= schedule.ends_at) {
+    throw invalidField("doors_open_at", "doors_open_at must be before ends_at", "invalid_order");
   }
 }
 
@@ -169,6 +174,7 @@ async function createEvent(organizationId: string, input: EventCreateInput, acto
       ends_at: input.ends_at ?? null,
       registration_opens_at: input.registration_opens_at ?? null,
       registration_closes_at: input.registration_closes_at ?? null,
+      doors_open_at: input.doors_open_at ?? null,
     };
     assertScheduleOrder(schedule);
     const slug = await chooseSlug(organizationId, input.name, input.slug, transaction);
@@ -261,6 +267,9 @@ async function updateEvent(organizationId: string, eventId: string, input: Event
     // pickDefined drops undefined, so every field in `patch` is a real replacement value (null clears).
     const merged = { ...current, ...patch } as EventRow;
     assertScheduleOrder(merged);
+    // Phase 9: a previously published event moves only as a whole and only before its first admission (the event is
+    // locked FOR UPDATE, so the first gate scan, which key-share locks it, lands before or after this change).
+    await eventChangeService.assertReschedulable(current, patch, transaction);
     if (patch.capacity !== undefined && patch.capacity !== null) {
       const largestTicketLimit = await ticketTypeRepository.maxCapacityByEvent(organizationId, eventId, { transaction });
       if (largestTicketLimit !== null && largestTicketLimit > patch.capacity) {
@@ -269,12 +278,13 @@ async function updateEvent(organizationId: string, eventId: string, input: Event
           { field: "capacity", largest_ticket_type_capacity: largestTicketLimit },
         );
       }
-      // Places already confirmed stay valid (the event is locked, so no registration can slip in meanwhile).
-      const confirmed = await registrationRepository.countConfirmedByEvent(organizationId, eventId, { transaction });
-      if (confirmed > patch.capacity) {
+      // Phase 9: no buyer is displaced. The floor is every confirmed ticket (admitted ones once) plus every unexpired
+      // hold; the event is locked, so no order can slip in meanwhile.
+      const { confirmed, held } = await registrationRepository.countSecured(organizationId, eventId, new Date(), null, { transaction });
+      if (confirmed + held > patch.capacity) {
         throw new CapacityBelowRegistrationsError(
-          `The event capacity can't be lower than its confirmed registrations (${confirmed}). Cancel registrations first.`,
-          { field: "capacity", confirmed },
+          `The event capacity can't be lower than its confirmed tickets and active holds (${confirmed + held}). Cancel tickets or wait for holds to end first.`,
+          { field: "capacity", confirmed, held, minimum: confirmed + held },
         );
       }
     }
@@ -283,14 +293,33 @@ async function updateEvent(organizationId: string, eventId: string, input: Event
       assertPublishable(merged, await ticketTypeRepository.countActiveByEvent(organizationId, eventId, { transaction }));
     }
 
-    const updated = await eventRepository.updateByOrganizationAndId(
-      organizationId,
-      eventId,
-      { ...patch, updated_by: actorId },
-      { transaction },
+    const updated = ensureFound(
+      await eventRepository.updateByOrganizationAndId(organizationId, eventId, { ...patch, updated_by: actorId }, { transaction }),
+      "Event not found",
     );
-    return withCover(ensureFound(updated, "Event not found"), transaction);
+    // Phase 9: buyers are told about an actual move, in the same transaction (the outbox).
+    await eventChangeService.notifyRescheduled(current, updated, transaction);
+    return withCover(updated, transaction);
   });
+}
+
+/**
+ * Phase 9: move the event (the dedicated action). The same rules as a date edit through updateEvent: starts_at and
+ * ends_at together, an explicit door time confirmed again (doors_open_at left out keeps an empty one empty), no
+ * admission yet for a previously published event; one SMS per order with issued tickets for an actual move.
+ */
+async function rescheduleEvent(organizationId: string, eventId: string, input: EventRescheduleInput, actorId: string | null): Promise<EventDto> {
+  const change: EventUpdateInput = { starts_at: input.starts_at, ends_at: input.ends_at, doors_open_at: input.doors_open_at, description: undefined, category: undefined };
+  return updateEvent(organizationId, eventId, change, actorId);
+}
+
+/**
+ * Phase 9: cancel the whole event (the dedicated action; PATCH …/status CANCELLED goes through it too). See
+ * eventChangeService.cancel for what happens to holds, tickets, refunds and SMS.
+ */
+async function cancelEvent(organizationId: string, eventId: string, input: EventCancelInput, actorId: string | null): Promise<EventDto> {
+  const cancelled = await eventChangeService.cancel(organizationId, eventId, { refundAdmittedTickets: input.refund_admitted_tickets }, actorId);
+  return withCover(cancelled);
 }
 
 /** Publish, close or cancel. Asking for the current status again changes nothing. */
@@ -299,7 +328,10 @@ async function changeEventStatus(
   eventId: string,
   target: EventTargetStatus,
   actorId: string | null,
+  refundAdmittedTickets?: boolean,
 ): Promise<EventDto> {
+  // Phase 9: cancelling follows one set of rules, whichever route asks for it.
+  if (target === "CANCELLED") return cancelEvent(organizationId, eventId, { refund_admitted_tickets: refundAdmittedTickets }, actorId);
   return runTransaction(async (transaction) => {
     // Lock order: the event first, then (through the count) its ticket types, the same order as ticket type changes.
     const current = ensureFound(
@@ -324,4 +356,4 @@ async function changeEventStatus(
   });
 }
 
-export const eventService = { createEvent, listEvents, getEvent, updateEvent, changeEventStatus };
+export const eventService = { createEvent, listEvents, getEvent, updateEvent, changeEventStatus, cancelEvent, rescheduleEvent };

@@ -80,6 +80,8 @@ export type PublicEventDetail = PublicEventCard & {
   description: string | null;
   registration_opens_at: Date | null;
   registration_closes_at: Date | null;
+  /** Phase 9: when the doors open; null means at starts_at. */
+  doors_open_at: Date | null;
   /** Active PUBLIC ticket types only, in display order. Since Phase 7 with the price ("0.00" is free) and currency. */
   ticket_types: PublicTicketTypeDto[];
   /** Phase 7: QUICK (one buyer mobile; tickets may be unnamed) or DETAILED (each holder's details). */
@@ -129,6 +131,7 @@ export function toPublicEventDetail(
     description: event.description,
     registration_opens_at: event.registration_opens_at,
     registration_closes_at: event.registration_closes_at,
+    doors_open_at: event.doors_open_at,
     ticket_types: publicTypes.map(toPublicTicketTypeDto),
     registration_mode: event.registration_mode,
     holder_fields: event.holder_fields,

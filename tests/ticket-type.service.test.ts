@@ -78,10 +78,10 @@ test("a CLOSED or CANCELLED event's ticket types can no longer change", async ()
   }
 });
 
-test("a ticket type's limit can't drop below its confirmed registrations; the count is read under the event lock", async () => {
+test("a ticket type's limit can't drop below its confirmed tickets and active holds; the count is read under the event lock", async () => {
   const findEvent = mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED", capacity: null }));
   mock.method(ticketTypeRepository, "findByEventAndId", async () => ticketTypeRow({ capacity: 50 }));
-  const count = mock.method(registrationRepository, "countConfirmedByTicketType", async () => 30);
+  const count = mock.method(registrationRepository, "countSecured", async () => ({ confirmed: 25, held: 5 }));
   const update = mock.method(ticketTypeRepository, "updateByEventAndId", async () => ticketTypeRow({ capacity: 30 }));
 
   await assert.rejects(
@@ -90,10 +90,11 @@ test("a ticket type's limit can't drop below its confirmed registrations; the co
   );
   assert.equal(update.mock.callCount(), 0);
   assert.deepEqual(findEvent.mock.calls[0]?.arguments.slice(2), [{ transaction: FAKE_TX, lock: true }]);
-  assert.deepEqual(count.mock.calls[0]?.arguments, [IDS.orgA, IDS.event, IDS.ticketType, { transaction: FAKE_TX }]);
+  const [organizationId, eventId, now, ticketTypeId, options] = count.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([organizationId, eventId, now instanceof Date, ticketTypeId, options], [IDS.orgA, IDS.event, true, IDS.ticketType, { transaction: FAKE_TX }]);
 
   await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { capacity: 30 }, IDS.user);
-  assert.equal(update.mock.callCount(), 1, "exactly the confirmed count fits");
+  assert.equal(update.mock.callCount(), 1, "exactly confirmed plus held fits");
 });
 
 // --- Phase 7 step 1 ------------------------------------------------------------------------------------

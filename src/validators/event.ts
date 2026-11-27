@@ -40,6 +40,7 @@ const purchaseLimitSchema = z.number().int().positive().max(10_000).nullable().o
 type Schedule = {
   starts_at?: Date | null | undefined;
   ends_at?: Date | null | undefined;
+  doors_open_at?: Date | null | undefined;
   registration_opens_at?: Date | null | undefined;
   registration_closes_at?: Date | null | undefined;
 };
@@ -52,6 +53,9 @@ function checkScheduleOrder(value: Schedule, ctx: z.RefinementCtx): void {
   if (value.registration_opens_at && value.registration_closes_at && value.registration_opens_at >= value.registration_closes_at) {
     ctx.addIssue({ code: "custom", path: ["registration_closes_at"], message: "registration_closes_at must be after registration_opens_at" });
   }
+  if (value.doors_open_at && value.ends_at && value.doors_open_at >= value.ends_at) {
+    ctx.addIssue({ code: "custom", path: ["doors_open_at"], message: "doors_open_at must be before ends_at" });
+  }
 }
 
 const eventFields = {
@@ -59,6 +63,8 @@ const eventFields = {
   description: nullableText(10_000),
   starts_at: optionalInstant,
   ends_at: optionalInstant,
+  /** Phase 9: when admission starts; null or left out means at starts_at. Admission ends at ends_at. */
+  doors_open_at: optionalInstant,
   /** Default: the organization's timezone, copied once. */
   timezone: timeZoneSchema.optional(),
   capacity: capacitySchema,
@@ -90,7 +96,22 @@ export const eventUpdateSchema = z
   })
   .superRefine(checkScheduleOrder);
 
-export const eventStatusChangeSchema = z.strictObject({ status: targetStatusSchema });
+/**
+ * Phase 9: CANCELLED goes through the same rules as POST …/cancel, so it may carry the organizer's decision about used
+ * tickets (required when the event already admitted guests).
+ */
+export const eventStatusChangeSchema = z.strictObject({ status: targetStatusSchema, refund_admitted_tickets: z.boolean().optional() });
+
+/** Phase 9: cancel the whole event. refund_admitted_tickets is required when guests were already admitted. */
+export const eventCancelSchema = z.strictObject({ refund_admitted_tickets: z.boolean().optional() });
+
+/**
+ * Phase 9: move a published event before its first admission. starts_at and ends_at are saved together;
+ * doors_open_at must be sent again (kept, changed or null) when the event has one set.
+ */
+export const eventRescheduleSchema = z
+  .strictObject({ starts_at: dateTimeSchema, ends_at: dateTimeSchema, doors_open_at: dateTimeSchema.nullable().optional() })
+  .superRefine(checkScheduleOrder);
 
 export const eventParamsSchema = organizationIdParamsSchema.extend({ eventId: uuidSchema });
 
@@ -103,6 +124,8 @@ export type EventCreateInput = z.output<typeof eventCreateSchema>;
 export type EventUpdateInput = z.output<typeof eventUpdateSchema>;
 export type EventListQuery = z.output<typeof eventListQuerySchema>;
 export type EventTargetStatus = z.output<typeof targetStatusSchema>;
+export type EventCancelInput = z.output<typeof eventCancelSchema>;
+export type EventRescheduleInput = z.output<typeof eventRescheduleSchema>;
 
 // One contract per endpoint (see middleware/validate.ts).
 export const createEventRequest = { params: organizationIdParamsSchema, body: eventCreateSchema } satisfies RequestContract;
@@ -114,6 +137,10 @@ export const getEventRequest = { params: eventParamsSchema } satisfies RequestCo
 export const updateEventRequest = { params: eventParamsSchema, body: eventUpdateSchema } satisfies RequestContract;
 
 export const changeEventStatusRequest = { params: eventParamsSchema, body: eventStatusChangeSchema } satisfies RequestContract;
+
+export const cancelEventRequest = { params: eventParamsSchema, body: eventCancelSchema } satisfies RequestContract;
+
+export const rescheduleEventRequest = { params: eventParamsSchema, body: eventRescheduleSchema } satisfies RequestContract;
 
 /** The image itself arrives as multipart/form-data (field "file"), parsed by middleware/upload.ts after authorization. */
 export const setEventCoverRequest = { params: eventParamsSchema } satisfies RequestContract;

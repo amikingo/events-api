@@ -567,3 +567,106 @@ and matrix row 100. Row 100 covers:
 - the status route;
 - the refund recorded while the original charge stands;
 - tenants and view-only staff refused.
+
+## Phase 9: event changes after sales (27 November 2026)
+
+What happens to buyers' tickets and money when an organizer changes an event that already has sales or admissions.
+Every change locks the event first, the lock order every place change uses, so a gate scan, a payment, a return and a
+staff edit on the same event always resolve one after another.
+
+### Cancelling the whole event
+
+`POST /v1/organizations/{id}/events/{eventId}/cancel` (Events › update). `PATCH …/status` with `CANCELLED` uses the
+same rules. It's allowed from `DRAFT` or `PUBLISHED`, also after the first admission. Repeating it changes nothing.
+- **The decision:** `refund_admitted_tickets` (true or false) is required only when guests were admitted. It's stored
+  on the event, along with `cancelled_at` and `cancelled_by`.
+- **What happens to each ticket and payment:**
+
+  | At cancellation | Outcome |
+  |---|---|
+  | Unpaid hold | Released once: the tickets become `RELEASED` and the order `EXPIRED`; seats and allowance come back. |
+  | Confirmed, unused, free ticket | Cancelled, so its code is invalid. Nothing is due, including in a mixed order. |
+  | Confirmed, unused, paid ticket | Cancelled, so its code is invalid. Its checkout price is due. |
+  | Admitted ticket | Keeps its admission and charge. Its price is due only when `refund_admitted_tickets` is true. |
+  | A payment verified after cancellation | The order becomes `REFUND_REQUIRED`, with one `REFUND_REQUIRED` case for its `tx_ref`. No seats are taken and no tickets issued. |
+
+- **Refund cases:** each paid order gets one `EVENT_CANCELLATION` payment case for the sum due, keyed by the charge
+  that paid it (its `tx_ref`), so a repeated cancellation or webhook creates no second obligation. A genuine second
+  charge still becomes its own `PAID_TWICE` case. Staff move the money in the organizer's merchant account and
+  resolve the case under Payments.
+- **Places:** each newly cancelled unused ticket gives back one event seat, one ticket-type place and one unit of
+  allowance, once.
+- **History:** order totals, admissions and cases already recorded stay as they are.
+- **SMS:** one `EVENT_CANCELLED` message per affected order with a buyer mobile, held orders included. It gives the
+  refund due, or asks the buyer not to pay when nothing is due.
+- **Afterwards:** sales, issuing and admissions stop. A once-published event's link shows *Cancelled*; a draft
+  cancelled before publication stays private. Individual returns still work only at `PUBLISHED` and `CLOSED` events.
+
+### Closing sales while a payment is in progress
+
+To stop selling but keep the gate open, set `registration_closes_at` and leave the event `PUBLISHED`. New staff and
+public orders then stop; the stored `CLOSED` status keeps its meaning.
+
+**When a payment is verified,** `paymentService.settle` decides by its success time `t` and the order's hold end `H`:
+- **On time** (`t ≤ H`, or `t` unknown and we hear of it before `H`):
+  - an order still held is issued in full;
+  - if its seats were already released, it's issued in full only when every seat and the buyer's allowance are still
+    free, otherwise it becomes `REFUND_REQUIRED`;
+  - either way it's at the original prices, whatever the cutoff or a stopped type.
+- **Late** (`t > H`):
+  - if sales were closed at `t`, or a ticket type of the order is now inactive, it gets one full-order
+    `REFUND_REQUIRED` case (`review_reason: PAID_AFTER_DEADLINE`), even with seats free;
+  - while sales are open, the existing availability check applies.
+- **Unknown `t` after `H`:** the availability check applies when it gives the same answer either way. Otherwise the
+  order gets one `REFUND_REQUIRED` case for manual review (`PAYMENT_TIME_UNKNOWN`).
+- **Cancellation always comes first.**
+
+**Example:** sales close at 18:00 and Hana's hold ends at 18:10.
+- A payment that succeeded at 18:04 completes, even if its webhook arrives at 18:12.
+- A payment that succeeded at 18:12 opens one `REFUND_REQUIRED` case.
+
+**Limitation:** `t` is read from merchant-verify (`paid_at`, `completed_at` or `succeeded_at`) and kept in
+`order_payment.succeeded_at`. Cheche Pay doesn't document such a field, and bookings doesn't read one. Until the
+sandbox shows it, `t` is unknown, and late payments around a closed cutoff or a stopped type go to manual review.
+
+### The admission window
+
+`doors_open_at` is optional; empty means the doors open at `starts_at`. A `PUBLISHED` event admits from the door time up
+to, but not including, `ends_at`. Outside that window it's 409 `outside_admission_window`.
+- The sales cutoff, sold-out inventory and inactive types never block issued tickets at the door.
+- There's still one admission per ticket for the whole event, even a multi-day one. Two simultaneous scans still give
+  one admission.
+
+### Rescheduling before the first admission
+
+`POST …/reschedule` takes `{ starts_at, ends_at, doors_open_at? }`. `PATCH …/events/{id}` date edits of a previously
+published event use the same rules:
+- `starts_at` and `ends_at` are saved together (400 `schedule_pair_required`);
+- an explicit door time must be sent again, the same, new or `null` (400 `doors_open_at_reconfirm`); an empty one
+  follows the new start;
+- only with zero admissions (409 `event_has_admissions`). The edit locks the event `FOR UPDATE` and a scan key-share
+  locks it, so staff get a consistent answer.
+
+**What's kept:** the same tickets and codes, payments, prices and hold deadlines. Explicit sales dates are kept, so an
+explicit Friday cutoff stays after a move to Sunday; without one, sales follow the new end.
+
+**SMS:** one `EVENT_RESCHEDULED` message per order with issued tickets and a buyer mobile, for each actual change. It
+gives the new date and time in the event's time zone, the door time when it differs, and how to ask for a return.
+Retrying the same values sends nothing.
+
+### Capacity
+
+Neither the event's capacity nor a ticket type's can drop below its confirmed tickets (admitted ones counted once) plus
+its unexpired holds. Cancelled tickets, released ones and lapsed holds don't count. The edit holds the event lock, so a
+concurrent purchase can't slip in. With 80 confirmed and 15 held, 90 is refused (409
+`capacity_below_registrations`, `details.confirmed`, `held`, `minimum`) and 95 fits.
+
+### Stopping a ticket type
+
+Deactivating a type stops new orders for it while other types keep selling.
+- Its issued tickets stay retrievable, scannable in the door window, and returnable.
+- Held orders complete at their original prices when paid by their deadline.
+- A payment after the deadline issues nothing and opens one full-order refund case (see above).
+
+**Proof:** unit tests (cancel, the timing table, the door window, the reschedule rules, the capacity floor, both SMS
+texts) and matrix rows 101–106. Rows 97, 98 and 100 now open their doors in the past.
