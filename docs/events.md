@@ -264,3 +264,48 @@ at.
 - **Staff** may issue `STAFF_ONLY` types.
 
 **Proof:** matrix rows 87–88.
+
+## Phase 11: purchase-time pricing (27 November 2026)
+
+A ticket type can cost different amounts depending on **when checkout reserves it**. General Admission, VIP and VVIP
+each have their own schedule. Buyers of one type share its capacity, purchase allowance, visibility, sales cutoff
+and gate rules, whatever they paid.
+
+**Setting prices** (the existing `POST` and `PATCH …/ticket-types`, with Events › create or update):
+- `price` stays the **regular price**.
+- `price_windows` (optional, up to 20) is a list of one-off prices: `[{ starts_at, ends_at?, price }]`.
+  - Times are instants with an offset or `Z`, shown in the event's IANA time zone.
+  - `starts_at` is included and `ends_at` excluded. Leaving `ends_at` out means the price lasts until staff change the
+    schedule.
+  - `price` is a decimal string in the ticket type's currency; `"0"` makes it free.
+  - Windows of one type may not overlap. Two open-ended windows overlap, and so does an open-ended window followed by
+    another. Adjacent windows (one ends where the next starts) are fine.
+- **On PATCH:** leaving `price_windows` out keeps the schedule, a list replaces it as a whole, and `[]` clears it.
+- **Errors:** 400 with issue code `invalid_range` (an end not after its start) or `overlapping_window`, at
+  `body.price_windows.N`. A refused update writes nothing, so the old schedule keeps pricing checkout.
+- **Reschedules:** windows stay at their instants when the event is rescheduled.
+
+**Selam's example, General Admission in Africa/Addis_Ababa:**
+
+| Reserved | Price for a new order |
+|---|---|
+| before 18:00 | 500.00 ETB (regular) |
+| 18:00 up to 20:00 | 700.00 ETB (window) |
+| from 20:00 | 500.00 ETB (regular) |
+
+**What staff see:** every ticket-type reply (create, list, update, status) carries:
+- `price`: the regular price;
+- `price_windows`, sorted;
+- `effective_price` and `effective_is_free`: what a new order pays now;
+- `price_valid_until`: when that changes, or null.
+
+**What buyers see:** the public event page's `ticket_types[].price` and `is_free` are the price right now, with
+`price_valid_until`. The price binds when checkout reserves the ticket; see `docs/registrations.md` (Phase 11).
+
+**The code:**
+- `src/utils/ticket-pricing.ts` (`effectivePrice`, `windowIssues`);
+- `ticketing.quotePrices`;
+- `src/repositories/ticket-type-price-window.repository.ts`;
+- the table `ticket_type_price_window` (migration `20261210000000`). It has a composite key onto the ticket type of
+  the same event and organization, `CHECK price >= 0`, and `CHECK ends_at > starts_at`.
+

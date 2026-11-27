@@ -32,7 +32,8 @@ import { MAX_TICKETS_PER_ORDER, ticketing } from "./ticketing.js";
  * in id order. Expired holds of the event are released first. Every check runs before anything is written:
  * 1. the event takes registrations; 2. each ticket type exists, is active and open to the caller (STAFF_ONLY for
  * staff only); 3. at most 20 tickets; 4. a DETAILED event's holder details (one holder per ticket, its required and
- * hidden fields); 5. prices from the server; a paid order needs the organizer's active Cheche Pay keys (and a server
+ * hidden fields); 5. prices from the server, each type's price at one instant right after the locks (Phase 11:
+ * purchase-time pricing, ticketing.quotePrices); a paid order needs the organizer's active Cheche Pay keys (and a server
  * set up for Cheche Pay), ETB prices and a buyer mobile; 6. the event's and each type's capacity
  * for the whole order (held places count); 7. the buyer mobile's purchase limit (held tickets count).
  * Then the order and one ticket per unit (a holder profile when DETAILED, none when QUICK):
@@ -69,6 +70,8 @@ export type CheckoutRequest = { scope: Extract<SubmissionScope, "PUBLIC_CHECKOUT
 export type CheckoutOutcome = "CREATED" | "REPLAYED";
 
 type ResolvedItem = { item: CheckoutItem; index: number; ticketType: TicketTypeRow };
+/** Phase 11: an item with the unit price its ticket type has at the order's pricing instant. */
+type PricedItem = ResolvedItem & { unitPrice: string };
 
 /** Each item's ticket type: found by id or code, open to the caller, then all locked in id order, active. */
 async function lockTicketTypes(input: CheckoutInput, transaction: Transaction): Promise<ResolvedItem[]> {
@@ -120,16 +123,16 @@ function assertHolders(event: EventRow, resolved: ResolvedItem[]): void {
   if (issues.length > 0) throw new ValidationAppError("Request validation failed", { issues });
 }
 
-/** The total from the server's prices; one currency per order. */
-function priceOrder(resolved: ResolvedItem[]): { total: string; currency: string } {
+/** The total from the server's prices (Phase 11: each type's price at the pricing instant); one currency per order. */
+function priceOrder(resolved: PricedItem[]): { total: string; currency: string } {
   const currencies = new Set(resolved.map(({ ticketType }) => ticketType.currency));
   if (currencies.size > 1) {
     throw new ValidationAppError("Request validation failed", {
       issues: [{ path: "body.items", message: "These ticket types are priced in different currencies; order them separately", code: "mixed_currency" }],
     });
   }
-  const total = sumAmounts(resolved.map(({ ticketType, item }) => multiplyAmount(ticketType.price, item.quantity)));
-  return { total, currency: (resolved[0] as ResolvedItem).ticketType.currency };
+  const total = sumAmounts(resolved.map(({ unitPrice, item }) => multiplyAmount(unitPrice, item.quantity)));
+  return { total, currency: (resolved[0] as PricedItem).ticketType.currency };
 }
 
 /**
@@ -156,7 +159,13 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
   const event = ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId, { transaction, lock: true }), "Event not found");
   ticketing.assertTakingRegistrations(event, now);
   await ticketing.releaseExpiredHolds(event, now, transaction);
-  const resolved = await lockTicketTypes(input, transaction);
+  const locked = await lockTicketTypes(input, transaction);
+  // Phase 11: one pricing instant, taken right after the event and ticket-type locks and before any place is taken.
+  // A schedule edit takes the same locks, so it lands wholly before or after this order. The price shown while
+  // browsing binds here; the order keeps it (registration.price_amount, total_amount) whatever changes later.
+  const pricedAt = new Date();
+  const quotes = await ticketing.quotePrices(organizationId, eventId, locked.map(({ ticketType }) => ticketType), pricedAt, { transaction });
+  const resolved: PricedItem[] = locked.map((entry) => ({ ...entry, unitPrice: ticketing.quoteOf(quotes, entry.ticketType.id).price }));
   const count = resolved.reduce((sum, { item }) => sum + item.quantity, 0);
   if (count > MAX_TICKETS_PER_ORDER) {
     throw new ValidationAppError("Request validation failed", {
@@ -191,7 +200,7 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
 
   const registeredBy = source === "STAFF" ? actorId : null;
   const tickets: RegistrationRow[] = [];
-  for (const { item, ticketType } of resolved) {
+  for (const { item, ticketType, unitPrice } of resolved) {
     for (let unit = 0; unit < item.quantity; unit += 1) {
       const holder = item.holders?.[unit];
       const person =
@@ -221,7 +230,7 @@ async function checkoutInTransaction(input: CheckoutInput, transaction: Transact
             person_id: person?.id ?? null,
             order_id: order.id,
             ticket_type_id: ticketType.id,
-            price_amount: ticketType.price,
+            price_amount: unitPrice,
             currency: ticketType.currency,
             // A paid order's places are held without codes until the payment is verified.
             status: paid ? "HELD" : "CONFIRMED",

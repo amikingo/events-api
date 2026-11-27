@@ -5,6 +5,7 @@ import { CapacityBelowRegistrationsError, ConflictError, InvalidEventStateError,
 import { eventRepository } from "../src/repositories/event.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
+import { ticketTypePriceWindowRepository, type PriceWindowValues } from "../src/repositories/ticket-type-price-window.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { ticketTypeService } from "../src/services/ticket-type.service.js";
@@ -19,6 +20,9 @@ beforeEach(() => {
   mock.method(ticketTypeRepository, "findByEventAndCode", async () => null);
   mock.method(ticketTypeRepository, "maxDisplayOrderByEvent", async () => 0);
   mock.method(organizationRepository, "findById", async () => organizationRow({ default_currency: "ETB" }));
+  // Phase 11: no price schedule unless a test says otherwise.
+  mock.method(ticketTypePriceWindowRepository, "listByTicketTypes", async () => []);
+  mock.method(ticketTypePriceWindowRepository, "replaceForTicketType", async () => []);
 });
 afterEach(() => mock.restoreAll());
 
@@ -119,4 +123,82 @@ test("price and audience can change later; the currency can't be sent", async ()
 
   await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { price: "250.00", audience: "STAFF_ONLY" }, IDS.user);
   assert.deepEqual(update.mock.calls[0]?.arguments[3], { price: "250.00", audience: "STAFF_ONLY", updated_by: IDS.user });
+});
+
+// --- Phase 11: price windows ----------------------------------------------------------------------------
+
+const at = (time: string) => new Date(`2027-07-01T${time}:00+03:00`);
+const EVENING = { starts_at: at("18:00"), ends_at: at("20:00"), price: "700.00" };
+const storedWindows = (windows: readonly PriceWindowValues[]) =>
+  windows.map((window, index) => ({ ...window, id: `window-${index}`, organization_id: IDS.orgA, event_id: IDS.event, ticket_type_id: IDS.ticketType, created_at: new Date(), created_by: IDS.user }));
+
+test("Phase 11: a schedule replaces the old one as a whole under the event and ticket-type locks; the reply keeps the regular price apart from the effective one", async () => {
+  const findEvent = mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED" }));
+  const findType = mock.method(ticketTypeRepository, "findByEventAndId", async () => ticketTypeRow({ price: "500.00" }));
+  mock.method(ticketTypeRepository, "updateByEventAndId", async () => ticketTypeRow({ price: "500.00" }));
+  // An earlier window that has ended, then an open-ended one running now (open-ended must come last).
+  const earlier = { starts_at: new Date(Date.now() - 120 * 60_000), ends_at: new Date(Date.now() - 60 * 60_000), price: "300.00" };
+  const open = { starts_at: new Date(Date.now() - 60_000), ends_at: null, price: "650.00" };
+  const replace = mock.method(
+    ticketTypePriceWindowRepository,
+    "replaceForTicketType",
+    async (_o: string, _e: string, _id: string, windows: readonly PriceWindowValues[], _actor: string | null, _options: { transaction: Transaction }) => storedWindows(windows),
+  );
+
+  const reply = await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { price_windows: [earlier, open] }, IDS.user);
+
+  const [org, event, typeId, windows, actor, options] = replace.mock.calls[0]?.arguments ?? [];
+  assert.deepEqual([org, event, typeId, actor, options], [IDS.orgA, IDS.event, IDS.ticketType, IDS.user, { transaction: FAKE_TX }]);
+  assert.deepEqual(windows, [earlier, open], "an omitted end is stored as null");
+  assert.deepEqual(findEvent.mock.calls[0]?.arguments.slice(2), [{ transaction: FAKE_TX, lock: true }], "the event first");
+  assert.deepEqual(findType.mock.calls[0]?.arguments.slice(3), [{ transaction: FAKE_TX, lock: true }], "then the ticket type");
+  assert.deepEqual([reply.price, reply.effective_price, reply.effective_is_free, reply.price_valid_until], ["500.00", "650.00", false, null]);
+  assert.equal(reply.price_windows.length, 2);
+});
+
+test("Phase 11: leaving price_windows out keeps the schedule; [] clears it", async () => {
+  mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED" }));
+  mock.method(ticketTypeRepository, "findByEventAndId", async () => ticketTypeRow());
+  mock.method(ticketTypeRepository, "updateByEventAndId", async () => ticketTypeRow({ name: "General" }));
+  const replace = mock.method(ticketTypePriceWindowRepository, "replaceForTicketType", async () => []);
+  const read = mock.method(ticketTypePriceWindowRepository, "listByTicketTypes", async () => storedWindows([EVENING]));
+
+  const kept = await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { name: "General" }, IDS.user);
+  assert.equal(replace.mock.callCount(), 0);
+  assert.equal(read.mock.callCount(), 1);
+  assert.equal(kept.price_windows.length, 1, "the schedule is still there");
+
+  const cleared = await ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { price_windows: [] }, IDS.user);
+  assert.deepEqual(replace.mock.calls[0]?.arguments[3], []);
+  assert.deepEqual(cleared.price_windows, []);
+});
+
+test("Phase 11: overlapping windows, two open-ended windows or an end before its start are refused as a whole before anything is read or written", async () => {
+  const findEvent = mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow({ status: "PUBLISHED" }));
+  const replace = mock.method(ticketTypePriceWindowRepository, "replaceForTicketType", async () => []);
+  const cases = [
+    { windows: [EVENING, { starts_at: at("19:00"), ends_at: at("21:00"), price: "800.00" }], expected: [["body.price_windows.1", "overlapping_window"]] },
+    { windows: [{ starts_at: at("18:00"), price: "700.00" }, { starts_at: at("21:00"), price: "800.00" }], expected: [["body.price_windows.1", "overlapping_window"]] },
+    { windows: [{ starts_at: at("20:00"), ends_at: at("19:00"), price: "700.00" }], expected: [["body.price_windows.0", "invalid_range"]] },
+  ];
+  for (const { windows, expected } of cases) {
+    await assert.rejects(ticketTypeService.updateTicketType(IDS.orgA, IDS.event, IDS.ticketType, { price_windows: windows }, IDS.user), (error: unknown) => {
+      assert.ok(error instanceof ValidationAppError);
+      assert.deepEqual((error.details as { issues: Array<{ path: string; code: string }> }).issues.map((issue) => [issue.path, issue.code]), expected);
+      return true;
+    });
+  }
+  assert.equal(findEvent.mock.callCount(), 0);
+  assert.equal(replace.mock.callCount(), 0);
+});
+
+test("Phase 11: a new ticket type may come with its schedule, stored in the same transaction; adjacent windows are fine", async () => {
+  mock.method(eventRepository, "findByOrganizationAndId", async () => eventRow());
+  mock.method(ticketTypeRepository, "create", async () => ticketTypeRow({ price: "500.00" }));
+  const replace = mock.method(ticketTypePriceWindowRepository, "replaceForTicketType", async (_o: string, _e: string, _id: string, windows: readonly PriceWindowValues[]) => storedWindows(windows));
+  const late = { starts_at: at("20:00"), ends_at: at("22:00"), price: "800.00" };
+  const created = await ticketTypeService.createTicketType(IDS.orgA, IDS.event, { code: "GA", name: "General Admission", price: "500.00", price_windows: [EVENING, late] }, IDS.user);
+  assert.equal(replace.mock.calls[0]?.arguments[5]?.transaction, FAKE_TX);
+  assert.equal(created.price_windows.length, 2);
+  assert.equal(created.price, "500.00");
 });

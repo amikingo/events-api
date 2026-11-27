@@ -11,7 +11,10 @@ import { messageOutboxRepository } from "../repositories/message-outbox.reposito
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
 import { ticketOrderRepository } from "../repositories/ticket-order.repository.js";
+import { ticketTypePriceWindowRepository } from "../repositories/ticket-type-price-window.repository.js";
+import type { RepoOptions } from "../repositories/helpers.js";
 import { generateOrderReference, generateRegistrationCode } from "../utils/registration-code.js";
+import { effectivePrice, type PriceQuote } from "../utils/ticket-pricing.js";
 import { ensureFound } from "./helpers.js";
 
 /**
@@ -150,7 +153,35 @@ function orderTokenMatches(token: string, storedHash: string | null): boolean {
   return presented.length === stored.length && timingSafeEqual(presented, stored);
 }
 
+/**
+ * Phase 11: what each ticket type costs at `at` (purchase-time pricing), from its regular price and its price windows,
+ * read in one query. The one place a new ticket is priced: checkout, the free-only single-ticket paths and the public
+ * page all ask here. Checkout calls it right after the event and ticket-type locks, so a schedule edit (which takes
+ * the same locks) can't change a price between the quote and the place being taken.
+ */
+async function quotePrices(
+  organizationId: string,
+  eventId: string,
+  ticketTypes: readonly Pick<TicketTypeRow, "id" | "price">[],
+  at: Date,
+  options: RepoOptions = {},
+): Promise<Map<string, PriceQuote>> {
+  const windows = await ticketTypePriceWindowRepository.listByTicketTypes(organizationId, eventId, ticketTypes.map((ticketType) => ticketType.id), options);
+  return new Map(
+    ticketTypes.map((ticketType) => [ticketType.id, effectivePrice(ticketType.price, windows.filter((window) => window.ticket_type_id === ticketType.id), at)]),
+  );
+}
+
+/** The quote of one ticket type (it must be among those quoted). */
+function quoteOf(quotes: Map<string, PriceQuote>, ticketTypeId: string): PriceQuote {
+  const quote = quotes.get(ticketTypeId);
+  if (!quote) throw new Error(`No price quote for ticket type ${ticketTypeId}`);
+  return quote;
+}
+
 export const ticketing = {
+  quotePrices,
+  quoteOf,
   assertTakingRegistrations,
   visibleTo,
   newCode,

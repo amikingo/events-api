@@ -19,6 +19,7 @@ import { OrderPayment } from "./order-payment.js";
 import { PaymentCase } from "./payment-case.js";
 import { TicketOrder } from "./ticket-order.js";
 import { TicketType } from "./ticket-type.js";
+import { TicketTypePriceWindow } from "./ticket-type-price-window.js";
 import { UserModuleAccess } from "./user-module-access.js";
 import { UserRole } from "./user-role.js";
 import { Venue } from "./venue.js";
@@ -69,6 +70,7 @@ export {
   TicketAdmission,
   TicketOrder,
   TicketType,
+  TicketTypePriceWindow,
   UserModuleAccess,
   UserRole,
   Venue,

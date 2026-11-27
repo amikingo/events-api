@@ -17,6 +17,7 @@ import type { PersonRow } from "../src/models/person.js";
 import type { RegistrationRow } from "../src/models/registration.js";
 import type { TicketOrderRow } from "../src/models/ticket-order.js";
 import type { TicketTypeRow } from "../src/models/ticket-type.js";
+import type { TicketTypePriceWindowRow } from "../src/models/ticket-type-price-window.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
 import { messageOutboxRepository } from "../src/repositories/message-outbox.repository.js";
 import { orderPaymentRepository } from "../src/repositories/order-payment.repository.js";
@@ -26,6 +27,7 @@ import { personRepository } from "../src/repositories/person.repository.js";
 import { registrationRepository } from "../src/repositories/registration.repository.js";
 import { submissionKeyRepository } from "../src/repositories/submission-key.repository.js";
 import { ticketOrderRepository } from "../src/repositories/ticket-order.repository.js";
+import { ticketTypePriceWindowRepository } from "../src/repositories/ticket-type-price-window.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { checkoutService, type CheckoutInput } from "../src/services/checkout.service.js";
 import { transactionManager } from "../src/services/helpers.js";
@@ -39,7 +41,7 @@ const VIP = ticketTypeRow({ id: "b0000000-0000-4000-8000-000000000001", code: "V
 const CREW = ticketTypeRow({ id: "b0000000-0000-4000-8000-000000000003", code: "CREW", audience: "STAFF_ONLY" });
 const HANA = "+251913000001";
 
-type Arrange = { event?: EventRow; ticketTypes?: TicketTypeRow[]; eventTaken?: number; typeTaken?: number; buyerHeld?: number };
+type Arrange = { event?: EventRow; ticketTypes?: TicketTypeRow[]; eventTaken?: number; typeTaken?: number; buyerHeld?: number; priceWindows?: TicketTypePriceWindowRow[] };
 
 function arrange(options: Arrange = {}) {
   const calls: string[] = [];
@@ -74,6 +76,11 @@ function arrange(options: Arrange = {}) {
     findOrganization: mock.method(organizationRepository, "findById", async () => organizationRow({ name: "Selam Events" })),
     queue: mock.method(messageOutboxRepository, "create", async (_values: Partial<MessageOutboxRow>, _o?: unknown) => ({}) as never),
     expiredHolds: mock.method(ticketOrderRepository, "listExpiredPendingByEvent", async () => []),
+    // Phase 11: the price schedule; recorded so the pricing instant's place in the lock order can be checked.
+    windows: mock.method(ticketTypePriceWindowRepository, "listByTicketTypes", async (_o: string, _e: string, ids: readonly string[]) => {
+      calls.push("prices");
+      return (options.priceWindows ?? []).filter((window) => ids.includes(window.ticket_type_id));
+    }),
   };
 }
 
@@ -347,4 +354,72 @@ test("a retry key: the same request returns the original order; another request 
   assert.equal(calls.createOrder.mock.callCount(), 1, "no second order, place or SMS");
 
   await assert.rejects(checkoutService.checkoutOnce(quick([{ ticketTypeCode: "GA", quantity: 2 }]), { ...submission, requestHash: "b".repeat(64) }, FAKE_TX), IdempotencyKeyReusedError);
+});
+
+// --- Phase 11: purchase-time pricing ------------------------------------------------------------------
+
+/** A price window around now (or wherever the minutes say), for GA unless told otherwise. */
+function windowRow(overrides: Partial<TicketTypePriceWindowRow> & { fromMinutes?: number; toMinutes?: number | null } = {}): TicketTypePriceWindowRow {
+  const { fromMinutes = -1, toMinutes = 120, ...rest } = overrides;
+  return {
+    id: "window-1",
+    organization_id: IDS.orgA,
+    event_id: IDS.event,
+    ticket_type_id: GA.id,
+    starts_at: new Date(Date.now() + fromMinutes * 60_000),
+    ends_at: toMinutes === null ? null : new Date(Date.now() + toMinutes * 60_000),
+    price: "700.00",
+    created_at: new Date(),
+    created_by: IDS.user,
+    ...rest,
+  };
+}
+
+test("Phase 11: inside a window each GA ticket is priced at the window (2 x 700) beside a fixed VIP (1,200): 2,600; quoted right after the locks", async () => {
+  const calls = arrange({ ticketTypes: [ticketTypeRow({ ...GA, price: "500.00" }), ticketTypeRow({ ...VIP, price: "1200.00" })], priceWindows: [windowRow()] });
+  keys();
+  const createPayment = mock.method(orderPaymentRepository, "create", async (values: Partial<OrderPaymentRow>) => ({ ...values, id: "payment-1" }) as OrderPaymentRow);
+
+  await checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 2 }, { ticketTypeCode: "VIP", quantity: 1 }]), FAKE_TX);
+
+  assert.equal(calls.createOrder.mock.calls[0]?.arguments[0]?.total_amount, "2600.00");
+  assert.deepEqual(calls.createTicket.mock.calls.map((call) => call.arguments[0].price_amount), ["700.00", "700.00", "1200.00"], "each ticket keeps its own price");
+  assert.equal(createPayment.mock.calls[0]?.arguments[0]?.amount, "2600.00");
+  const order = calls.calls;
+  assert.ok(order.indexOf("prices") > order.indexOf(`type:${GA.id}`) && order.indexOf("prices") > order.indexOf(`type:${VIP.id}`), "priced after every ticket-type lock");
+  assert.ok(order.indexOf("prices") < order.indexOf("order"), "and before the order takes its places");
+  assert.equal(calls.windows.mock.calls[0]?.arguments[3]?.transaction, FAKE_TX, "read in the checkout transaction");
+});
+
+test("Phase 11: before or after the window the regular price applies; a window priced 0 makes the order free and issued at once", async () => {
+  const types = [ticketTypeRow({ ...GA, price: "500.00" })];
+  let calls = arrange({ ticketTypes: types, priceWindows: [windowRow({ fromMinutes: 30, toMinutes: 60 })] });
+  keys();
+  mock.method(orderPaymentRepository, "create", async (values: Partial<OrderPaymentRow>) => ({ ...values, id: "payment-1" }) as OrderPaymentRow);
+  await checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 2 }]), FAKE_TX);
+  assert.equal(calls.createOrder.mock.calls[0]?.arguments[0]?.total_amount, "1000.00", "the window hasn't started");
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  calls = arrange({ ticketTypes: types, priceWindows: [windowRow({ fromMinutes: -120, toMinutes: 0 })] });
+  keys();
+  mock.method(orderPaymentRepository, "create", async (values: Partial<OrderPaymentRow>) => ({ ...values, id: "payment-1" }) as OrderPaymentRow);
+  await checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 2 }]), FAKE_TX);
+  assert.equal(calls.createOrder.mock.calls[0]?.arguments[0]?.total_amount, "1000.00", "the window has ended (its end is excluded)");
+  mock.restoreAll();
+  mock.method(transactionManager, "run", async (work: (tx: Transaction) => Promise<unknown>) => work(FAKE_TX));
+
+  arrange({ ticketTypes: types, priceWindows: [windowRow({ price: "0.00", toMinutes: null })] });
+  const { order, tickets } = await checkoutService.checkoutInTransaction(quick([{ ticketTypeCode: "GA", quantity: 1 }]), FAKE_TX);
+  assert.deepEqual([order.status, order.total_amount, tickets[0]?.status, tickets[0]?.price_amount], ["CONFIRMED", "0.00", "CONFIRMED", "0.00"], "free in the window: issued now");
+});
+
+test("Phase 11: a retry with the same key after the price changed returns the original order and its prices, not a new quote", async () => {
+  const calls = arrange({ ticketTypes: [ticketTypeRow({ ...GA, price: "500.00" })], priceWindows: [windowRow()] });
+  mock.method(submissionKeyRepository, "findByScopeAndKey", async () => ({ request_hash: "a".repeat(64), order_id: "order-1" }) as never);
+  mock.method(ticketOrderRepository, "findByEventAndId", async () => orderRow({ id: "order-1", total_amount: "1000.00" }));
+  const replay = await checkoutService.checkoutOnce(quick([{ ticketTypeCode: "GA", quantity: 2 }]), { scope: "PUBLIC_CHECKOUT", key: "key-0000-0001", requestHash: "a".repeat(64) }, FAKE_TX);
+  assert.deepEqual([replay.outcome, replay.order.total_amount], ["REPLAYED", "1000.00"]);
+  assert.equal(calls.windows.mock.callCount(), 0, "nothing is priced again");
+  assert.equal(calls.createOrder.mock.callCount(), 0);
 });

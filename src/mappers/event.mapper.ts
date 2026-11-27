@@ -1,6 +1,7 @@
 import { PRIVACY_NOTICE_VERSION } from "../config/privacy.js";
 import type { EventRow, EventStatus } from "../models/event.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
+import type { PriceQuote } from "../utils/ticket-pricing.js";
 import { isZeroAmount } from "../utils/money.js";
 import type { PublicEventRow } from "../repositories/event.repository.js";
 
@@ -82,7 +83,7 @@ export type PublicEventDetail = PublicEventCard & {
   registration_closes_at: Date | null;
   /** Phase 9: when the doors open; null means at starts_at. */
   doors_open_at: Date | null;
-  /** Active PUBLIC ticket types only, in display order. Since Phase 7 with the price ("0.00" is free) and currency. */
+  /** Active PUBLIC ticket types only, in display order, with the price a new order pays now ("0.00" is free). */
   ticket_types: PublicTicketTypeDto[];
   /** Phase 7: QUICK (one buyer mobile; tickets may be unnamed) or DETAILED (each holder's details). */
   registration_mode: EventRow["registration_mode"];
@@ -94,10 +95,15 @@ export type PublicEventDetail = PublicEventCard & {
   privacy_notice: { version: string };
 };
 
-export type PublicTicketTypeDto = { code: string; name: string; price: string; currency: string; is_free: boolean };
+/**
+ * Phase 11: `price` and `is_free` are what a new order pays right now (a scheduled window counts); `price_valid_until`
+ * is when that price changes (null: it doesn't). The price binds when checkout reserves the ticket.
+ */
+export type PublicTicketTypeDto = { code: string; name: string; price: string; currency: string; is_free: boolean; price_valid_until: Date | null };
 
-export function toPublicTicketTypeDto(ticketType: TicketTypeRow): PublicTicketTypeDto {
-  return { code: ticketType.code, name: ticketType.name, price: ticketType.price, currency: ticketType.currency, is_free: isZeroAmount(ticketType.price) };
+export function toPublicTicketTypeDto(ticketType: TicketTypeRow, quote: PriceQuote | undefined = undefined): PublicTicketTypeDto {
+  const price = quote?.price ?? ticketType.price;
+  return { code: ticketType.code, name: ticketType.name, price, currency: ticketType.currency, is_free: isZeroAmount(price), price_valid_until: quote?.valid_until ?? null };
 }
 
 export function toPublicEventCard(event: PublicEventRow, now: Date, cover: CoverDto = null): PublicEventCard {
@@ -124,6 +130,7 @@ export function toPublicEventDetail(
   activeTicketTypes: TicketTypeRow[],
   now: Date,
   cover: CoverDto = null,
+  quotes: ReadonlyMap<string, PriceQuote> = new Map(),
 ): PublicEventDetail {
   const publicTypes = activeTicketTypes.filter((ticketType) => ticketType.audience === "PUBLIC");
   return {
@@ -132,7 +139,7 @@ export function toPublicEventDetail(
     registration_opens_at: event.registration_opens_at,
     registration_closes_at: event.registration_closes_at,
     doors_open_at: event.doors_open_at,
-    ticket_types: publicTypes.map(toPublicTicketTypeDto),
+    ticket_types: publicTypes.map((ticketType) => toPublicTicketTypeDto(ticketType, quotes.get(ticketType.id))),
     registration_mode: event.registration_mode,
     holder_fields: event.holder_fields,
     purchase_limit_per_mobile: event.purchase_limit_per_mobile,

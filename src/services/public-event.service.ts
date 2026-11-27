@@ -8,6 +8,7 @@ import {
 } from "../mappers/event.mapper.js";
 import { eventRepository, type PublicEventRow } from "../repositories/event.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
+import { ticketing } from "./ticketing.js";
 import { buildPagination } from "../utils/pagination.js";
 import type { PublicEventListQuery } from "../validators/public-event.js";
 import { ensureFound } from "./helpers.js";
@@ -37,7 +38,9 @@ async function getPublicEvent(organizationSlug: string, eventSlug: string): Prom
   const now = new Date();
   const event = ensureFound(await eventRepository.findPublishedBySlugs(organizationSlug, eventSlug), "Event not found");
   const ticketTypes = await ticketTypeRepository.listActiveByEvent(event.organization_id, event.id);
-  return toPublicEventDetail(event, ticketTypes, now, coverOf(event));
+  // Phase 11: the same resolver checkout uses, at this instant.
+  const quotes = await ticketing.quotePrices(event.organization_id, event.id, ticketTypes, now);
+  return toPublicEventDetail(event, ticketTypes, now, coverOf(event), quotes);
 }
 
 export const publicEventService = { listCatalog, getPublicEvent };

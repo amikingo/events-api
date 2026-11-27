@@ -2355,6 +2355,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/ticket-types": {
       "post": {
         "summary": "Add a ticket type (its limit must fit within the event's capacity). Phase 7: optional price (a decimal string, \"0\" = free, the default; the organizer's currency is copied) and audience (PUBLIC, the default, or STAFF_ONLY: only staff may issue it)",
+        "description": "Phase 11: optional price_windows [{ starts_at, ends_at?, price }] (instants with an offset; start included, end excluded; no end = until the schedule changes; price in the type's currency, 0 = free; up to 20; no overlaps, adjacent allowed). Inside a window a new order pays its price, otherwise the regular price. Errors: 400 with issue codes invalid_range or overlapping_window at body.price_windows.N. The reply adds price_windows, effective_price, effective_is_free and price_valid_until; price stays the regular price.",
         "tags": [
           "Ticket types"
         ],
@@ -2412,7 +2413,7 @@
         }
       },
       "get": {
-        "summary": "List an event's ticket types",
+        "summary": "List an event's ticket types. Phase 11: each with price (the regular price), price_windows, and effective_price / effective_is_free / price_valid_until (what a new order pays now, and when that changes)",
         "tags": [
           "Ticket types"
         ],
@@ -2463,7 +2464,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/ticket-types/{ticketTypeId}": {
       "patch": {
         "summary": "Update a ticket type (PATCH semantics)",
-        "description": "Phase 9: its capacity can't go below its confirmed tickets plus unexpired holds (409 capacity_below_registrations: details.confirmed, held, minimum). Deactivating it (PATCH …/status) stops new orders for it; its issued tickets stay usable and returnable, and held orders may still complete by their deadline.",
+        "description": "Phase 11: optional price_windows [{ starts_at, ends_at?, price }] (instants with an offset; start included, end excluded; no end = until the schedule changes; price in the type's currency, 0 = free; up to 20; no overlaps, adjacent allowed). Inside a window a new order pays its price, otherwise the regular price. On PATCH, leaving price_windows out keeps the schedule, a list replaces it as a whole, [] clears it; a refused update changes nothing. Orders already made keep their prices. 400 invalid_range / overlapping_window. Phase 9: its capacity can't go below its confirmed tickets plus unexpired holds (409 capacity_below_registrations: details.confirmed, held, minimum). Deactivating it (PATCH …/status) stops new orders for it; its issued tickets stay usable and returnable, and held orders may still complete by their deadline.",
         "tags": [
           "Ticket types"
         ],
@@ -5387,7 +5388,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/registrations": {
       "post": {
         "summary": "Register a guest (person_id or a new person); 201 when a place was taken, 200 when already registered",
-        "description": "Phase 8: on an event with a purchase limit the guest needs an Ethiopian mobile (400 issues[].code buyer_mobile_required at body.person_id or body.person.phone). Same rules as the public form: a PUBLISHED event, not ended, inside its registration window, an active ticket type and a free place at both the event and the ticket type. Staff may also issue STAFF_ONLY ticket types (Phase 7). Errors: 409 registration_closed (details.reason), 409 capacity_reached (details.scope), 409 already_registered, 409 ticket_type_inactive, 409 person_inactive, 409 payment_required (a ticket type with a price: checkout only), 400 ticket_type_required.",
+        "description": "Phase 8: on an event with a purchase limit the guest needs an Ethiopian mobile (400 issues[].code buyer_mobile_required at body.person_id or body.person.phone). Same rules as the public form: a PUBLISHED event, not ended, inside its registration window, an active ticket type and a free place at both the event and the ticket type. Staff may also issue STAFF_ONLY ticket types (Phase 7). Errors: 409 registration_closed (details.reason), 409 capacity_reached (details.scope), 409 already_registered, 409 ticket_type_inactive, 409 person_inactive, 409 payment_required (a ticket type whose price right now is above zero, a scheduled price window included (Phase 11), or bringing back a ticket that was paid for: checkout only; details.price, currency, price_valid_until), 400 ticket_type_required.",
         "tags": [
           "Registrations"
         ],
@@ -5916,6 +5917,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}/status": {
       "patch": {
         "summary": "Cancel a registration (frees the place) or reactivate it (every registration check again). Phase 8: cancelling is a return: a ticket admitted at the door is 409 ticket_already_used, and a paid ticket opens its TICKET_RETURN payment case",
+        "description": "Phase 11: reactivating a ticket that was paid for (its stored price is above zero), or one whose ticket type costs something right now (a scheduled price window included), is 409 payment_required: sell a new ticket through checkout.",
         "tags": [
           "Registrations"
         ],
@@ -5986,7 +5988,7 @@
     "/v1/organizations/{organizationId}/events/{eventId}/registrations/{registrationId}/ticket-type": {
       "patch": {
         "summary": "Move a confirmed guest to another ticket type of the event: same code, no SMS; the same ticket type again changes nothing",
-        "description": "PUBLISHED events only, at any time (also after sign-ups close). The new ticket type must be active and have room under its own limit; the event's total doesn't change. Errors: 404 unknown ticket type, 409 invalid_event_state (details.status), 409 registration_cancelled (bring the guest back first), 409 ticket_type_inactive, 409 capacity_reached (details.scope TICKET_TYPE), 409 payment_required (Phase 7: the new type has a price).",
+        "description": "PUBLISHED events only, at any time (also after sign-ups close). The new ticket type must be active and have room under its own limit; the event's total doesn't change. Errors: 404 unknown ticket type, 409 invalid_event_state (details.status), 409 registration_cancelled (bring the guest back first), 409 ticket_type_inactive, 409 capacity_reached (details.scope TICKET_TYPE), 409 payment_required (Phase 7: the new type has a price; Phase 11: its price right now, a scheduled window included).",
         "tags": [
           "Registrations"
         ],
@@ -6127,7 +6129,7 @@
     },
     "/v1/public/organizations/{organizationSlug}/events/{eventSlug}": {
       "get": {
-        "summary": "Public event page by both slugs: any event published at least once (also UNLISTED, ended, closed or cancelled); 404 for drafts. Phase 7: ticket_types lists active PUBLIC types with price, currency and is_free; plus registration_mode, holder_fields and purchase_limit_per_mobile. registration_open needs an active public ticket type",
+        "summary": "Public event page by both slugs: any event published at least once (also UNLISTED, ended, closed or cancelled); 404 for drafts. Phase 7: ticket_types lists active PUBLIC types with price, currency and is_free (Phase 11: the price a new order pays now, with price_valid_until when it changes; it binds when checkout reserves the ticket); plus registration_mode, holder_fields and purchase_limit_per_mobile. registration_open needs an active public ticket type",
         "tags": [
           "Public"
         ],
@@ -6176,7 +6178,7 @@
     "/v1/public/organizations/{organizationSlug}/events/{eventSlug}/registrations": {
       "post": {
         "summary": "Register for an event, without an account or signed in with one (Idempotency-Key required): 201 with the code; the same key and form again, or a signed-in guest already registered, returns the registration with 200",
-        "description": "Without an account, phone is required and a new, unlinked guest profile is made. With a guest's access token, phone is ignored: the account's linked profile is used or created with its verified mobile. Same rules as staff entry: the event must be taking registrations, the ticket type active and a place free. Phase 7: a DETAILED event's holder_fields apply (400 with issues[].code required or not_collected); a STAFF_ONLY ticket type is 404 even by code; a paid ticket type is 409 payment_required. Errors: 400 validation_error (e.g. headers.idempotency-key, a non-Ethiopian mobile), 404 unknown event or ticket type, 409 privacy_notice_outdated (details.current), 409 idempotency_key_reused, 409 registration_closed (details.reason, NO_PUBLIC_TICKETS when only staff-only types are active), 409 capacity_reached (details.scope), 409 payment_required, 400 ticket_type_required, 429 rate_limited (10 a minute per IP).",
+        "description": "Without an account, phone is required and a new, unlinked guest profile is made. With a guest's access token, phone is ignored: the account's linked profile is used or created with its verified mobile. Same rules as staff entry: the event must be taking registrations, the ticket type active and a place free. Phase 7: a DETAILED event's holder_fields apply (400 with issues[].code required or not_collected); a STAFF_ONLY ticket type is 404 even by code; a ticket type whose price right now is above zero (Phase 11: a scheduled price window counts) is 409 payment_required (details.price, currency, price_valid_until). Errors: 400 validation_error (e.g. headers.idempotency-key, a non-Ethiopian mobile), 404 unknown event or ticket type, 409 privacy_notice_outdated (details.current), 409 idempotency_key_reused, 409 registration_closed (details.reason, NO_PUBLIC_TICKETS when only staff-only types are active), 409 capacity_reached (details.scope), 409 payment_required, 400 ticket_type_required, 429 rate_limited (10 a minute per IP).",
         "tags": [
           "Public"
         ],
@@ -7647,6 +7649,35 @@
               "STAFF_ONLY"
             ]
           },
+          "price_windows": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "starts_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "ends_at": {
+                  "nullable": true,
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "price": {
+                  "type": "string",
+                  "pattern": "^\\d{1,10}(\\.\\d{1,2})?$"
+                }
+              },
+              "required": [
+                "starts_at",
+                "price"
+              ],
+              "additionalProperties": false
+            }
+          },
           "display_order": {
             "type": "integer",
             "minimum": 0,
@@ -7692,6 +7723,35 @@
               "PUBLIC",
               "STAFF_ONLY"
             ]
+          },
+          "price_windows": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "starts_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "ends_at": {
+                  "nullable": true,
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "price": {
+                  "type": "string",
+                  "pattern": "^\\d{1,10}(\\.\\d{1,2})?$"
+                }
+              },
+              "required": [
+                "starts_at",
+                "price"
+              ],
+              "additionalProperties": false
+            }
           },
           "display_order": {
             "type": "integer",

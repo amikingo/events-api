@@ -80,8 +80,8 @@ test("public shapes carry only visitor fields: no client, staff, internal ids or
   assert.equal(detail.description, "Annual forum");
   assert.deepEqual(detail.privacy_notice, { version: PRIVACY_NOTICE_VERSION }, "the form shows this notice and sends its version back");
   assert.deepEqual(detail.ticket_types, [
-    { code: "GA", name: "General Admission", price: "0.00", currency: "ETB", is_free: true },
-    { code: "VIP", name: "VIP", price: "0.00", currency: "ETB", is_free: true },
+    { code: "GA", name: "General Admission", price: "0.00", currency: "ETB", is_free: true, price_valid_until: null },
+    { code: "VIP", name: "VIP", price: "0.00", currency: "ETB", is_free: true, price_valid_until: null },
   ]);
   const serialized = JSON.stringify(detail);
   for (const secret of ["client-id", "organization_id", "customer_account_id", "created_by", "updated_by", "published_at", '"id"']) {
@@ -113,4 +113,26 @@ test("the public page shows only active public ticket types with their price; st
   assert.equal(toPublicEventDetail(row, [crew], now).registration_open, false, "only a staff-only type: closed to the public");
   assert.equal(toPublicEventCard({ ...row, has_public_tickets: false }, now).registration_open, false, "the catalog card agrees");
   assert.equal(toPublicEventCard({ ...row, has_public_tickets: true }, now).registration_open, true);
+});
+
+test("Phase 11: the public page shows each type's price right now and when it changes, from the same quotes checkout uses", () => {
+  const row: PublicEventRow = {
+    ...eventRow({ status: "PUBLISHED", visibility: "PUBLIC", registration_mode: "QUICK" }),
+    organization: { name: "Selam Events", slug: "selam-events" },
+    venue: null,
+    coverFile: null,
+  };
+  const now = new Date("2027-01-15T15:30:00Z");
+  const ga = ticketTypeRow({ id: "ga-id", code: "GA", price: "500.00" });
+  const free = ticketTypeRow({ id: "free-id", code: "FREE", name: "Free", price: "0.00" });
+  const ends = new Date("2027-01-15T17:00:00Z");
+  const quotes = new Map([
+    ["ga-id", { price: "700.00", window_id: "w1", valid_until: ends }],
+    ["free-id", { price: "0.00", window_id: null, valid_until: null }],
+  ]);
+  const detail = toPublicEventDetail(row, [ga, free], now, null, quotes);
+  assert.deepEqual(detail.ticket_types.map((type) => [type.code, type.price, type.is_free, type.price_valid_until]), [
+    ["GA", "700.00", false, ends],
+    ["FREE", "0.00", true, null],
+  ]);
 });

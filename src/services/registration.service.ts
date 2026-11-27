@@ -101,6 +101,7 @@ export type SubmissionOutcome = RegisterOutcome | "REPLAYED";
  * The ticket type, locked after the event: by id, by code, or the only active one the caller may use. A STAFF_ONLY
  * type asked for by the public form is "not found", even by its code, so the public can't tell it exists. Since
  * Phase 7 a paid type is refused here (409 payment_required): the single-ticket endpoints only issue free tickets.
+ * Phase 11: "paid" means its price right now (a scheduled window counts), quoted after the lock.
  */
 async function lockTicketType(
   input: Pick<RegisterInput, "organizationId" | "eventId" | "ticketTypeId" | "ticketTypeCode" | "source">,
@@ -132,10 +133,34 @@ async function lockTicketType(
   );
   if (!ticketing.visibleTo(source)(ticketType)) throw new NotFoundError("Ticket type not found");
   if (!ticketType.is_active) throw new TicketTypeInactiveError(undefined, { ticket_type_code: ticketType.code });
-  if (!isZeroAmount(ticketType.price)) {
-    throw new PaymentRequiredError(undefined, { ticket_type_code: ticketType.code, price: ticketType.price, currency: ticketType.currency });
-  }
+  await assertFreeNow(ticketType, transaction);
   return ticketType;
+}
+
+/**
+ * Phase 11: the free-only paths check the ticket type's price at this instant (its regular price or a scheduled
+ * window), never the stored regular price alone. Positive is 409 payment_required: use order checkout.
+ */
+async function assertFreeNow(ticketType: TicketTypeRow, transaction: Transaction, message?: string): Promise<void> {
+  const quote = ticketing.quoteOf(await ticketing.quotePrices(ticketType.organization_id, ticketType.event_id, [ticketType], new Date(), { transaction }), ticketType.id);
+  if (!isZeroAmount(quote.price)) {
+    throw new PaymentRequiredError(message, { ticket_type_code: ticketType.code, price: quote.price, currency: ticketType.currency, price_valid_until: quote.valid_until });
+  }
+}
+
+/**
+ * A cancelled ticket that was paid for never comes back for free (decided 27 November 2026): its refund case may
+ * already exist, so bringing it back and returning it again would refund it twice. 409 payment_required.
+ */
+function assertNotPaidBefore(registration: RegistrationRow, ticketType: TicketTypeRow): void {
+  if (!isZeroAmount(registration.price_amount)) {
+    throw new PaymentRequiredError("A ticket that was paid for can't come back for free; sell a new one through checkout", {
+      registration_id: registration.id,
+      ticket_type_code: ticketType.code,
+      price: registration.price_amount,
+      currency: registration.currency,
+    });
+  }
 }
 
 /** An existing profile of the same organization (active), or a new one. */
@@ -270,6 +295,7 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
     });
   }
 
+  if (existing) assertNotPaidBefore(existing, ticketType);
   await assertPlaceAvailable(event, ticketType, transaction);
   // Phase 7: the purchase limit. A new ticket's buyer is the guest (the account's verified mobile when signed in);
   // a reactivated one counts against the buyer of the order it came with.
@@ -325,7 +351,8 @@ async function registerInTransaction(input: RegisterInput, transaction: Transact
         event_id: eventId,
         person_id: person.id,
         order_id: newOrder.id,
-        price_amount: ticketType.price,
+        // Phase 11: free at this instant (assertFreeNow), so the ticket's price is zero whatever the regular price.
+        price_amount: "0.00",
         currency: ticketType.currency,
         ticket_type_id: ticketType.id,
         status: "CONFIRMED",
@@ -452,6 +479,7 @@ async function reactivateUnnamedTicket(event: EventRow, registration: Registrati
     { organizationId: event.organization_id, eventId: event.id, ticketTypeId: registration.ticket_type_id, source: "STAFF" },
     transaction,
   );
+  assertNotPaidBefore(registration, ticketType);
   await assertPlaceAvailable(event, ticketType, transaction);
   const order = ensureFound(await ticketOrderRepository.findByEventAndId(event.organization_id, event.id, registration.order_id, { transaction }), "Order not found");
   await ticketing.assertBuyerAllowance(event, order.buyer_mobile, 1, transaction, "registration");
@@ -618,10 +646,8 @@ async function changeRegistrationTicketType(
       return { registration: await toDto(organizationId, eventId, registrationId, transaction), changed: false };
     }
     if (!target.is_active) throw new TicketTypeInactiveError(undefined, { ticket_type_code: target.code });
-    // Phase 7: moving a guest onto a paid type would hand out a paid ticket without payment.
-    if (!isZeroAmount(target.price)) {
-      throw new PaymentRequiredError("A guest can't be moved to a ticket type with a price", { ticket_type_code: target.code, price: target.price, currency: target.currency });
-    }
+    // Phase 7: moving a guest onto a paid type would hand out a paid ticket without payment (Phase 11: its price now).
+    await assertFreeNow(target, transaction, "A guest can't be moved to a ticket type with a price");
     await assertTicketTypeHasRoom(event, target, transaction);
 
     await registrationRepository.updateByEventAndId(

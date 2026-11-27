@@ -1,13 +1,16 @@
 import type { Transaction } from "sequelize";
 import { CapacityBelowRegistrationsError, ConflictError, InvalidEventStateError, ValidationAppError } from "../errors/app-errors.js";
 import type { EventRow } from "../models/event.js";
-import type { TicketTypeRow } from "../models/ticket-type.js";
+import type { TicketTypePriceWindowRow } from "../models/ticket-type-price-window.js";
+import { toTicketTypeDto, type TicketTypeDto } from "../mappers/ticket-type.mapper.js";
 import { eventRepository } from "../repositories/event.repository.js";
 import { organizationRepository } from "../repositories/organization.repository.js";
 import { registrationRepository } from "../repositories/registration.repository.js";
+import { ticketTypePriceWindowRepository } from "../repositories/ticket-type-price-window.repository.js";
 import { ticketTypeRepository } from "../repositories/ticket-type.repository.js";
 import { pickDefined } from "../utils/patch.js";
-import type { TicketTypeCreateInput, TicketTypeUpdateInput } from "../validators/ticket-type.js";
+import { windowIssues } from "../utils/ticket-pricing.js";
+import type { PriceWindowInput, TicketTypeCreateInput, TicketTypeUpdateInput } from "../validators/ticket-type.js";
 import { ensureFound, runTransaction } from "./helpers.js";
 
 /**
@@ -16,6 +19,10 @@ import { ensureFound, runTransaction } from "./helpers.js";
  * prices of its checkout. Every change locks the event first and the
  * ticket type second (the spec's lock order for anything that touches capacity). A ticket type's own limit must fit
  * within the event's limit when both are set; limits may add up to more, because all categories share one pool.
+ *
+ * Phase 11 (purchase-time pricing): `price` is the regular price and `price_windows` the optional one-off schedule
+ * (utils/ticket-pricing). A schedule is replaced as a whole under the same event and ticket-type locks checkout takes,
+ * so an order is priced either before or after an edit, never half-way. Orders keep their checkout prices.
  */
 const UPDATABLE_FIELDS = ["code", "name", "capacity", "price", "audience", "display_order"] as const;
 
@@ -41,6 +48,22 @@ function assertFitsEventCapacity(capacity: number | null | undefined, event: Eve
   }
 }
 
+/** Phase 11: a schedule's ranges and overlaps, as 400 issues at body.price_windows.N; nothing is written. */
+function assertWindows(windows: readonly PriceWindowInput[]): void {
+  const issues = windowIssues(windows);
+  if (issues.length > 0) {
+    throw new ValidationAppError("Request validation failed", {
+      issues: issues.map((issue) => ({ path: `body.price_windows.${issue.index}`, message: issue.message, code: issue.code })),
+    });
+  }
+}
+
+const windowValues = (windows: readonly PriceWindowInput[]) => windows.map((window) => ({ starts_at: window.starts_at, ends_at: window.ends_at ?? null, price: window.price }));
+
+async function windowsOf(organizationId: string, eventId: string, ticketTypeId: string, transaction: Transaction): Promise<TicketTypePriceWindowRow[]> {
+  return ticketTypePriceWindowRepository.listByTicketTypes(organizationId, eventId, [ticketTypeId], { transaction });
+}
+
 async function assertCodeFree(organizationId: string, eventId: string, code: string, transaction: Transaction, ticketTypeId?: string): Promise<void> {
   const holder = await ticketTypeRepository.findByEventAndCode(organizationId, eventId, code, { transaction });
   if (holder && holder.id !== ticketTypeId) throw new ConflictError("Ticket type code must be unique within the event", { field: "code" });
@@ -51,7 +74,8 @@ async function createTicketType(
   eventId: string,
   input: TicketTypeCreateInput,
   actorId: string | null,
-): Promise<TicketTypeRow> {
+): Promise<TicketTypeDto> {
+  if (input.price_windows !== undefined) assertWindows(input.price_windows);
   return runTransaction(async (transaction) => {
     const event = await lockChangeableEvent(organizationId, eventId, transaction);
     await assertCodeFree(organizationId, eventId, input.code, transaction);
@@ -59,7 +83,7 @@ async function createTicketType(
     const lastOrder = await ticketTypeRepository.maxDisplayOrderByEvent(organizationId, eventId, { transaction });
     const organization = ensureFound(await organizationRepository.findById(organizationId, { transaction }), "Organization not found");
 
-    return ticketTypeRepository.create(
+    const created = await ticketTypeRepository.create(
       {
         organization_id: organizationId,
         event_id: eventId,
@@ -77,12 +101,19 @@ async function createTicketType(
       },
       { transaction },
     );
+    const windows = await ticketTypePriceWindowRepository.replaceForTicketType(organizationId, eventId, created.id, windowValues(input.price_windows ?? []), actorId, { transaction });
+    return toTicketTypeDto(created, windows, new Date());
   });
 }
 
-async function listTicketTypes(organizationId: string, eventId: string): Promise<TicketTypeRow[]> {
+async function listTicketTypes(organizationId: string, eventId: string): Promise<TicketTypeDto[]> {
   ensureFound(await eventRepository.findByOrganizationAndId(organizationId, eventId), "Event not found");
-  return ticketTypeRepository.listByEvent(organizationId, eventId);
+  const [ticketTypes, windows] = await Promise.all([
+    ticketTypeRepository.listByEvent(organizationId, eventId),
+    ticketTypePriceWindowRepository.listByEvent(organizationId, eventId),
+  ]);
+  const now = new Date();
+  return ticketTypes.map((ticketType) => toTicketTypeDto(ticketType, windows.filter((window) => window.ticket_type_id === ticketType.id), now));
 }
 
 async function updateTicketType(
@@ -91,7 +122,8 @@ async function updateTicketType(
   ticketTypeId: string,
   input: TicketTypeUpdateInput,
   actorId: string | null,
-): Promise<TicketTypeRow> {
+): Promise<TicketTypeDto> {
+  if (input.price_windows !== undefined) assertWindows(input.price_windows);
   return runTransaction(async (transaction) => {
     const event = await lockChangeableEvent(organizationId, eventId, transaction);
     ensureFound(
@@ -113,14 +145,16 @@ async function updateTicketType(
       }
     }
 
-    const updated = await ticketTypeRepository.updateByEventAndId(
-      organizationId,
-      eventId,
-      ticketTypeId,
-      { ...patch, updated_by: actorId },
-      { transaction },
+    const updated = ensureFound(
+      await ticketTypeRepository.updateByEventAndId(organizationId, eventId, ticketTypeId, { ...patch, updated_by: actorId }, { transaction }),
+      "Ticket type not found",
     );
-    return ensureFound(updated, "Ticket type not found");
+    // Phase 11: left out keeps the schedule; a list replaces it as a whole ([] clears it), in this transaction.
+    const windows =
+      input.price_windows === undefined
+        ? await windowsOf(organizationId, eventId, ticketTypeId, transaction)
+        : await ticketTypePriceWindowRepository.replaceForTicketType(organizationId, eventId, ticketTypeId, windowValues(input.price_windows), actorId, { transaction });
+    return toTicketTypeDto(updated, windows, new Date());
   });
 }
 
@@ -131,7 +165,7 @@ async function changeTicketTypeStatus(
   ticketTypeId: string,
   isActive: boolean,
   actorId: string | null,
-): Promise<TicketTypeRow> {
+): Promise<TicketTypeDto> {
   return runTransaction(async (transaction) => {
     const event = await lockChangeableEvent(organizationId, eventId, transaction);
     const ticketType = ensureFound(
@@ -151,7 +185,7 @@ async function changeTicketTypeStatus(
       { is_active: isActive, updated_by: actorId },
       { transaction },
     );
-    return ensureFound(updated, "Ticket type not found");
+    return toTicketTypeDto(ensureFound(updated, "Ticket type not found"), await windowsOf(organizationId, eventId, ticketTypeId, transaction), new Date());
   });
 }
 

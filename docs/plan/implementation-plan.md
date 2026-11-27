@@ -560,13 +560,13 @@ Connect the staff and public screens to the API and run the full flow against Po
 
 **Decisions (26 November 2026):** new events start DETAILED with today's form; the purchase limit counts every order with that buyer mobile, staff ones included; staff can't issue a paid type until step 3 (then the buyer pays through the same checkout); at most 20 tickets per order; detailed holders become new unlinked guest profiles and quick tickets have none; a payment that arrives after its places were released takes them again if all are still free, otherwise the order is marked `REFUND_REQUIRED`.
 
-**Step 1 (event and ticket-type settings): built; `npm run check` passed (353 unit tests, OpenAPI snapshot up to date); waiting on `npm run db:migrate` and `TEST_DATABASE=1 npm test` (rows 87–88).** Migrations `20261204000000-add-event-checkout-settings` (`event`: `registration_mode`, `holder_fields`, `purchase_limit_per_mobile`) and `20261204000001-add-ticket-type-pricing` (`ticket_type`: `price`, `currency`, `audience`). The public page lists only public types with prices; `registration_open` needs an active public type; the public form refuses staff-only types (404) and enforces a DETAILED event's holder fields; both single-ticket endpoints refuse paid types (409 `payment_required`). The purchase limit is stored now and enforced from step 2. Matrix rows 87–88. Details in `docs/events.md` (Phase 7 step 1).
+**Step 1 (event and ticket-type settings): done (26 November 2026).** `npm run check` passed; the project owner applied the migrations, ran `TEST_DATABASE=1 npm test` (rows 87–88) and committed. Migrations `20261204000000-add-event-checkout-settings` (`event`: `registration_mode`, `holder_fields`, `purchase_limit_per_mobile`) and `20261204000001-add-ticket-type-pricing` (`ticket_type`: `price`, `currency`, `audience`). The public page lists only public types with prices; `registration_open` needs an active public type; the public form refuses staff-only types (404) and enforces a DETAILED event's holder fields; both single-ticket endpoints refuse paid types (409 `payment_required`). The purchase limit is stored now and enforced from step 2. Matrix rows 87–88. Details in `docs/events.md` (Phase 7 step 1).
 
-**Step 2 (orders and group checkout): built; `npm run check` passed (370 unit tests, OpenAPI snapshot up to date); waiting on `npm run db:migrate` and `TEST_DATABASE=1 npm test` (rows 89–92).** Migrations `20261205000000-create-ticket-order`, `…001-backfill-ticket-orders` (data), `…002-add-registration-order`, `…003-add-submission-key-order`, `…004-add-message-outbox-order`. Checkout core `checkout.service.ts` (staff and public endpoints, `checkoutOnce` retries, one SMS per order), the purchase limit on every path, single registrations as one-ticket orders, unnamed QUICK tickets in the guest list, CSV and status changes, My Tickets for orders bought signed in. Decided while building: an event that hides the holder's name collects no other holder details, and a holder's details need their first name. Matrix rows 89–92. Details in `docs/registrations.md` (Phase 7 step 2).
+**Step 2 (orders and group checkout): done (26 November 2026).** `npm run check` passed; the project owner applied the migrations, ran `TEST_DATABASE=1 npm test` (rows 89–92) and committed. Migrations `20261205000000-create-ticket-order`, `…001-backfill-ticket-orders` (data), `…002-add-registration-order`, `…003-add-submission-key-order`, `…004-add-message-outbox-order`. Checkout core `checkout.service.ts` (staff and public endpoints, `checkoutOnce` retries, one SMS per order), the purchase limit on every path, single registrations as one-ticket orders, unnamed QUICK tickets in the guest list, CSV and status changes, My Tickets for orders bought signed in. Decided while building: an event that hides the holder's name collects no other holder details, and a holder's details need their first name. Matrix rows 89–92. Details in `docs/registrations.md` (Phase 7 step 2).
 
 **Step 3 (paid checkout, first on Cheche Pay's legacy API): built, verified on PostgreSQL and pushed on 26 November 2026.** Holds, the order token, issuing, late payments and the worker came from this step. Its legacy service code and unsigned callback were replaced in Step 3b.
 
-**Step 3b (Cheche Pay v2, as bookings uses it): built on 26 November 2026; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` and `TEST_DATABASE=1 npm test` (rows 93–95).** Migrations `20261207000000-drop-organization-cheche-pay-service`, `…001-create-organization-cheche-pay-credential`, `…002-reshape-order-payment-for-cheche-pay-v2`. The Super Admin saves each organizer's own Cheche Pay secret key, stored encrypted; there is no platform key. Each payment attempt calls `transactions/initialize` with a fresh `tx_ref`. Webhooks (signed when a webhook secret is saved) and the buyer's return (`POST /v1/public/orders/{reference}/check`) are only triggers: tickets are issued only after `merchant-verify` confirms `SUCCEEDED` for the stored amount in ETB. Another amount is `MISMATCH`, a second paid attempt is flagged `PAID_TWICE`, and repeats change nothing. Payments can no longer be faked. Matrix rows 93–95 with the client stubbed. Details in `docs/registrations.md` (Phase 7 step 3b).
+**Step 3b (Cheche Pay v2, as bookings uses it): done (26 November 2026).** `npm run check` passed; the project owner applied the migrations, ran `TEST_DATABASE=1 npm test` (rows 93–95) and committed. Step 4 (the sandbox run) is still open. Migrations `20261207000000-drop-organization-cheche-pay-service`, `…001-create-organization-cheche-pay-credential`, `…002-reshape-order-payment-for-cheche-pay-v2`. The Super Admin saves each organizer's own Cheche Pay secret key, stored encrypted; there is no platform key. Each payment attempt calls `transactions/initialize` with a fresh `tx_ref`. Webhooks (signed when a webhook secret is saved) and the buyer's return (`POST /v1/public/orders/{reference}/check`) are only triggers: tickets are issued only after `merchant-verify` confirms `SUCCEEDED` for the stored amount in ETB. Another amount is `MISMATCH`, a second paid attempt is flagged `PAID_TWICE`, and repeats change nothing. Payments can no longer be faked. Matrix rows 93–95 with the client stubbed. Details in `docs/registrations.md` (Phase 7 step 3b).
 
 ### Phase 8 — Physical-event pilot (27 November 2026)
 
@@ -625,8 +625,9 @@ Details in `docs/registrations.md` (Phase 9).
 
 ### Phase 10 — Payment callback safety net and profile editing (27 November 2026)
 
-**Built; waiting on `npm run openapi`, `npm run check`, then `TEST_DATABASE=1 npm test` (rows 107–110; row 82
-updated). No migration.**
+**Done (27 November 2026).** `npm run check` passed; the project owner ran `TEST_DATABASE=1 npm test` (rows 107–110;
+row 82 updated; row 107's other-organization check moved to Abay, since Horn is switched off earlier) and committed.
+No migration.
 
 **What it covers:**
 - **Cheche Pay addresses, as bookings:** `CHECHE_PAY_CALLBACK_URL` with `{organization_id}` and
@@ -647,4 +648,25 @@ updated). No migration.**
 - the sandbox payment run (the real callback URL and the success-time field).
 
 Details in `docs/authentication.md` and `docs/registrations.md` (Phase 10). UI brief: `docs/ui-brief-phase-10.md`.
+
+### Phase 11 — Purchase-time pricing (27 November 2026)
+
+**Built; waiting on `npm run openapi`, `npm run check`, then `npm run db:migrate` (1 migration) and
+`TEST_DATABASE=1 npm test` (rows 111–115).** Migration `20261210000000-create-ticket-type-price-window`.
+
+**What it covers:**
+- **Price windows:** each ticket type keeps its regular `price` and may have one-off `price_windows`
+  (`starts_at` included, `ends_at` excluded or open, an exact price; no overlaps). They're set through the existing
+  ticket-type create and PATCH, under the same permissions.
+- **One resolver** (`utils/ticket-pricing.ts`, `ticketing.quotePrices`) for the public page, the back office,
+  checkout and the free-only single-ticket paths.
+- **Checkout** prices an order at one instant right after the event and ticket-type locks. Orders keep those prices
+  for payment, late payment, returns and cancellation.
+- **Free-only paths** check the price right now (409 `payment_required`). A ticket that was paid for never comes back
+  for free (decided 27 November 2026).
+
+**Decisions (27 November 2026):** reactivation also refuses a stored paid price; overlaps are checked in the service
+under the locks, with CHECKs in the database and no extension.
+
+Details in `docs/events.md` and `docs/registrations.md` (Phase 11).
 

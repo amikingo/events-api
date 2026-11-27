@@ -710,3 +710,45 @@ The body of a callback is never trusted.
 
 **Proof:** unit tests in `tests/payment.service.test.ts` and `tests/payment-urls.test.ts`; integration row 110.
 
+## Phase 11: purchase-time pricing (27 November 2026)
+
+**The rule:** a new order pays each ticket type's price at the instant checkout reserves it. That's the regular price,
+or the price window in force (setup in `docs/events.md`, Phase 11).
+
+**Checkout (public and staff):**
+1. The event, then the chosen ticket types, are locked as before. Then one instant is taken and every type is priced
+   at it (`ticketing.quotePrices`), right before places are taken.
+2. A schedule edit takes the same locks, so it lands wholly before or after an order.
+3. Each ticket stores its unit price (`registration.price_amount`), and the order stores the total and currency. The
+   buyer gets that total in the reply, before paying.
+4. A zero total issues at once. A positive one is held and paid through Cheche Pay as before.
+
+**The price stays with the order:**
+- An identical retry with the same `Idempotency-Key` returns the original order and its prices, even after a price
+  change.
+- A paid hold keeps its price through its deadline. Cheche Pay is asked for the order's stored amount, and payment
+  verification, late-payment reconciliation, returns and cancellation all use the stored amounts.
+- After a hold expires, a genuinely new order is priced at the current price. A delayed payment for the old order
+  follows the Phase 9 timing, availability and refund rules at the old amount.
+
+**Examples:**
+
+| What happens | Result |
+|---|---|
+| 2 GA reserved at 17:58 (500 each); retried at 18:03 and paid within the hold | the order stays 1,000 ETB; a fresh order for 2 at 18:03 costs 1,400 ETB |
+| 2 GA reserved at exactly 18:00, plus 1 VIP at a fixed 1,200 ETB | 2,600 ETB; a new GA at exactly 20:00 costs 500 ETB |
+| the organizer edits the active window while a buyer holds a ticket at 700 | the hold stays 700; a later return opens a 700 ETB case |
+
+**The free-only paths** (both single-ticket endpoints, and moving a guest to another type) check the type's price
+**right now**, a window included. Above zero is 409 `payment_required` (`details.price`, `currency`,
+`price_valid_until`): use order checkout. Outside a paid window, a regular free type works as before.
+
+**Bringing back a cancelled ticket** (decided 27 November 2026): it's refused with 409 `payment_required` when the
+ticket was paid for (its stored price is above zero), even if the type is free now. Its refund case may already exist,
+so a free comeback followed by another return would refund it twice. It's also refused when the type costs something
+right now.
+
+**Proof:** unit tests in `tests/ticket-pricing.test.ts`, `tests/checkout.service.test.ts`,
+`tests/registration.service.test.ts`, `tests/ticket-type.service.test.ts` and `tests/slug-and-event-display.test.ts`;
+integration rows 111–115.
+

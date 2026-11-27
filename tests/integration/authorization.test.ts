@@ -536,8 +536,8 @@ test("rows 35–36: direct links open any event published at least once, by both
   // Row 35: unlisted, ended and closed events open by link; detail has the description and active ticket types.
   const unlisted = await publicGet("/v1/public/organizations/selam-events/events/partner-workshop");
   assert.equal(unlisted.status, 200);
-  // Phase 7 added the price, currency and is_free; an event from before stays free.
-  assert.deepEqual(unlisted.body.data.ticket_types, [{ code: "GA", name: "General Admission", price: "0.00", currency: "ETB", is_free: true }]);
+  // Phase 7 added the price, currency and is_free (Phase 11: the price now, and price_valid_until, null without windows).
+  assert.deepEqual(unlisted.body.data.ticket_types, [{ code: "GA", name: "General Admission", price: "0.00", currency: "ETB", is_free: true, price_valid_until: null }]);
   assert.ok("description" in unlisted.body.data);
   const ended = await publicGet("/v1/public/organizations/selam-events/events/past-meetup");
   assert.deepEqual([ended.status, ended.body.data.registration_open], [200, false]);
@@ -3469,6 +3469,154 @@ test("row 110: the payment safety net: checkout gives Cheche Pay the callback an
     const settled = await OrderPayment.findOne({ where: { tx_ref: offlineRef }, raw: true });
     assert.equal(settled?.status, "PAID", "asked again once reachable: the payment is applied (tickets if the place is free, otherwise a refund case)");
     assert.ok(["CONFIRMED", "REFUND_REQUIRED"].includes((await statusOf(offline.body.data.reference)) as string));
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+// --- Phase 11: purchase-time pricing (price windows; Cheche Pay stubbed) ----------------------------------------
+
+/** A window of minutes around now, as the API takes it. */
+const windowFrom = (fromMinutes: number, toMinutes: number | null, price: string) => ({
+  starts_at: new Date(Date.now() + fromMinutes * 60_000).toISOString(),
+  ...(toMinutes === null ? {} : { ends_at: new Date(Date.now() + toMinutes * 60_000).toISOString() }),
+  price,
+});
+
+async function setWindows(event: { path: string; types: Record<string, string> }, code: string, windows: unknown[]): Promise<TestResponse> {
+  return as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types[code]}`, { price_windows: windows });
+}
+
+async function orderTotal(reference: string): Promise<string | undefined> {
+  return (await TicketOrder.findOne({ where: { reference }, raw: true }))?.total_amount;
+}
+
+test("row 111: a hold made at 500 keeps 500 through a retry and payment after a 700 window starts; a fresh order for two then costs 1,400", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pricing Sunset", registration_mode: "QUICK" });
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    const key = randomUUID();
+    const form = orderForm([{ ticket_type_code: "GA", quantity: 2 }], "0913110001");
+    const held = await postWithKey(`${event.publicPath}/orders`, form, key);
+    assert.deepEqual([held.status, held.body.data.total_amount], [201, "1000.00"], "17:58: two at 500");
+
+    const scheduled = await setWindows(event, "GA", [windowFrom(-0.1, 120, "700")]);
+    assert.deepEqual([scheduled.status, scheduled.body.data.price, scheduled.body.data.effective_price], [200, "500.00", "700.00"], "18:00: the window starts");
+
+    const retried = await postWithKey(`${event.publicPath}/orders`, form, key);
+    assert.deepEqual([retried.status, retried.body.data.reference, retried.body.data.total_amount], [200, held.body.data.reference, "1000.00"], "18:03: the retry is the same order at 500");
+    const txRef = await txRefOf(held.body.data.reference);
+    ledger.set(txRef, { status: "SUCCEEDED", amount: "1000.00", succeededAt: new Date() });
+    assert.equal((await signedWebhook(txRef)).body.data.order_status, "CONFIRMED", "paid within the hold at the 500 price");
+    assert.deepEqual((await staffTicketsOf(event.path, held.body.data.reference)).map((ticket) => ticket.status), ["CONFIRMED", "CONFIRMED"]);
+
+    const fresh = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }], "0913110002"), randomUUID());
+    assert.deepEqual([fresh.status, fresh.body.data.total_amount], [201, "1400.00"], "a fresh order at 18:03 pays 700 each");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 112: two GA in a 700 window and one fixed VIP at 1,200 come to 2,600; the public page shows 700 until the window ends, then 500 for a new order", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pricing Gala", registration_mode: "QUICK" }, [{ code: "VIP", name: "VIP", price: "1200" }]);
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    assert.equal((await setWindows(event, "GA", [windowFrom(-0.1, 120, "700")])).status, 200);
+
+    const page = await withServer(app, (baseUrl) => call(baseUrl, "GET", event.publicPath));
+    const gaOnPage = page.body.data.ticket_types.find((type: { code: string }) => type.code === "GA");
+    assert.deepEqual([gaOnPage.price, gaOnPage.is_free, typeof gaOnPage.price_valid_until], ["700.00", false, "string"]);
+
+    const mixed = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 2 }, { ticket_type_code: "VIP", quantity: 1 }], "0913120001"), randomUUID());
+    assert.deepEqual([mixed.status, mixed.body.data.total_amount], [201, "2600.00"]);
+    const prices = (await Registration.findAll({ where: { order_id: (await TicketOrder.findOne({ where: { reference: mixed.body.data.reference }, raw: true }))?.id }, raw: true }))
+      .map((ticket) => ticket.price_amount)
+      .sort();
+    assert.deepEqual(prices, ["1200.00", "700.00", "700.00"]);
+
+    // "20:00": the window is over (its end is excluded).
+    assert.equal((await setWindows(event, "GA", [windowFrom(-120, -0.01, "700")])).status, 200);
+    const after = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913120002"), randomUUID());
+    assert.deepEqual([after.status, after.body.data.total_amount], [201, "500.00"]);
+    assert.equal(await orderTotal(mixed.body.data.reference), "2600.00", "the earlier order keeps its total");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 113: a free type with a positive window needs checkout during the window on both single-ticket paths; outside it the free rules apply", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pricing Workshop", registration_mode: "QUICK" });
+    assert.equal((await setWindows(event, "GA", [windowFrom(-0.1, 60, "300")])).status, 200);
+    const publicForm = { ...workshopForm("Hana", "0913130001"), ticket_type_code: "GA" };
+    const publicTry = await postWithKey(`${event.publicPath}/registrations`, publicForm, randomUUID());
+    assert.deepEqual([publicTry.status, publicTry.body.error?.code, publicTry.body.error?.details?.price], [409, "payment_required", "300.00"]);
+    const staffTry = await as("SELAM_OWNER", "POST", `${event.path}/registrations`, { person: { first_name: "Abel", last_name: "Free", phone: "0913130002" }, ticket_type_id: event.types.GA });
+    assert.deepEqual([staffTry.status, staffTry.body.error?.code], [409, "payment_required"]);
+    const order = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913130003"), randomUUID());
+    assert.deepEqual([order.body.data.status, order.body.data.total_amount], ["PENDING_PAYMENT", "300.00"], "checkout sells it at 300");
+
+    assert.equal((await setWindows(event, "GA", [windowFrom(60, 120, "300")])).status, 200, "the window moves later");
+    const free = await postWithKey(`${event.publicPath}/registrations`, { ...publicForm, ...workshopForm("Selam", "0913130004"), ticket_type_code: "GA" }, randomUUID());
+    assert.equal(free.status, 201, JSON.stringify(free.body));
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 114: editing the active window while a buyer holds one ticket at 700 keeps the hold at 700; paid and later returned, the refund is 700", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pricing Concert", registration_mode: "QUICK" });
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    assert.equal((await setWindows(event, "GA", [windowFrom(-0.1, 120, "700")])).status, 200);
+    const held = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913140001"), randomUUID());
+    assert.equal(held.body.data.total_amount, "700.00");
+
+    const edited = await setWindows(event, "GA", [windowFrom(-0.1, 120, "900")]);
+    assert.equal(edited.body.data.effective_price, "900.00");
+    const txRef = await txRefOf(held.body.data.reference);
+    ledger.set(txRef, { status: "SUCCEEDED", amount: "700.00", succeededAt: new Date() });
+    assert.equal((await signedWebhook(txRef)).body.data.order_status, "CONFIRMED", "700 is the order's amount, whatever the window says now");
+
+    assert.equal((await setWindows(event, "GA", [])).status, 200, "the schedule is cleared: GA is 500 again");
+    const [ticket] = await staffTicketsOf(event.path, held.body.data.reference);
+    const returned = await as("SELAM_OWNER", "POST", `${event.path}/registrations/${ticket?.id}/return`);
+    assert.deepEqual([returned.status, returned.body.data.refund_case?.amount], [200, "700.00"], "the price paid, not today's");
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("row 115: overlapping windows, or another organization's ticket type, are refused as a whole; the old schedule keeps pricing checkout", { skip }, async () => {
+  resetPublicLimit();
+  stubChechePay();
+  try {
+    const event = await publishedCheckoutEvent({ name: "Pricing Forum", registration_mode: "QUICK" });
+    assert.equal((await as("SELAM_OWNER", "PATCH", `${event.path}/ticket-types/${event.types.GA}`, { price: "500" })).status, 200);
+    assert.equal((await setWindows(event, "GA", [windowFrom(-0.1, 120, "700")])).status, 200);
+
+    const overlapping = await setWindows(event, "GA", [windowFrom(-0.1, 60, "800"), windowFrom(30, 90, "900")]);
+    assert.deepEqual([overlapping.status, overlapping.body.error.details.issues[0].code], [400, "overlapping_window"]);
+    const twoOpen = await setWindows(event, "GA", [windowFrom(-0.1, null, "800"), windowFrom(30, null, "900")]);
+    assert.deepEqual([twoOpen.status, twoOpen.body.error.details.issues[0].code], [400, "overlapping_window"]);
+
+    const abay = await Organization.findOne({ where: { name: "Abay Pilot" }, raw: true });
+    assert.ok(abay);
+    const foreign = await asToken(await tokenFor(ABAY_OWNER_ID), "PATCH", `${event.path.replace(fixture.selamId, abay.id)}/ticket-types/${event.types.GA}`, { price_windows: [windowFrom(-0.1, 60, "1")] });
+    assert.equal(foreign.status, 404, "another organization's ticket type isn't found there");
+
+    const listed = (await as("SELAM_OWNER", "GET", `${event.path}/ticket-types`)).body.data.find((type: { code: string }) => type.code === "GA");
+    assert.deepEqual(listed.price_windows.map((window: { price: string }) => window.price), ["700.00"], "the old schedule stands");
+    const order = await postWithKey(`${event.publicPath}/orders`, orderForm([{ ticket_type_code: "GA", quantity: 1 }], "0913150001"), randomUUID());
+    assert.equal(order.body.data.total_amount, "700.00");
   } finally {
     mock.restoreAll();
   }

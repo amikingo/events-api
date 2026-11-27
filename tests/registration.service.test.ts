@@ -24,6 +24,7 @@ import type { PersonRow } from "../src/models/person.js";
 import type { RegistrationRow } from "../src/models/registration.js";
 import type { TicketOrderRow } from "../src/models/ticket-order.js";
 import type { TicketTypeRow } from "../src/models/ticket-type.js";
+import type { TicketTypePriceWindowRow } from "../src/models/ticket-type-price-window.js";
 import { eventRepository } from "../src/repositories/event.repository.js";
 import { messageOutboxRepository } from "../src/repositories/message-outbox.repository.js";
 import { organizationRepository } from "../src/repositories/organization.repository.js";
@@ -33,6 +34,7 @@ import { submissionKeyRepository } from "../src/repositories/submission-key.repo
 import { orderPaymentRepository } from "../src/repositories/order-payment.repository.js";
 import { ticketAdmissionRepository } from "../src/repositories/ticket-admission.repository.js";
 import { ticketOrderRepository } from "../src/repositories/ticket-order.repository.js";
+import { ticketTypePriceWindowRepository } from "../src/repositories/ticket-type-price-window.repository.js";
 import { ticketTypeRepository } from "../src/repositories/ticket-type.repository.js";
 import { transactionManager } from "../src/services/helpers.js";
 import { paymentCaseService, type ReturnCaseInput } from "../src/services/payment-case.service.js";
@@ -67,6 +69,8 @@ type Arrange = {
   admission?: Partial<TicketAdmissionRow> | null;
   /** Phase 8: a ticket's existing return case, if any. */
   returnCase?: Partial<PaymentCaseRow> | null;
+  /** Phase 11: scheduled prices of the ticket types. */
+  priceWindows?: TicketTypePriceWindowRow[];
 };
 
 /** Records every repository call in order, so the lock order can be checked. */
@@ -80,6 +84,9 @@ function arrange(options: Arrange = {}) {
 
   return {
     calls,
+    windows: mock.method(ticketTypePriceWindowRepository, "listByTicketTypes", async (_o: string, _e: string, ids: readonly string[]) =>
+      (options.priceWindows ?? []).filter((window) => ids.includes(window.ticket_type_id)),
+    ),
     findEvent: mock.method(eventRepository, "findByOrganizationAndId", async (_o: string, _e: string, repoOptions?: { lock?: boolean }) => {
       record("event", repoOptions);
       return event;
@@ -732,7 +739,7 @@ test("a paid type is refused on the single-ticket endpoints (payment_required), 
   const vip = ticketTypeRow({ id: "vip-id", code: "VIP", price: "1000.00" });
   const calls = arrange({ ticketTypes: [vip] });
   const isPaymentRequired = (error: unknown) =>
-    error instanceof PaymentRequiredError && JSON.stringify(error.details) === JSON.stringify({ ticket_type_code: "VIP", price: "1000.00", currency: "ETB" });
+    error instanceof PaymentRequiredError && JSON.stringify(error.details) === JSON.stringify({ ticket_type_code: "VIP", price: "1000.00", currency: "ETB", price_valid_until: null });
 
   await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person, ticket_type_id: "vip-id" }, IDS.user), isPaymentRequired);
   await assert.rejects(registrationService.registerInTransaction(PUBLIC_INPUT, FAKE_TX), isPaymentRequired);
@@ -891,4 +898,66 @@ test("cancelling a paid ticket through the status route is a return too: it open
   const dto = await registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CANCELLED", IDS.user);
   assert.equal(calls.openReturn.mock.callCount(), 1);
   assert.equal(dto.id, IDS.registration, "still the registration, as before");
+});
+
+// --- Phase 11: purchase-time pricing on the free-only paths -----------------------------------------------------
+
+/** A scheduled price for the default ticket type, around now unless told otherwise. */
+function windowRow(price: string, fromMinutes = -1, toMinutes: number | null = 60): TicketTypePriceWindowRow {
+  return {
+    id: "window-1",
+    organization_id: IDS.orgA,
+    event_id: IDS.event,
+    ticket_type_id: IDS.ticketType,
+    starts_at: new Date(Date.now() + fromMinutes * 60_000),
+    ends_at: toMinutes === null ? null : new Date(Date.now() + toMinutes * 60_000),
+    price,
+    created_at: new Date(),
+    created_by: IDS.user,
+  };
+}
+
+test("Phase 11: a free type with a positive window needs checkout during the window, on both single-ticket paths; outside it the free rules apply", async () => {
+  const inside = arrange({ priceWindows: [windowRow("300.00")] });
+  const isPaymentRequired = (error: unknown) =>
+    error instanceof PaymentRequiredError && (error.details as { price: string; price_valid_until: Date | null }).price === "300.00" && (error.details as { price_valid_until: Date | null }).price_valid_until instanceof Date;
+  await assert.rejects(registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user), isPaymentRequired);
+  await assert.rejects(registrationService.registerInTransaction(PUBLIC_INPUT, FAKE_TX), isPaymentRequired);
+  assert.equal(inside.create.mock.callCount(), 0);
+  resetTransaction();
+
+  const later = arrange({ priceWindows: [windowRow("300.00", 30, 90)] });
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.equal(later.create.mock.calls[0]?.arguments[0]?.price_amount, "0.00", "before the window: free, as before");
+});
+
+test("Phase 11: a regular paid type with a free window issues free tickets through the single-ticket path during the window", async () => {
+  const calls = arrange({ ticketTypes: [ticketTypeRow({ price: "500.00" })], priceWindows: [windowRow("0.00", -1, null)] });
+  await registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user);
+  assert.equal(calls.create.mock.calls[0]?.arguments[0]?.price_amount, "0.00", "the price now, not the regular price");
+});
+
+test("Phase 11: a cancelled ticket that was paid for never comes back for free, even when the type is free now (no second refund)", async () => {
+  const paidBefore = registrationRow({ status: "CANCELLED", cancelled_at: new Date(), price_amount: "700.00" });
+  const named = arrange({ existing: paidBefore });
+  await assert.rejects(
+    registrationService.registerGuest(IDS.orgA, IDS.event, { person_id: IDS.person }, IDS.user),
+    (error: unknown) => error instanceof PaymentRequiredError && (error.details as { price: string }).price === "700.00",
+  );
+  assert.equal(named.update.mock.callCount(), 0);
+  resetTransaction();
+
+  const unnamed = arrange();
+  mock.method(registrationRepository, "findByEventAndId", async () => registrationRow({ person_id: null, status: "CANCELLED", cancelled_at: new Date(), price_amount: "700.00" }));
+  await assert.rejects(registrationService.changeRegistrationStatus(IDS.orgA, IDS.event, IDS.registration, "CONFIRMED", IDS.user), PaymentRequiredError);
+  assert.equal(unnamed.update.mock.callCount(), 0);
+});
+
+test("Phase 11: a guest can't be moved onto a type whose price is positive right now (a scheduled window counts)", async () => {
+  const vip = ticketTypeRow({ id: "vip-id", code: "VIP", price: "0.00" });
+  arrange({ event: eventRow({ ...PUBLISHED }), ticketTypes: [ticketTypeRow(), vip], priceWindows: [{ ...windowRow("400.00"), ticket_type_id: "vip-id" }] });
+  mock.method(registrationRepository, "findByEventAndId", async () => registrationRow({ status: "CONFIRMED", ticket_type_id: IDS.ticketType }));
+  const update = mock.method(registrationRepository, "updateByEventAndId", async () => registrationRow());
+  await assert.rejects(registrationService.changeRegistrationTicketType(IDS.orgA, IDS.event, IDS.registration, "vip-id", IDS.user), PaymentRequiredError);
+  assert.equal(update.mock.callCount(), 0);
 });
