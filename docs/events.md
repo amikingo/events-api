@@ -122,6 +122,18 @@ Every change locks the event first and the ticket type second (the spec's lock o
 No new grants: events and ticket types use `EVENTS` (granted to `OWNER`/`VIEWER` in 3a), the organization's
 defaults use `ORGANIZATIONS.update` (already `OWNER`'s). Branch-limited staff still get 403 for the back office.
 
+## Venue map pins
+
+A venue may have one pin (`venue_location`), kept apart from the venue so venue and event reads never depend on it.
+**Needs migration `20261212000000-create-venue-location`**; until it has run, these four answer 500.
+
+| Method and path | Who | Does |
+|---|---|---|
+| `GET /v1/organizations/{organizationId}/venues/{venueId}/location` | staff, Events view | `{ latitude, longitude }`, or `data: null` |
+| `PUT …/location` | staff, Events update | sets the pin (degrees) |
+| `DELETE …/location` | staff, Events update | removes it |
+| `GET /v1/public/organizations/{organizationSlug}/events/{eventSlug}/venue-location` | anyone, rate limited | the pin of a published event's venue, or `data: null` |
+
 ## 3c: public catalog and event pages (no login)
 
 Decisions of 25 November 2026. Both routes are rate limited per IP (`publicReadLimiter`, 120 requests a minute).

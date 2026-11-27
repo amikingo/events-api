@@ -285,3 +285,8 @@ Tenant-scoped metadata for stored files; uploading arrives in 3d.
   `EVENT_TICKET_ARTWORK`; `ck_file_event_ticket_entity` makes each name its event. `down()` fails while such rows
   exist.
 - See `docs/ticket-designs.md`.
+
+### Venue map pins
+- `venue_location` (new, `20261212000000`): `organization_id`, `venue_id`, `latitude`, `longitude`, audit columns.
+  - **keys:** `uq_venue_location_organization_id_id`, `uq_venue_location_organization_venue`, tenant composite
+    `fk_venue_location_venue` (cascade); **checks:** `ck_venue_location_latitude`, `ck_venue_location_longitude`.

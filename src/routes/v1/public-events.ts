@@ -3,6 +3,7 @@ import { orderController } from "../../controllers/order.controller.js";
 import { publicEventController } from "../../controllers/public-event.controller.js";
 import { publicRegistrationController } from "../../controllers/public-registration.controller.js";
 import { ticketDesignController } from "../../controllers/ticket-design.controller.js";
+import { venueLocationController } from "../../controllers/venue-location.controller.js";
 import { optionalCustomerAuthentication } from "../../middleware/authentication.js";
 import { publicReadLimiter, publicRegistrationLimiter } from "../../middleware/rate-limit.js";
 import { validate } from "../../middleware/validate.js";
@@ -11,6 +12,7 @@ import { createPublicOrderRequest } from "../../validators/order.js";
 import { checkPublicPaymentRequest, getPublicOrderRequest, startPublicPaymentRequest } from "../../validators/payment.js";
 import { createPublicRegistrationRequest } from "../../validators/public-registration.js";
 import { getPublicTicketDesignRequest } from "../../validators/ticket-design.js";
+import { getPublicVenueLocationRequest } from "../../validators/venue-location.js";
 
 /**
  * Mounted at /v1/public. No login: visitors browse the catalog and open events by link. Only visitor fields are
@@ -33,6 +35,14 @@ publicEventsRouter.get(
   publicReadLimiter,
   validate(getPublicTicketDesignRequest),
   ticketDesignController.getPublicTicketDesign,
+);
+
+// Where the event's venue is on the map; null when it has no pin.
+publicEventsRouter.get(
+  "/organizations/:organizationSlug/events/:eventSlug/venue-location",
+  publicReadLimiter,
+  validate(getPublicVenueLocationRequest),
+  venueLocationController.getPublicVenueLocation,
 );
 
 // Phase 4b: register for an event by link, without an account. Idempotency-Key is required (see the validator).

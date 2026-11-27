@@ -24,6 +24,7 @@ import { TicketTypePriceWindow } from "./ticket-type-price-window.js";
 import { UserModuleAccess } from "./user-module-access.js";
 import { UserRole } from "./user-role.js";
 import { Venue } from "./venue.js";
+import { VenueLocation } from "./venue-location.js";
 
 initAssociations({
   Organization,
@@ -76,4 +77,5 @@ export {
   UserModuleAccess,
   UserRole,
   Venue,
+  VenueLocation,
 };
