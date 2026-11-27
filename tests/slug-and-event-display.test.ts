@@ -71,6 +71,7 @@ test("public shapes carry only visitor fields: no client, staff, internal ids or
     "registration_open",
     "slug",
     "starts_at",
+    "ticket_types",
     "timezone",
     "venue",
   ]);

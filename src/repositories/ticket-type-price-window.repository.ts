@@ -1,4 +1,4 @@
-import type { Transaction } from "sequelize";
+import { Op, type Transaction } from "sequelize";
 import { TicketTypePriceWindow } from "../models/index.js";
 import type { TicketTypePriceWindowRow } from "../models/ticket-type-price-window.js";
 import { toPlainList } from "../utils/sequelize.js";
@@ -13,6 +13,23 @@ async function listByTicketTypes(organizationId: string, eventId: string, ticket
   if (ticketTypeIds.length === 0) return [];
   const rows = await TicketTypePriceWindow.findAll({
     where: { organization_id: organizationId, event_id: eventId, ticket_type_id: [...ticketTypeIds] },
+    attributes: [...attributes],
+    order: [["starts_at", "ASC"]],
+    ...txOptions(options),
+  });
+  return toPlainList<TicketTypePriceWindowRow>(rows);
+}
+
+/** The windows of ticket types across several events (the public catalog), each named with its organization. */
+async function listByTicketTypesAcrossEvents(
+  ticketTypes: readonly { id: string; organization_id: string; event_id: string }[],
+  options: RepoOptions = {},
+): Promise<TicketTypePriceWindowRow[]> {
+  if (ticketTypes.length === 0) return [];
+  const rows = await TicketTypePriceWindow.findAll({
+    where: {
+      [Op.or]: ticketTypes.map((type) => ({ organization_id: type.organization_id, event_id: type.event_id, ticket_type_id: type.id })),
+    },
     attributes: [...attributes],
     order: [["starts_at", "ASC"]],
     ...txOptions(options),
@@ -48,4 +65,4 @@ async function replaceForTicketType(
   return rows.map((row) => row.get({ plain: true })).sort((a, b) => a.starts_at.getTime() - b.starts_at.getTime());
 }
 
-export const ticketTypePriceWindowRepository = { listByTicketTypes, listByEvent, replaceForTicketType };
+export const ticketTypePriceWindowRepository = { listByTicketTypes, listByTicketTypesAcrossEvents, listByEvent, replaceForTicketType };

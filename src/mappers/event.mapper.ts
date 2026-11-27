@@ -75,6 +75,8 @@ export type PublicEventCard = {
   registration_open: boolean;
   organization: { name: string; slug: string };
   venue: { name: string; address: string | null; city: string | null; country: string | null } | null;
+  /** Active PUBLIC ticket types only, in display order, with the price a new order pays now ("0.00" is free). */
+  ticket_types: PublicTicketTypeDto[];
 };
 
 export type PublicEventDetail = PublicEventCard & {
@@ -83,8 +85,6 @@ export type PublicEventDetail = PublicEventCard & {
   registration_closes_at: Date | null;
   /** Phase 9: when the doors open; null means at starts_at. */
   doors_open_at: Date | null;
-  /** Active PUBLIC ticket types only, in display order, with the price a new order pays now ("0.00" is free). */
-  ticket_types: PublicTicketTypeDto[];
   /** Phase 7: QUICK (one buyer mobile; tickets may be unnamed) or DETAILED (each holder's details). */
   registration_mode: EventRow["registration_mode"];
   /** Phase 7: for DETAILED events, how each holder detail is asked for (REQUIRED, OPTIONAL or HIDDEN). */
@@ -106,7 +106,14 @@ export function toPublicTicketTypeDto(ticketType: TicketTypeRow, quote: PriceQuo
   return { code: ticketType.code, name: ticketType.name, price, currency: ticketType.currency, is_free: isZeroAmount(price), price_valid_until: quote?.valid_until ?? null };
 }
 
-export function toPublicEventCard(event: PublicEventRow, now: Date, cover: CoverDto = null): PublicEventCard {
+/** `activeTicketTypes`: the event's active ticket types; only PUBLIC ones are shown. */
+export function toPublicEventCard(
+  event: PublicEventRow,
+  now: Date,
+  cover: CoverDto = null,
+  activeTicketTypes: readonly TicketTypeRow[] = [],
+  quotes: ReadonlyMap<string, PriceQuote> = new Map(),
+): PublicEventCard {
   return {
     name: event.name,
     slug: event.slug,
@@ -121,6 +128,9 @@ export function toPublicEventCard(event: PublicEventRow, now: Date, cover: Cover
     venue: event.venue
       ? { name: event.venue.name, address: event.venue.address, city: event.venue.city, country: event.venue.country }
       : null,
+    ticket_types: activeTicketTypes
+      .filter((ticketType) => ticketType.audience === "PUBLIC")
+      .map((ticketType) => toPublicTicketTypeDto(ticketType, quotes.get(ticketType.id))),
   };
 }
 
@@ -134,12 +144,11 @@ export function toPublicEventDetail(
 ): PublicEventDetail {
   const publicTypes = activeTicketTypes.filter((ticketType) => ticketType.audience === "PUBLIC");
   return {
-    ...toPublicEventCard({ ...event, has_public_tickets: publicTypes.length > 0 }, now, cover),
+    ...toPublicEventCard({ ...event, has_public_tickets: publicTypes.length > 0 }, now, cover, publicTypes, quotes),
     description: event.description,
     registration_opens_at: event.registration_opens_at,
     registration_closes_at: event.registration_closes_at,
     doors_open_at: event.doors_open_at,
-    ticket_types: publicTypes.map((ticketType) => toPublicTicketTypeDto(ticketType, quotes.get(ticketType.id))),
     registration_mode: event.registration_mode,
     holder_fields: event.holder_fields,
     purchase_limit_per_mobile: event.purchase_limit_per_mobile,

@@ -1,4 +1,4 @@
-import type { CreationAttributes } from "sequelize";
+import { Op, type CreationAttributes } from "sequelize";
 import { TicketType } from "../models/index.js";
 import type { TicketTypeRow } from "../models/ticket-type.js";
 import { toPlain, toPlainList } from "../utils/sequelize.js";
@@ -81,6 +81,24 @@ async function listActiveByEvent(organizationId: string, eventId: string, option
   return toPlainList<TicketTypeRow>(rows);
 }
 
+/**
+ * The public catalog: the active PUBLIC ticket types of several events, in one query. Each event is named with its
+ * organization, so the tenant boundary holds although the catalog spans organizations.
+ */
+async function listActivePublicByEvents(events: readonly { organization_id: string; id: string }[], options: RepoOptions = {}): Promise<TicketTypeRow[]> {
+  if (events.length === 0) return [];
+  const rows = await TicketType.findAll({
+    where: { [Op.or]: events.map((event) => ({ organization_id: event.organization_id, event_id: event.id })), is_active: true, audience: "PUBLIC" },
+    attributes: [...attributes],
+    order: [
+      ["display_order", "ASC"],
+      ["code", "ASC"],
+    ],
+    ...txOptions(options),
+  });
+  return toPlainList<TicketTypeRow>(rows);
+}
+
 async function countActiveByEvent(organizationId: string, eventId: string, options: RepoOptions = {}): Promise<number> {
   return TicketType.count({ where: { organization_id: organizationId, event_id: eventId, is_active: true }, ...txOptions(options) });
 }
@@ -117,6 +135,7 @@ export const ticketTypeRepository = {
   findByEventAndCode,
   listByEvent,
   listActiveByEvent,
+  listActivePublicByEvents,
   countActiveByEvent,
   maxCapacityByEvent,
   maxDisplayOrderByEvent,

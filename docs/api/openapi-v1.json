@@ -6362,7 +6362,7 @@
     },
     "/v1/public/events": {
       "get": {
-        "summary": "Public catalog: upcoming and live PUBLISHED + PUBLIC events of active organizations, by start time (filters: exact category, organization slug)",
+        "summary": "Public catalog: upcoming and live PUBLISHED + PUBLIC events of active organizations, by start time (filters: exact category, organization slug). Each card has ticket_types: active PUBLIC types with the price a new order pays now",
         "tags": [
           "Public"
         ],

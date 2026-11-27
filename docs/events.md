@@ -128,6 +128,9 @@ Decisions of 25 November 2026. Both routes are rate limited per IP (`publicReadL
 
 ### `GET /v1/public/events`: the catalog
 
+Each card has `ticket_types`, the same shape as on the event page (active `PUBLIC` types; `price` and `is_free` are what
+a new order pays now), so a list can show prices without opening each event. Two queries per page, whatever its size.
+
 - Lists **upcoming and live** events: `status = PUBLISHED`, `visibility = PUBLIC`, organization active, and
   `now < ends_at`. An event leaves the catalog at its exact end time.
 - Sorted by `starts_at`, then id, so pages are stable. `?page&pageSize` as everywhere.
