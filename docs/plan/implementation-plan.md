@@ -668,5 +668,5 @@ Details in `docs/authentication.md` and `docs/registrations.md` (Phase 10). UI b
 **Decisions (27 November 2026):** reactivation also refuses a stored paid price; overlaps are checked in the service
 under the locks, with CHECKs in the database and no extension.
 
-Details in `docs/events.md` and `docs/registrations.md` (Phase 11).
+Details in `docs/events.md` and `docs/registrations.md` (Phase 11). UI brief: `docs/ui-brief-phase-11.md`.
 
