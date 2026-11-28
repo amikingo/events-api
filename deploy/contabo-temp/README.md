@@ -78,7 +78,7 @@ chmod 600 ~/events/db.env ~/events/api.env
 ```
 
 Every other setting is in `docker-compose.yml`: the public address, `/api` cookie paths, real SMS through
-AfroMessage (its token comes from GitHub, see "Secrets managed in GitHub").
+AfroMessage and Cheche Pay checkout (their secrets come from GitHub, see "Secrets managed in GitHub").
 
 ## 3. Build
 
@@ -178,9 +178,15 @@ POSTGRES_PASSWORD=<the password from db.env>
 POSTGRES_SSL=no-verify
 SMS_DELIVERY=log
 OUTBOX_WORKER_ENABLED=false
+PAYMENT_WORKER_ENABLED=false
+CHECHE_PAY_CREDENTIALS_KEY=<the same value as the server; ask privately>
 ```
 
 - `no-verify`: the connection is encrypted, but the certificate is self-signed, so it isn't checked.
+- `PAYMENT_WORKER_ENABLED=false`: like the SMS worker, every running API checks unconfirmed payments; on the
+  shared database only the server should.
+- `CHECHE_PAY_CREDENTIALS_KEY`: decrypts the organizers' saved Cheche Pay keys. Every API on this database must
+  use the same value, or saved keys can't be read (and keys saved with another value can't be read by anyone else).
 - `OUTBOX_WORKER_ENABLED=false`: the server's API is the only sender for this database and sends **real SMS**.
   Every running API checks the outbox every 10 seconds and whichever checks first takes the message, so a local
   worker would either swallow it (`log`: marked `SENT`, never delivered) or send real SMS for other people's
@@ -340,6 +346,7 @@ each one into `~/events/api.env`, replacing only that line, readable by joedee o
 | Secret (in **events-api** only) | Used for |
 |---|---|
 | `PLATFORM_SMS_AFROMESSAGE_TOKEN` | Cheche's platform AfroMessage token (real SMS) |
+| `CHECHE_PAY_CREDENTIALS_KEY` | encrypts the organizers' saved Cheche Pay keys. Never change it while keys are saved: they become unreadable |
 
 - Only names listed in `ALLOWED_SECRETS` in `events-deploy.sh` are accepted; anything else is ignored.
 - An empty or missing secret changes nothing, so deleting it in GitHub never wipes the server's value.

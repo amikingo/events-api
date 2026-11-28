@@ -23,7 +23,7 @@ readonly API_ENV="$BASE/api.env"
 readonly BACKUP_DIR="$BASE/backups"
 readonly KEEP_BACKUPS=20
 readonly LOCK_FILE=/run/lock/events-deploy.lock
-readonly ALLOWED_SECRETS=(PLATFORM_SMS_AFROMESSAGE_TOKEN)
+readonly ALLOWED_SECRETS=(PLATFORM_SMS_AFROMESSAGE_TOKEN CHECHE_PAY_CREDENTIALS_KEY)
 
 log() { printf '[events-deploy %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 fail() { log "FAILED: $*"; exit 1; }

@@ -79,6 +79,15 @@ services:
       SMS_DELIVERY: afromessage
       PLATFORM_SMS_AFROMESSAGE_FROM_ID: e80ad9d8-adf3-463f-80f4-7c4b39f7f164
       PLATFORM_SMS_SENDER: CHECHE
+      # Paid checkout through Cheche Pay v2. CHECHE_PAY_CREDENTIALS_KEY (encrypts the organizers' saved Cheche Pay
+      # keys) comes from the GitHub secret of the same name, written into ~/events/api.env by each events-api
+      # deploy. It must stay the same value as every other API using the shared database, or saved keys become
+      # unreadable. Without it, paid sales are simply unavailable.
+      CHECHE_PAY_FINANCE_BASE_URL: https://merchant.chechepay.com/finance/api/v1
+      # nginx removes /api, so this reaches the API's /v1/payments/cheche/webhook/:organizationId route.
+      CHECHE_PAY_CALLBACK_URL: https://eventra-dev.duckdns.org/api/v1/payments/cheche/webhook/{organization_id}
+      # events-web's order page.
+      CHECHE_PAY_RETURN_URL: https://eventra-dev.duckdns.org/orders/{reference}?tx_ref={tx_ref}
     volumes:
       - uploads:/assets/uploads
     depends_on:
