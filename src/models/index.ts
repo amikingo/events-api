@@ -2,6 +2,7 @@ import { AppModule } from "./module.js";
 import { Branch } from "./branch.js";
 import { CustomerAccount } from "./customer-account.js";
 import { AppEvent } from "./event.js";
+import { EventTicketDesign } from "./event-ticket-design.js";
 import { initAssociations } from "./init-associations.js";
 import { MessageOutbox } from "./message-outbox.js";
 import { Organization } from "./organization.js";
@@ -23,6 +24,7 @@ import { TicketTypePriceWindow } from "./ticket-type-price-window.js";
 import { UserModuleAccess } from "./user-module-access.js";
 import { UserRole } from "./user-role.js";
 import { Venue } from "./venue.js";
+import { VenueLocation } from "./venue-location.js";
 
 initAssociations({
   Organization,
@@ -54,6 +56,7 @@ export {
   AppModule,
   Branch,
   CustomerAccount,
+  EventTicketDesign,
   MessageOutbox,
   OrderPayment,
   Organization,
@@ -74,4 +77,5 @@ export {
   UserModuleAccess,
   UserRole,
   Venue,
+  VenueLocation,
 };

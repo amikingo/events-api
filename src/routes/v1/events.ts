@@ -2,7 +2,7 @@ import { Router } from "express";
 import { eventController } from "../../controllers/event.controller.js";
 import { requireStaffAuthentication } from "../../middleware/authentication.js";
 import { organizationScopeFromParams, requirePermission } from "../../middleware/permission.js";
-import { coverImageUpload } from "../../middleware/upload.js";
+import { singleImageUpload } from "../../middleware/upload.js";
 import { validate } from "../../middleware/validate.js";
 import { MODULE_CODES } from "../../utils/module-codes.js";
 import {
@@ -89,7 +89,7 @@ eventsRouter.put(
   requireStaffAuthentication,
   validate(setEventCoverRequest),
   requirePermission({ moduleCode: MODULE_CODES.EVENTS, action: "update", scope: organizationScopeFromParams }),
-  coverImageUpload,
+  singleImageUpload,
   eventController.setEventCover,
 );
 

@@ -172,6 +172,17 @@ async function quotePrices(
   );
 }
 
+/** The same quotes for ticket types of several events (the public catalog), in one query. */
+async function quotePricesAcrossEvents(
+  ticketTypes: readonly Pick<TicketTypeRow, "id" | "price" | "organization_id" | "event_id">[],
+  at: Date,
+): Promise<Map<string, PriceQuote>> {
+  const windows = await ticketTypePriceWindowRepository.listByTicketTypesAcrossEvents(ticketTypes);
+  return new Map(
+    ticketTypes.map((ticketType) => [ticketType.id, effectivePrice(ticketType.price, windows.filter((window) => window.ticket_type_id === ticketType.id), at)]),
+  );
+}
+
 /** The quote of one ticket type (it must be among those quoted). */
 function quoteOf(quotes: Map<string, PriceQuote>, ticketTypeId: string): PriceQuote {
   const quote = quotes.get(ticketTypeId);
@@ -181,6 +192,7 @@ function quoteOf(quotes: Map<string, PriceQuote>, ticketTypeId: string): PriceQu
 
 export const ticketing = {
   quotePrices,
+  quotePricesAcrossEvents,
   quoteOf,
   assertTakingRegistrations,
   visibleTo,

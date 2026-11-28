@@ -12,4 +12,6 @@ export const filesConfig = Object.freeze({
   /** Event covers: JPEG, PNG or WebP up to 5 MB, stored under events/covers/. */
   coverMaxBytes: 5 * 1024 * 1024,
   coverFolder: "events/covers",
+  /** Ticket design pictures: the same formats and size limit as covers. */
+  ticketFolder: "events/tickets",
 });

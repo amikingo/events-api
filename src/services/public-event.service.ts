@@ -31,7 +31,13 @@ async function listCatalog(query: PublicEventListQuery): Promise<{ rows: PublicE
     limit,
     offset,
   });
-  return { rows: rows.map((row) => toPublicEventCard(row, now, coverOf(row))), count };
+  // The cards show prices: one query for the page's ticket types and one for their price windows.
+  const ticketTypes = await ticketTypeRepository.listActivePublicByEvents(rows);
+  const quotes = await ticketing.quotePricesAcrossEvents(ticketTypes, now);
+  const cards = rows.map((row) =>
+    toPublicEventCard(row, now, coverOf(row), ticketTypes.filter((type) => type.organization_id === row.organization_id && type.event_id === row.id), quotes),
+  );
+  return { rows: cards, count };
 }
 
 async function getPublicEvent(organizationSlug: string, eventSlug: string): Promise<PublicEventDetail> {

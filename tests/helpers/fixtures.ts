@@ -3,6 +3,7 @@ import { authConfig } from "../../src/config/auth.js";
 import type { BranchRow } from "../../src/models/branch.js";
 import type { CustomerAccountRow } from "../../src/models/customer-account.js";
 import type { EventRow } from "../../src/models/event.js";
+import type { EventTicketDesignRow } from "../../src/models/event-ticket-design.js";
 import type { TicketTypeRow } from "../../src/models/ticket-type.js";
 import type { VenueRow } from "../../src/models/venue.js";
 import type { ModuleRow } from "../../src/models/module.js";
@@ -238,6 +239,28 @@ export function fileRow(overrides: Partial<StoredFileRow> = {}): StoredFileRow {
     size_bytes: 1024,
     original_name: "cover.png",
     uploaded_by: IDS.user,
+    ...audit,
+    ...overrides,
+  };
+}
+
+export function ticketDesignRow(overrides: Partial<EventTicketDesignRow> = {}): EventTicketDesignRow {
+  return {
+    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1",
+    organization_id: IDS.orgA,
+    event_id: IDS.event,
+    design: "gold",
+    color: null,
+    note: null,
+    show_price: true,
+    show_venue: true,
+    show_guest: true,
+    qr_x: 0.5,
+    qr_y: 1,
+    qr_size: "m",
+    logo_file_id: null,
+    picture_file_id: null,
+    artwork_file_id: null,
     ...audit,
     ...overrides,
   };
