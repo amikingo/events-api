@@ -77,7 +77,8 @@ Save with Ctrl+O, Enter, Ctrl+X. Then:
 chmod 600 ~/events/db.env ~/events/api.env
 ```
 
-Every other setting is in `docker-compose.yml`: the public address, `/api` cookie paths, SMS only logged.
+Every other setting is in `docker-compose.yml`: the public address, `/api` cookie paths, real SMS through
+AfroMessage (its token comes from GitHub, see "Secrets managed in GitHub").
 
 ## 3. Build
 
@@ -180,8 +181,10 @@ OUTBOX_WORKER_ENABLED=false
 ```
 
 - `no-verify`: the connection is encrypted, but the certificate is self-signed, so it isn't checked.
-- `OUTBOX_WORKER_ENABLED=false`: the server's API already delivers confirmation messages; local APIs
-  shouldn't pick them up too. Never set `SMS_DELIVERY=afromessage` against this database.
+- `OUTBOX_WORKER_ENABLED=false`: the server's API is the only sender for this database and sends **real SMS**.
+  Every running API checks the outbox every 10 seconds and whichever checks first takes the message, so a local
+  worker would either swallow it (`log`: marked `SENT`, never delivered) or send real SMS for other people's
+  tests (`afromessage`). To test SMS delivery itself, use your own local database.
 - Event covers uploaded through a local API are saved on that person's computer, not on the server, so
   others see a broken image. Upload covers through https://eventra-dev.duckdns.org.
 

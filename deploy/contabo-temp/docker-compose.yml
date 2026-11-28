@@ -72,8 +72,13 @@ services:
       AUTH_REFRESH_COOKIE_PATH_PREFIX: /api
       # Refresh cookies are Secure (the production default): the site is https through Caddy.
       FILES_DIR: /assets/uploads
-      # Test server: confirmation SMS are only logged, never sent.
-      SMS_DELIVERY: log
+      # Real SMS through Cheche's platform AfroMessage account. The token comes from the GitHub secret
+      # PLATFORM_SMS_AFROMESSAGE_TOKEN, written into ~/events/api.env by each events-api deploy; the from id and
+      # sender are identifiers, not secrets (the same values as bookings). This API is the only sender for the
+      # shared database: local APIs pointed at it keep OUTBOX_WORKER_ENABLED=false.
+      SMS_DELIVERY: afromessage
+      PLATFORM_SMS_AFROMESSAGE_FROM_ID: e80ad9d8-adf3-463f-80f4-7c4b39f7f164
+      PLATFORM_SMS_SENDER: CHECHE
     volumes:
       - uploads:/assets/uploads
     depends_on:
