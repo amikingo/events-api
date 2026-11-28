@@ -3,7 +3,8 @@
 #
 # Runs on every push to main (merged PRs included) and by hand from the Actions tab. The SSH key can only run
 # /usr/local/bin/events-deploy on the server; see deploy/contabo-temp/README.md "Automatic deploys".
-# Repository secrets: CONTABO_DEPLOY_KEY, CONTABO_KNOWN_HOSTS, CONTABO_HOST.
+# Repository secrets: CONTABO_DEPLOY_KEY, CONTABO_KNOWN_HOSTS, CONTABO_HOST, and PLATFORM_SMS_AFROMESSAGE_TOKEN,
+# which is sent over the SSH connection's input (never the command line) and written into the server's api.env.
 name: Deploy to Contabo (temporary)
 
 on:
@@ -28,10 +29,13 @@ jobs:
           DEPLOY_KEY: ${{ secrets.CONTABO_DEPLOY_KEY }}
           KNOWN_HOSTS: ${{ secrets.CONTABO_KNOWN_HOSTS }}
           HOST: ${{ secrets.CONTABO_HOST }}
+          SMS_TOKEN: ${{ secrets.PLATFORM_SMS_AFROMESSAGE_TOKEN }}
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o ServerAliveInterval=30 "joedee@$HOST" api
+          # An unset secret arrives empty, and the server then leaves api.env as it is.
+          printf 'PLATFORM_SMS_AFROMESSAGE_TOKEN=%s\n' "$SMS_TOKEN" |
+            ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -o ServerAliveInterval=30 "joedee@$HOST" api

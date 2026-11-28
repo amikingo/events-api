@@ -261,6 +261,8 @@ How it is locked down:
 - GitHub holds an SSH key that can run that script and nothing else: no shell, no port forwarding.
 - `joedee` may run that one script with sudo without a password (GitHub can't type one). Nothing else.
 - Every api deploy backs up the database first, to `~/events/backups/` (newest 20 kept).
+- Secrets managed in GitHub (see "Secrets managed in GitHub") reach the server only through the SSH connection's
+  input, and only names the script allows are accepted.
 
 Migrations now run automatically on every events-api merge to `main`; see the migration rules above.
 
@@ -325,6 +327,27 @@ GitHub → repo → **Settings → Secrets and variables → Actions → New rep
 | `CONTABO_HOST` | `169.58.247.85` |
 
 Then **Actions → Deploy to Contabo (temporary) → Run workflow** in each repo to test.
+
+### Secrets managed in GitHub
+
+Some app secrets live in GitHub instead of being typed on the server. Every events-api deploy sends them over the
+SSH connection's input (never the command line, so they don't show in process lists or logs); the script writes
+each one into `~/events/api.env`, replacing only that line, readable by joedee only, and then restarts the API.
+
+| Secret (in **events-api** only) | Used for |
+|---|---|
+| `PLATFORM_SMS_AFROMESSAGE_TOKEN` | Cheche's platform AfroMessage token (real SMS) |
+
+- Only names listed in `ALLOWED_SECRETS` in `events-deploy.sh` are accepted; anything else is ignored.
+- An empty or missing secret changes nothing, so deleting it in GitHub never wipes the server's value.
+- Values are never logged; the deploy log only says `updated <NAME> in api.env`.
+- A manual `sudo events-deploy api` from a terminal leaves `api.env` as it is.
+
+To change a value: edit the secret in GitHub, then **Actions → Deploy to Contabo (temporary) → Run workflow** in
+events-api. To check it arrived without showing it: `cut -d= -f1 ~/events/api.env`.
+
+The token still has to be on the server while the API runs; GitHub is where it is managed. Anyone who can change
+the workflow on `main` could read GitHub secrets, so keep merge rights to people you trust.
 
 ### Changing the script later
 
